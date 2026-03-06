@@ -1,23 +1,50 @@
 import csv
+import os
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 from jobspy import scrape_jobs
 
+# All outputs go into scraped jobs/results/YYYY_MM/ next to this script
+OUTPUT_DIR = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 search_terms = [
-    "Operations Research Analyst",
-    "Market Research Analyst",
-    "Business Analytics Consultant",
-    "Financial Analyst",
-    "Programmer Analyst",
-    "Computer Systems Analyst",
+    # Core Data & Analytics
+    "Data Analyst",
     "Business Analyst",
-    "Statistician",
     "Data Scientist",
-    "Data Architect",
+    "Statistician",
     "Quantitative Analyst",
-    "Entry Level Help Desk",
-    "IT Support Specialist",
-    "Junior IT Administrator",
-    "QA Tester",
+    "Operations Research Analyst",
+    "Product Analyst",
+    "Growth Analyst",
+    "Analytics Engineer",
+
+    # Business Intelligence
+    "Business Intelligence Analyst",
+    "BI Developer",
+    "BI Engineer",
+
+    # Domain-Specific Analytics
+    "Financial Analyst",
+    "Market Research Analyst",
+    "Marketing Data Analyst",
+    "Marketing Analytics Specialist",
+    "Supply Chain Analyst",
+    "Pricing Analyst",
+    "Revenue Analyst",
+    "Sales Operations Analyst",
+    "Risk Analyst",
+
+    # Systems & Consulting
+    "Business Analytics Consultant",
+    "Computer Systems Analyst",
+    "Programmer Analyst",
+    "Associate Data & Analytics",
+    "Technology Advisory Associate",
+    "Strategy Consultant",
 ]
 
 all_jobs_list = []
@@ -40,6 +67,7 @@ for term in search_terms:
             google_search_term=f"{term} jobs united states since yesterday",
             country_indeed="USA",
             results_wanted=9999,
+            is_remote=True,  # fixes Glassdoor location parsing for nationwide searches
             hours_old=256,
         )
 
@@ -54,12 +82,13 @@ if all_jobs_list:
     combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
     combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
     print(f"\nTotal unique jobs: {len(combined_jobs)}")
+    output_path = OUTPUT_DIR / "all_city_remote_jobs.csv"
     combined_jobs.to_csv(
-        "all_city_remote_jobs.csv",
+        output_path,
         quoting=csv.QUOTE_NONNUMERIC,
         escapechar="\\",
         index=False,
     )
-    print("Saved to all_city_remote_jobs.csv")
+    print(f"Saved to {output_path}")
 else:
     print("No jobs found.")
