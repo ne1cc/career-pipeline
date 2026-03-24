@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 from jobspy import scrape_jobs
 
-# All outputs go into scraped jobs/results/YYYY_MM/ next to this script
-OUTPUT_DIR = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")
+# All outputs go into results/YYYY_MM/ in the project root
+OUTPUT_DIR = Path(__file__).parent.parent / "results" / datetime.now().strftime("%Y_%m")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 search_terms = [
