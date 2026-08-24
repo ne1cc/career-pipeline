@@ -1,0 +1,14 @@
+# Example proxy list (one per line). Replace with working proxies.
+# Supported formats:
+# http://user:pass@host:port
+# https://user:pass@host:port
+# socks5://user:pass@host:port
+# 
+# IMPORTANT: These are placeholders. Use a reputable residential or datacenter proxy provider for Glassdoor.
+# Example (placeholders):
+# http://51.15.123.45:3128
+# http://username:password@34.79.12.34:8080
+# socks5://78.47.12.34:1080
+
+# Add your proxies below (one per line):
+http://127.0.0.1:8000

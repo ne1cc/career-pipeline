@@ -71,9 +71,12 @@ for term in search_terms:
             hours_old=256,
         )
 
-        jobs["search_keyword"] = term
-        all_jobs_list.append(jobs)
-        print(f"    Found {len(jobs)} jobs")
+        if not jobs.empty:
+            jobs["search_keyword"] = term
+            all_jobs_list.append(jobs)
+            print(f"    Found {len(jobs)} jobs")
+        else:
+            print("    Found 0 jobs")
 
     except Exception as e:
         print(f"    Error scraping {term}: {e}")
