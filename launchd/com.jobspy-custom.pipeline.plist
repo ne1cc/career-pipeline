@@ -17,8 +17,10 @@
     - REPLACE_WITH_REPO_PATH      absolute path to this cloned repo,
                                    e.g. /Users/yourname/Github/Jobspy-Custom
 
-  Then install with:
+  Then install with (copy first — do not sed this template in git):
     cp launchd/com.jobspy-custom.pipeline.plist ~/Library/LaunchAgents/
+    sed -i '' "s|REPLACE_WITH_REPO_PATH|/Users/yourname/Github/Jobspy-Custom|g; s|REPLACE_WITH_HOME_DIR|/Users/yourname|g" \
+      ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
 
   To test immediately instead of waiting for 6am:
