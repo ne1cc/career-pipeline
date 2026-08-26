@@ -9,3 +9,6 @@
 .env
 dist/
 **/scraped jobs/
+credentials.json
+pipeline_config.json
+*.log
