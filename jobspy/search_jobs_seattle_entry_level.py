@@ -74,10 +74,13 @@ for loc in locations:
                 results_wanted=9999,
                 hours_old=256,
             )
-            jobs["search_keyword"] = term
-            jobs["search_city"] = loc
-            all_jobs_list.append(jobs)
-            print(f"    Found {len(jobs)} jobs")
+            if not jobs.empty:
+                jobs["search_keyword"] = term
+                jobs["search_city"] = loc
+                all_jobs_list.append(jobs)
+                print(f"    Found {len(jobs)} jobs")
+            else:
+                print("    Found 0 jobs")
         except Exception as e:
             print(f"    Error scraping {term} in {loc}: {e}")
 
