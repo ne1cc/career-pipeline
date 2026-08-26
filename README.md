@@ -1,3 +1,14 @@
+# Jobspy Custom
+
+Personal fork of [JobSpy](https://github.com/cullenwatson/JobSpy) that scrapes analyst / data roles (Seattle, remote, west coast), compiles an Excel report, and emails it on a schedule.
+
+**New Mac setup:** [SETUP_MACOS.md](SETUP_MACOS.md) (launchd job, email config, Poetry).  
+**Proxies:** [PROXIES.md](PROXIES.md).
+
+The emailed workbook drops `description`, `company_description`, and `job_url_direct`; remaining URL cells are clickable hyperlinks and columns are auto-sized.
+
+---
+
 <img src="https://github.com/cullenwatson/JobSpy/assets/78247585/ae185b7e-e444-4712-8bb9-fa97f53e896b" width="400">
 
 **JobSpy** is a job scraping library with the goal of aggregating all the jobs from popular job boards with one tool.

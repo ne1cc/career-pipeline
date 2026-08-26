@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
-import os
-import sys
 import json
-import subprocess
-from pathlib import Path
-from datetime import datetime
-import pandas as pd
 import re
+import smtplib
+import subprocess
+import sys
+from datetime import datetime
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+
+import pandas as pd
+from openpyxl.utils import get_column_letter
+
+# Dropped from the emailed workbook (CSVs on disk still keep these for debugging).
+COLUMNS_TO_DROP = ["description", "company_description", "job_url_direct"]
+# Cap so one long URL doesn't stretch the sheet off-screen. Excel max is 255.
+MAX_COLUMN_WIDTH = 80
+MIN_COLUMN_WIDTH = 12
+
 
 def sanitize_text(text):
     if isinstance(text, str):
@@ -15,11 +28,54 @@ def sanitize_text(text):
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
     return text
 
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email.mime.text import MIMEText
-from email import encoders
+
+def is_http_url(value) -> bool:
+    return isinstance(value, str) and value.strip().startswith(("http://", "https://"))
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop bulky/unwanted columns and strip Excel-illegal control characters."""
+    df = df.fillna("")
+    df = df.drop(
+        columns=[col for col in COLUMNS_TO_DROP if col in df.columns],
+        errors="ignore",
+    )
+    for col in df.select_dtypes(include=["object"]):
+        df[col] = df[col].apply(lambda x: sanitize_text(x) if isinstance(x, str) else x)
+    return df
+
+
+def apply_hyperlinks(ws) -> None:
+    """Turn every http(s) cell into a clickable Excel hyperlink."""
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=ws.max_column):
+        for cell in row:
+            val = cell.value
+            if not is_http_url(val):
+                continue
+            url = val.strip()
+            cell.value = url
+            cell.hyperlink = url
+            cell.style = "Hyperlink"
+
+
+def autosize_columns(ws) -> None:
+    """Expand every column to fit its header and cell values, within a usable cap."""
+    for col_idx in range(1, ws.max_column + 1):
+        letter = get_column_letter(col_idx)
+        max_length = 0
+        for cell in ws[letter]:
+            if cell.value is None:
+                continue
+            text = str(cell.value).split("\n", 1)[0]
+            max_length = max(max_length, len(text))
+        width = min(max(max_length + 2, MIN_COLUMN_WIDTH), MAX_COLUMN_WIDTH)
+        ws.column_dimensions[letter].width = width
+
+
+def format_worksheet(ws) -> None:
+    apply_hyperlinks(ws)
+    autosize_columns(ws)
+
 
 # Define paths
 BASE_DIR = Path(__file__).parent.resolve()
@@ -92,17 +148,8 @@ def build_excel_workbook(results_dir, expected_outputs):
                     continue
                 
                 print(f" - Adding tab '{sheet_tab}' from '{csv_name}'...")
-                df = pd.read_csv(csv_path)
-                df = df.fillna("")
-                
-                # Drop large text columns to keep Excel files small and emailable
-                columns_to_drop = ["description", "company_description"]
-                df = df.drop(columns=[col for col in columns_to_drop if col in df.columns], errors="ignore")
-                
-                # Sanitize all string columns to prevent openpyxl IllegalCharacterError
-                for col in df.select_dtypes(include=['object']):
-                    df[col] = df[col].apply(lambda x: sanitize_text(x) if isinstance(x, str) else x)
-                    
+                df = prepare_dataframe(pd.read_csv(csv_path))
+
                 # Filter DataFrame for target keywords: Analyst, Analytics, or Data
                 pattern = r"\b(?:analyst|analytics|data)\b"
                 if "title" in df.columns:
@@ -110,29 +157,14 @@ def build_excel_workbook(results_dir, expected_outputs):
                     filtered_df = df[mask]
                 else:
                     filtered_df = pd.DataFrame(columns=df.columns)
-                
-                # Write main raw sheet and filtered sheet
+
                 df.to_excel(writer, sheet_name=sheet_tab, index=False)
                 filtered_sheet_tab = f"{sheet_tab} (Filtered)"
                 filtered_df.to_excel(writer, sheet_name=filtered_sheet_tab, index=False)
-                
-                # Format URL columns as clickable Excel hyperlinks for both sheets
+
                 for target_tab in [sheet_tab, filtered_sheet_tab]:
-                    ws = writer.sheets[target_tab]
-                    headers = [cell.value for cell in ws[1]]
-                    url_col_indices = [
-                        idx + 1 for idx, header in enumerate(headers)
-                        if header and isinstance(header, str) and ("url" in header.lower() or "link" in header.lower())
-                    ]
-                    
-                    for col_idx in url_col_indices:
-                        for row_idx in range(2, ws.max_row + 1):
-                            cell = ws.cell(row=row_idx, column=col_idx)
-                            val = cell.value
-                            if val and isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
-                                cell.hyperlink = val
-                                cell.style = "Hyperlink"
-                
+                    format_worksheet(writer.sheets[target_tab])
+
                 has_data = True
                 
         if not has_data:
