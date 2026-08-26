@@ -1,0 +1,7 @@
+{
+    "sender_email": "ENTER_SENDER_EMAIL_HERE",
+    "sender_password": "ENTER_SENDER_APP_PASSWORD_HERE",
+    "receiver_email": "ENTER_RECEIVER_EMAIL_HERE",
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587
+}

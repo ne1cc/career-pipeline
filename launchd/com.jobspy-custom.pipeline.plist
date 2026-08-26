@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd job for the JobSpy Custom pipeline.
+
+  This replaces the Linux crontab entry:
+    0 6 */2 * * cd ~/Github/Jobspy-Custom && poetry run python run_pipeline.py >> pipeline_cron.log 2>&1
+
+  launchd is the macOS-native way to run this daily (cron exists on macOS
+  but needs manual Full Disk Access grants and doesn't run missed jobs on
+  wake); a LaunchAgent runs as your user, at login or on a schedule, and
+  catches up a missed run if the Mac was asleep at the scheduled time.
+
+  BEFORE INSTALLING, replace every REPLACE_WITH_* placeholder below:
+    - REPLACE_WITH_HOME_DIR       e.g. /Users/yourname
+    - REPLACE_WITH_REPO_PATH      absolute path to this cloned repo,
+                                   e.g. /Users/yourname/Github/Jobspy-Custom
+
+  Then install with:
+    cp launchd/com.jobspy-custom.pipeline.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
+
+  To test immediately instead of waiting for 6am:
+    launchctl kickstart -k gui/$(id -u)/com.jobspy-custom.pipeline
+
+  To remove:
+    launchctl bootout gui/$(id -u)/com.jobspy-custom.pipeline
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jobspy-custom.pipeline</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd REPLACE_WITH_REPO_PATH && poetry run python run_pipeline.py</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_REPO_PATH/pipeline_cron.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_REPO_PATH/pipeline_cron.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_REPO_PATH</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:REPLACE_WITH_HOME_DIR/.local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
