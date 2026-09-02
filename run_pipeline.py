@@ -14,6 +14,16 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+from pipeline_enrichment import (
+    apply_row_highlights,
+    build_action_items_sheet,
+    enrich_dataframe,
+    format_email_summary,
+    load_previous_urls,
+    save_current_urls,
+    summarize_enrichment,
+)
+
 # Dropped from the emailed workbook (CSVs on disk still keep these for debugging).
 COLUMNS_TO_DROP = ["description", "company_description", "job_url_direct"]
 # Cap so one long URL doesn't stretch the sheet off-screen. Excel max is 255.
@@ -72,14 +82,17 @@ def autosize_columns(ws) -> None:
         ws.column_dimensions[letter].width = width
 
 
-def format_worksheet(ws) -> None:
+def format_worksheet(ws, df: pd.DataFrame | None = None) -> None:
     apply_hyperlinks(ws)
     autosize_columns(ws)
+    if df is not None:
+        apply_row_highlights(ws, df)
 
 
 # Define paths
 BASE_DIR = Path(__file__).parent.resolve()
 CONFIG_FILE = BASE_DIR / "pipeline_config.json"
+STATE_FILE = BASE_DIR / ".pipeline_state" / "previous_job_urls.json"
 
 def load_config():
     if not CONFIG_FILE.exists():
@@ -137,6 +150,10 @@ def build_excel_workbook(results_dir, expected_outputs):
     excel_path = results_dir / excel_filename
     
     print(f"\n[{datetime.now()}] Step 2: Compiling CSV files into Excel workbook...")
+    previous_urls_by_segment = load_previous_urls(STATE_FILE)
+    has_previous_run = bool(previous_urls_by_segment)
+    segment_frames: dict[str, pd.DataFrame] = {}
+    current_urls_by_segment: dict[str, list[str]] = {}
     
     try:
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
@@ -148,13 +165,30 @@ def build_excel_workbook(results_dir, expected_outputs):
                     continue
                 
                 print(f" - Adding tab '{sheet_tab}' from '{csv_name}'...")
-                df = prepare_dataframe(pd.read_csv(csv_path))
+                raw_df = pd.read_csv(csv_path)
+                if "job_url" in raw_df.columns:
+                    current_urls_by_segment[csv_name] = raw_df["job_url"].astype(str).tolist()
 
-                # Filter DataFrame for target keywords: Analyst, Analytics, or Data
+                df = enrich_dataframe(
+                    raw_df,
+                    previous_urls_by_segment.get(csv_name, set()),
+                    has_previous_run=has_previous_run,
+                )
+                segment_frames[sheet_tab] = df
+                df = prepare_dataframe(df)
+
+                if "title" in df.columns:
+                    df = df.sort_values(
+                        by="title",
+                        key=lambda col: col.astype(str).str.lower(),
+                        ascending=True,
+                        na_position="last",
+                    ).reset_index(drop=True)
+
                 pattern = r"\b(?:analyst|analytics|data)\b"
                 if "title" in df.columns:
                     mask = df["title"].astype(str).str.contains(pattern, flags=re.IGNORECASE, regex=True, na=False)
-                    filtered_df = df[mask]
+                    filtered_df = df[mask].reset_index(drop=True)
                 else:
                     filtered_df = pd.DataFrame(columns=df.columns)
 
@@ -162,24 +196,39 @@ def build_excel_workbook(results_dir, expected_outputs):
                 filtered_sheet_tab = f"{sheet_tab} (Filtered)"
                 filtered_df.to_excel(writer, sheet_name=filtered_sheet_tab, index=False)
 
-                for target_tab in [sheet_tab, filtered_sheet_tab]:
-                    format_worksheet(writer.sheets[target_tab])
+                for target_tab, tab_df in [(sheet_tab, df), (filtered_sheet_tab, filtered_df)]:
+                    format_worksheet(writer.sheets[target_tab], tab_df)
+
+                new_count = int(df["is_new"].sum()) if "is_new" in df.columns else 0
+                fresh_count = int(df["is_fresh_post"].sum()) if "is_fresh_post" in df.columns else 0
+                print(f"   -> {new_count} new, {fresh_count} fresh posts, apply types added")
 
                 has_data = True
+
+            action_items = build_action_items_sheet(segment_frames)
+            action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
+            action_items_prepared.to_excel(writer, sheet_name="Action Items", index=False)
+            if not action_items_prepared.empty:
+                format_worksheet(writer.sheets["Action Items"], action_items_prepared)
+            print(f" - Action Items tab: {len(action_items_prepared)} prioritized listings")
                 
         if not has_data:
             print("ERROR: No CSV files were found to compile into Excel!")
             sys.exit(1)
+
+        if current_urls_by_segment:
+            save_current_urls(STATE_FILE, current_urls_by_segment)
             
         size_mb = excel_path.stat().st_size / (1024 * 1024)
         print(f"Excel workbook created successfully: {excel_path} ({size_mb:.2f} MB)")
-        return excel_path
+        stats = summarize_enrichment(segment_frames)
+        return excel_path, stats, has_previous_run
         
     except Exception as e:
         print(f"ERROR: Failed to compile Excel workbook: {e}")
         sys.exit(1)
 
-def send_email_with_attachment(config, excel_path):
+def send_email_with_attachment(config, excel_path, stats, has_previous_run):
     sender_email = config.get("sender_email")
     sender_password = config.get("sender_password")
     receiver_email = config.get("receiver_email")
@@ -197,7 +246,8 @@ def send_email_with_attachment(config, excel_path):
     body = (
         f"Hello,\n\n"
         f"Please find attached the consolidated job scraper report for {datetime.now().strftime('%Y-%m-%d')}.\n\n"
-        f"This report contains segments for remote jobs, seattle area, entry level, and west coast jobs.\n\n"
+        f"{format_email_summary(stats, has_previous_run=has_previous_run)}"
+        f"Start with the Action Items tab — new/fresh analyst and data roles sorted by priority.\n\n"
         f"Best regards,\n"
         f"Jobspy Custom Pipeline"
     )
@@ -253,9 +303,9 @@ def main():
     
     run_scrapers()
     
-    excel_path = build_excel_workbook(results_dir, expected_outputs)
+    excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
     
-    send_email_with_attachment(config, excel_path)
+    send_email_with_attachment(config, excel_path, stats, has_previous_run)
     
     print(f"\n[{datetime.now()}] --- PIPELINE RUN COMPLETE ---")
 

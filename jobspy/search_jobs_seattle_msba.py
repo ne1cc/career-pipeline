@@ -210,6 +210,14 @@ if all_jobs_list:
         
     if filtered_rows:
         final_jobs = pd.DataFrame(filtered_rows)
+        if "title" in final_jobs.columns:
+            final_jobs.sort_values(
+                by="title",
+                key=lambda col: col.astype(str).str.lower(),
+                ascending=True,
+                na_position="last",
+                inplace=True,
+            )
         print(f"Filters complete. Kept {len(final_jobs)} of {raw_count} jobs.")
         
         output_path = OUTPUT_DIR / "seattle_msba_recent_jobs.csv"

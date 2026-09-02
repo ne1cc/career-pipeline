@@ -12,5 +12,6 @@ dist/
 **/scraped jobs/
 credentials.json
 pipeline_config.json
+.pipeline_state/
 proxies.txt
 *.log

@@ -84,6 +84,14 @@ for term in search_terms:
 if all_jobs_list:
     combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
     combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
+    if "title" in combined_jobs.columns:
+        combined_jobs.sort_values(
+            by="title",
+            key=lambda col: col.astype(str).str.lower(),
+            ascending=True,
+            na_position="last",
+            inplace=True,
+        )
     print(f"\nTotal unique jobs: {len(combined_jobs)}")
     output_path = OUTPUT_DIR / "all_city_remote_jobs.csv"
     combined_jobs.to_csv(
