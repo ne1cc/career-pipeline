@@ -74,6 +74,20 @@ def classify_apply_type(row: pd.Series) -> str:
         return "Workday Direct"
     if "smartrecruiters.com" in combined_urls:
         return "SmartRecruiters Direct"
+    if "builtin" in combined_urls or "builtin" in site:
+        return "BuiltIn Direct"
+    if "himalayas" in combined_urls or "himalayas" in site:
+        return "Himalayas Direct"
+    if "remotive" in combined_urls or "remotive" in site:
+        return "Remotive Direct"
+    if "jobicy" in combined_urls or "jobicy" in site:
+        return "Jobicy Direct"
+    if "remoteok" in combined_urls or "remoteok" in site:
+        return "RemoteOK Direct"
+    if "arbeitnow" in combined_urls or "arbeitnow" in site:
+        return "Arbeitnow Direct"
+    if "hiringcafe" in combined_urls or "hiringcafe" in site:
+        return "HiringCafe Direct"
 
     if site == "ats":
         return "Company ATS Direct"

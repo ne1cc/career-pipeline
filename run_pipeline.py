@@ -293,6 +293,7 @@ def main():
         "seattle_entry_level_jobs.csv": "Seattle Entry Level",
         "west_coast_jobs.csv": "West Coast Jobs",
         "ats_direct_jobs.csv": "ATS Direct Jobs",
+        "tech_portals_jobs.csv": "Tech Portals Jobs",
     }
     
     # Locate scraped jobs results directory

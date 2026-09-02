@@ -18,6 +18,7 @@ def main():
         jobspy_dir / "search_jobs_seattle_entry_level.py",
         jobspy_dir / "search_jobs_west.py",
         jobspy_dir / "search_jobs_ats.py",
+        jobspy_dir / "search_jobs_portals.py",
     ]
     
     # Verify all scripts exist
@@ -151,6 +152,7 @@ def main():
         "search_jobs_seattle_entry_level.py": "seattle_entry_level_jobs.csv",
         "search_jobs_west.py": "west_coast_jobs.csv",
         "search_jobs_ats.py": "ats_direct_jobs.csv",
+        "search_jobs_portals.py": "tech_portals_jobs.csv",
     }
     
     for script_name, csv_name in expected_outputs.items():
