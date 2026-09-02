@@ -29,6 +29,7 @@ regex = "^2024.4.28"
 gspread = "^6.2.1"
 openpyxl = "^3.1.5"
 google-api-python-client = "^2.198.0"
+ats-scrapers = {version = ">=0.2.0", extras = ["scrapers"]}
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
