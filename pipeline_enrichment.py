@@ -291,17 +291,24 @@ def summarize_enrichment(segment_frames: dict[str, pd.DataFrame]) -> dict[str, i
         "new_jobs": 0,
         "fresh_posts": 0,
         "easy_apply": 0,
+        "direct_ats": 0,
         "action_items": 0,
     }
     for df in segment_frames.values():
         if df.empty:
             continue
         totals["total_jobs"] += len(df)
-        totals["new_jobs"] += int(df["is_new"].sum())
-        totals["fresh_posts"] += int(df["is_fresh_post"].sum())
-        totals["easy_apply"] += int(
-            df["apply_type"].str.contains("Easy Apply", case=False, na=False).sum()
-        )
+        if "is_new" in df.columns:
+            totals["new_jobs"] += int(df["is_new"].sum())
+        if "is_fresh_post" in df.columns:
+            totals["fresh_posts"] += int(df["is_fresh_post"].sum())
+        if "apply_type" in df.columns:
+            totals["easy_apply"] += int(
+                df["apply_type"].str.contains("Easy Apply", case=False, na=False).sum()
+            )
+            totals["direct_ats"] += int(
+                df["apply_type"].str.contains("Direct", case=False, na=False).sum()
+            )
     action_items = build_action_items_sheet(segment_frames)
     totals["action_items"] = len(action_items)
     return totals
@@ -309,20 +316,22 @@ def summarize_enrichment(segment_frames: dict[str, pd.DataFrame]) -> dict[str, i
 
 def format_email_summary(stats: dict[str, int], *, has_previous_run: bool) -> str:
     new_line = (
-        f"- New since last run: {stats['new_jobs']}\n"
+        f"- New since last run: {stats.get('new_jobs', 0)}\n"
         if has_previous_run
         else "- New since last run: (first run — all jobs treated as baseline)\n"
     )
+    direct_ats_count = stats.get("direct_ats", 0)
     return (
         f"Quick stats:\n"
-        f"- Total jobs in report: {stats['total_jobs']}\n"
+        f"- Total Raw Postings: {stats.get('total_jobs', 0)}\n"
+        f"- Action Items (Fresher Spotlight): {stats.get('action_items', 0)}\n"
+        f"- Direct ATS listings: {direct_ats_count}\n"
         f"{new_line}"
-        f"- Posted in last {FRESH_POST_DAYS} days: {stats['fresh_posts']}\n"
-        f"- Easy Apply listings: {stats['easy_apply']}\n"
-        f"- Action Items tab (new/fresh + analyst/data filter): {stats['action_items']}\n\n"
+        f"- Posted in last {FRESH_POST_DAYS} days: {stats.get('fresh_posts', 0)}\n"
+        f"- Easy Apply listings: {stats.get('easy_apply', 0)}\n\n"
         f"Legend in Excel:\n"
         f"- Green row = new since your last daily run\n"
         f"- Yellow row = posted within {FRESH_POST_DAYS} days\n"
         f"- Blue row = both new and fresh\n"
-        f"- apply_type column = Indeed/LinkedIn Easy Apply vs company site\n"
+        f"- apply_type column = Indeed/LinkedIn Easy Apply vs company site / Direct ATS\n"
     )
