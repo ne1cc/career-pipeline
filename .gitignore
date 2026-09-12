@@ -17,3 +17,5 @@ proxies.txt
 *.log
 .worktrees/
 .superpowers/
+docs/superpowers/
+superpowers/
