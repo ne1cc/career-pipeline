@@ -16,6 +16,8 @@ def test_matches_fresher_track():
     assert matches_fresher_track("Associate Product Manager")
     assert matches_fresher_track("BizOps Analyst")
     assert matches_fresher_track("Associate Software Engineer")
+    assert matches_fresher_track("Strategy and Operations Analyst")
+    assert not matches_fresher_track("Software Engineer")
     assert not matches_fresher_track("Registered Nurse")
     assert not matches_fresher_track("Truck Driver")
 
@@ -31,6 +33,10 @@ def test_is_senior_or_high_yoe():
     # High YOE description
     assert is_senior_or_high_yoe("Data Analyst", "Must have 6+ years of experience in SQL")
     assert is_senior_or_high_yoe("Business Analyst", "Requires 10+ yrs of data modeling")
+    assert is_senior_or_high_yoe("Data Analyst", "Requires 5-7 years of experience")
+    assert is_senior_or_high_yoe("Data Analyst", "Requires 6-10 yrs experience")
+    assert is_senior_or_high_yoe("Data Analyst", "5 to 7 years in analytics")
+    assert is_senior_or_high_yoe("Data Analyst", "5–7 years of experience")
 
     # Safe fresher roles
     assert not is_senior_or_high_yoe("Data Analyst", "Requires 1-2 years experience or new graduate")
@@ -71,6 +77,32 @@ def test_action_items_filters_seniors_and_ranks():
             "company": "B",
         },
     ])
+    result = build_action_items_sheet({"Test Segment": df})
+    assert len(result) == 1
+    assert result.iloc[0]["title"] == "Junior Data Analyst"
+
+
+def test_action_items_handles_duplicate_indices():
+    df = pd.DataFrame([
+        {
+            "title": "Senior Data Analyst",
+            "description": "5+ years",
+            "is_new": True,
+            "is_fresh_post": True,
+            "apply_type": "Company Site",
+            "job_url": "http://1",
+            "company": "A",
+        },
+        {
+            "title": "Junior Data Analyst",
+            "description": "0-1 years",
+            "is_new": True,
+            "is_fresh_post": True,
+            "apply_type": "Greenhouse Direct",
+            "job_url": "http://2",
+            "company": "B",
+        },
+    ], index=[0, 0])
     result = build_action_items_sheet({"Test Segment": df})
     assert len(result) == 1
     assert result.iloc[0]["title"] == "Junior Data Analyst"

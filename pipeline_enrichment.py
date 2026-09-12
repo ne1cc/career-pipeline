@@ -152,11 +152,11 @@ def enrich_dataframe(
 
 
 TRACK_A_PATTERN = r"\b(?:analyst|analytics|data|data scientist|statistician|quantitative|analytics engineer|bi\b|bi developer|business intelligence|reporting|insights)\b"
-TRACK_C_PATTERN = r"\b(?:product manager|apm\b|business operations|bizops|operations analyst|project coordinator|strategy & operations|strategy analyst)\b"
+TRACK_C_PATTERN = r"\b(?:product manager|apm\b|business operations|bizops|operations analyst|project coordinator|strategy & operations|strategy and operations|strategy analyst)\b"
 TRACK_B_PATTERN = r"\b(?:software engineer|developer|swe\b|frontend|backend|full stack)\b"
 
 SENIOR_TITLE_PATTERN = r"\b(?:senior|sr\b|sr\.|lead|principal|staff|(?<!product\s)(?<!project\s)manager|director|vp\b|vice president|head of|chief|architect|distinguished|fellow|iii|iv|v)\b"
-HIGH_YOE_PATTERN = r"\b(?:[5-9]|1[0-9])\+\s*(?:years|yrs)\b|\b(?:[6-9]|1[0-9])\s*to\s*[0-9]+\s*(?:years|yrs)\b"
+HIGH_YOE_PATTERN = r"\b(?:[5-9]|1[0-9])\+\s*(?:years|yrs)\b|\b(?:[5-9]|1[0-9])\s*(?:to|-|–)\s*[0-9]+\s*(?:years|yrs)\b"
 ENTRY_TITLE_TAG_PATTERN = r"\b(?:new grad|junior|associate|entry level|early career|university|intern|internship|campus)\b"
 
 
@@ -235,15 +235,14 @@ def build_action_items_sheet(segment_frames: dict[str, pd.DataFrame]) -> pd.Data
             continue
         desc_col = "description" if "description" in df.columns else None
 
-        # Filter for fresher track & exclude senior
-        qualifying = []
-        for idx, row in df.iterrows():
+        # Filter for fresher track & exclude senior using boolean mask
+        mask = []
+        for _, row in df.iterrows():
             title = "" if pd.isna(row.get("title")) else str(row.get("title", ""))
             desc = "" if (not desc_col or pd.isna(row.get(desc_col))) else str(row.get(desc_col, ""))
-            if matches_fresher_track(title) and not is_senior_or_high_yoe(title, desc):
-                qualifying.append(idx)
+            mask.append(matches_fresher_track(title) and not is_senior_or_high_yoe(title, desc))
 
-        subset = df.loc[qualifying].copy()
+        subset = df[mask].copy()
         if subset.empty:
             continue
         subset.insert(0, "segment", segment_name)
