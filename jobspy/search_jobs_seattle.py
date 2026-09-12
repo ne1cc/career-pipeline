@@ -25,7 +25,6 @@ search_terms = [
     "Operations Research Analyst",
     "Product Analyst",
     "Growth Analyst",
-    "Analytics Engineer",
 
     # Business Intelligence
     "Business Intelligence Analyst",
@@ -50,61 +49,88 @@ search_terms = [
     "Associate Data & Analytics",
     "Technology Advisory Associate",
     "Strategy Consultant",
+
+    # Expanded Data & Analytics Roles
+    "Analytics Engineer",
+    "Full Stack Analytics Engineer",
+    "Data Operations Analyst",
+    "Reporting Analyst",
+    "Insights Analyst",
+    "Decision Support Analyst",
+    "Commercial Analytics Analyst",
+    "Revenue Operations Analyst",
+    "Customer Analytics Analyst",
+
+    # Product & Business Operations Roles
+    "Associate Product Manager",
+    "APM",
+    "Business Operations Associate",
+    "BizOps Analyst",
+    "Project Coordinator",
+    "Strategy & Operations Associate",
+
+    # Junior Software Engineering Roles
+    "Associate Software Engineer",
+    "Junior Software Engineer",
+    "Software Engineer - Early Career",
+    "Software Engineer - New Grad",
 ]
 
-all_jobs_list = []
+if __name__ == "__main__":
+    all_jobs_list = []
 
-print(f"Starting scrape for {len(locations)} locations × {len(search_terms)} terms...\n")
+    print(f"Starting scrape for {len(locations)} locations × {len(search_terms)} terms...\n")
 
-for loc in locations:
-    print(f"--- {loc} ---")
-    for term in search_terms:
-        print(f"  > Scraping: '{term}' in '{loc}'")
-        try:
-            jobs = scrape_jobs(
-                site_name=[
-                    "indeed",
-                    "linkedin",
-                    "zip_recruiter",
-                    "glassdoor",
-                    "google",
-                ],
-                search_term=term,
-                location=loc,
-                google_search_term=f"{term} jobs near {loc} since yesterday",
-                country_indeed="USA",
-                results_wanted=9999,
-                hours_old=256,
+    for loc in locations:
+        print(f"--- {loc} ---")
+        for term in search_terms:
+            print(f"  > Scraping: '{term}' in '{loc}'")
+            try:
+                jobs = scrape_jobs(
+                    site_name=[
+                        "indeed",
+                        "linkedin",
+                        "zip_recruiter",
+                        "glassdoor",
+                        "google",
+                    ],
+                    search_term=term,
+                    location=loc,
+                    google_search_term=f"{term} jobs near {loc} since yesterday",
+                    country_indeed="USA",
+                    results_wanted=9999,
+                    hours_old=256,
+                )
+                if not jobs.empty:
+                    jobs["search_keyword"] = term
+                    jobs["search_city"] = loc
+                    all_jobs_list.append(jobs)
+                    print(f"    Found {len(jobs)} jobs")
+                else:
+                    print("    Found 0 jobs")
+            except Exception as e:
+                print(f"    Error scraping {term} in {loc}: {e}")
+
+    if all_jobs_list:
+        combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
+        combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
+        if "title" in combined_jobs.columns:
+            combined_jobs.sort_values(
+                by="title",
+                key=lambda col: col.astype(str).str.lower(),
+                ascending=True,
+                na_position="last",
+                inplace=True,
             )
-            if not jobs.empty:
-                jobs["search_keyword"] = term
-                jobs["search_city"] = loc
-                all_jobs_list.append(jobs)
-                print(f"    Found {len(jobs)} jobs")
-            else:
-                print("    Found 0 jobs")
-        except Exception as e:
-            print(f"    Error scraping {term} in {loc}: {e}")
-
-if all_jobs_list:
-    combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
-    combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
-    if "title" in combined_jobs.columns:
-        combined_jobs.sort_values(
-            by="title",
-            key=lambda col: col.astype(str).str.lower(),
-            ascending=True,
-            na_position="last",
-            inplace=True,
+        print(f"\nTotal unique jobs: {len(combined_jobs)}")
+        output_path = OUTPUT_DIR / "seattle_jobs.csv"
+        combined_jobs.to_csv(
+            output_path,
+            quoting=csv.QUOTE_NONNUMERIC,
+            escapechar="\\",
+            index=False,
         )
-    print(f"\nTotal unique jobs: {len(combined_jobs)}")
-    output_path = OUTPUT_DIR / "seattle_jobs.csv"
-    combined_jobs.to_csv(
-        output_path,
-        quoting=csv.QUOTE_NONNUMERIC,
-        escapechar="\\",
-        index=False,
-    )
-    print(f"Saved to {output_path}")
-else:
-    print("No jobs found.")
+        print(f"Saved to {output_path}")
+    else:
+        print("No jobs found.")
+
