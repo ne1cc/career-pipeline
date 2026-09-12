@@ -18,6 +18,7 @@ def test_parallel_runner_scripts_contain_msba():
     # We inspect the expected_outputs keys or scripts defined in run_parallel
     for script in expected_scripts:
         assert script.exists(), f"Script missing: {script}"
+    assert set(run_parallel.SCRIPTS) == set(expected_scripts)
     assert "search_jobs_seattle_msba.py" in run_parallel.EXPECTED_OUTPUTS
     assert "search_jobs_msba_west.py" in run_parallel.EXPECTED_OUTPUTS
     assert len(run_parallel.EXPECTED_OUTPUTS) == 8

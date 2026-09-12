@@ -236,11 +236,12 @@ def build_action_items_sheet(segment_frames: dict[str, pd.DataFrame]) -> pd.Data
         desc_col = "description" if "description" in df.columns else None
 
         # Filter for fresher track & exclude senior using boolean mask
-        mask = []
-        for _, row in df.iterrows():
-            title = "" if pd.isna(row.get("title")) else str(row.get("title", ""))
-            desc = "" if (not desc_col or pd.isna(row.get(desc_col))) else str(row.get(desc_col, ""))
-            mask.append(matches_fresher_track(title) and not is_senior_or_high_yoe(title, desc))
+        title_series = df["title"].fillna("").astype(str) if "title" in df.columns else pd.Series("", index=df.index)
+        desc_series = df[desc_col].fillna("").astype(str) if desc_col else pd.Series("", index=df.index)
+        mask = [
+            matches_fresher_track(t) and not is_senior_or_high_yoe(t, d)
+            for t, d in zip(title_series, desc_series)
+        ]
 
         subset = df[mask].copy()
         if subset.empty:

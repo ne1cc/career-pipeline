@@ -38,8 +38,11 @@ def test_build_excel_workbook_end_to_end(tmp_path):
 
     # Verify Action Items excluded the Senior role
     ws_action = wb["Action Items"]
-    # Ensure Senior role is not in Action Items
-    all_action_titles = [cell.value for cell in ws_action["B"] if cell.value]  # title column or search all
+    header = [cell.value for cell in ws_action[1]]
+    title_idx = header.index("title")
+    all_action_titles = [row[title_idx] for row in ws_action.iter_rows(min_row=2, values_only=True)]
+    assert "Senior Data Scientist" not in all_action_titles
+    assert "Analytics Engineer" in all_action_titles
     all_text = " ".join([str(val) for row in ws_action.iter_rows(values_only=True) for val in row if val])
     assert "Senior Data Scientist" not in all_text
     assert "Analytics Engineer" in all_text
