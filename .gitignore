@@ -15,3 +15,5 @@ pipeline_config.json
 .pipeline_state/
 proxies.txt
 *.log
+.worktrees/
+.superpowers/

@@ -31,8 +31,8 @@ COLUMNS = [
     "search_keyword",
 ]
 
-# All 31+ Target Data, BI, Analytics & Healthcare Roles
-SEARCH_TERMS = [
+# Expanded Target Roles
+DEFAULT_SEARCH_TERMS = [
     # Core Data & Analytics
     "Data Analyst",
     "Business Analyst",
@@ -43,6 +43,7 @@ SEARCH_TERMS = [
     "Product Analyst",
     "Growth Analyst",
     "Analytics Engineer",
+    "Full Stack Analytics Engineer",
     "Data Engineer",
     # Business Intelligence
     "Business Intelligence Analyst",
@@ -73,7 +74,15 @@ SEARCH_TERMS = [
     "Associate Data & Analytics",
     "Technology Advisory Associate",
     "Strategy Consultant",
+    # Product & Operations
+    "Associate Product Manager",
+    "Business Operations Associate",
+    # Early Career & Junior Roles
+    "New Grad Software Engineer",
+    "Junior Data Analyst",
+    "Early Career Analyst",
 ]
+SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
 # Compiled regex pattern for title matching across broad feeds
 ROLE_REGEX = re.compile(

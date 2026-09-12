@@ -21,8 +21,8 @@ from ats_scrapers.scrapers import (
 OUTPUT_DIR = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# 27 Search Keywords (identical to search_jobs_remote.py)
-SEARCH_TERMS = [
+# Expanded Search Keywords
+DEFAULT_SEARCH_TERMS = [
     # Core Data & Analytics
     "Data Analyst",
     "Business Analyst",
@@ -33,6 +33,7 @@ SEARCH_TERMS = [
     "Product Analyst",
     "Growth Analyst",
     "Analytics Engineer",
+    "Full Stack Analytics Engineer",
     # Business Intelligence
     "Business Intelligence Analyst",
     "BI Developer",
@@ -54,7 +55,15 @@ SEARCH_TERMS = [
     "Associate Data & Analytics",
     "Technology Advisory Associate",
     "Strategy Consultant",
+    # Product & Operations
+    "Associate Product Manager",
+    "Business Operations Associate",
+    # Early Career & Junior Roles
+    "New Grad Software Engineer",
+    "Junior Data Analyst",
+    "Early Career Analyst",
 ]
+SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
 # Target Company Registry across Greenhouse, Lever, Ashby
 TARGET_COMPANIES: Dict[str, List[str]] = {

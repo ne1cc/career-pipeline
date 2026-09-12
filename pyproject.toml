@@ -35,3 +35,4 @@ ats-scrapers = {version = ">=0.2.0", extras = ["scrapers"]}
 jupyter = "^1.0.0"
 black = "*"
 pre-commit = "*"
+pytest = "^9.1.1"

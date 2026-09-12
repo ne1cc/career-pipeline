@@ -94,6 +94,17 @@ BASE_DIR = Path(__file__).parent.resolve()
 CONFIG_FILE = BASE_DIR / "pipeline_config.json"
 STATE_FILE = BASE_DIR / ".pipeline_state" / "previous_job_urls.json"
 
+EXPECTED_OUTPUTS = {
+    "all_city_remote_jobs.csv": "Remote Jobs",
+    "seattle_jobs.csv": "Seattle Jobs",
+    "seattle_entry_level_jobs.csv": "Seattle Entry Level",
+    "west_coast_jobs.csv": "West Coast Jobs",
+    "seattle_msba_jobs.csv": "Seattle MSBA Jobs",
+    "west_coast_msba_jobs.csv": "West Coast MSBA Jobs",
+    "ats_direct_jobs.csv": "ATS Direct Jobs",
+    "tech_portals_jobs.csv": "Tech Portals Jobs",
+}
+
 def load_config():
     if not CONFIG_FILE.exists():
         default_config = {
@@ -144,80 +155,94 @@ def validate_config(config):
         print(f"ERROR: Receiver email is not configured in '{CONFIG_FILE.name}'!")
         sys.exit(1)
 
-def build_excel_workbook(results_dir, expected_outputs):
+def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
     timestamp_day = datetime.now().strftime("%Y_%m_%d")
     excel_filename = f"Job_Report_{timestamp_day}.xlsx"
     excel_path = results_dir / excel_filename
     
     print(f"\n[{datetime.now()}] Step 2: Compiling CSV files into Excel workbook...")
-    previous_urls_by_segment = load_previous_urls(STATE_FILE)
+    previous_urls_by_segment = load_previous_urls(state_file)
     has_previous_run = bool(previous_urls_by_segment)
     segment_frames: dict[str, pd.DataFrame] = {}
     current_urls_by_segment: dict[str, list[str]] = {}
+    prepared_tabs: list[tuple[str, str, pd.DataFrame, pd.DataFrame]] = []
     
     try:
-        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
-            has_data = False
-            for csv_name, sheet_tab in expected_outputs.items():
-                csv_path = results_dir / csv_name
-                if not csv_path.exists():
-                    print(f" - {csv_name}: File not found. Skipping tab '{sheet_tab}'.")
-                    continue
-                
-                print(f" - Adding tab '{sheet_tab}' from '{csv_name}'...")
-                raw_df = pd.read_csv(csv_path)
-                if "job_url" in raw_df.columns:
-                    current_urls_by_segment[csv_name] = raw_df["job_url"].astype(str).tolist()
+        has_data = False
+        for csv_name, sheet_tab in expected_outputs.items():
+            csv_path = results_dir / csv_name
+            if not csv_path.exists():
+                print(f" - {csv_name}: File not found. Skipping tab '{sheet_tab}'.")
+                continue
+            
+            print(f" - Processing '{sheet_tab}' from '{csv_name}'...")
+            raw_df = pd.read_csv(csv_path)
+            if "job_url" in raw_df.columns:
+                current_urls_by_segment[csv_name] = raw_df["job_url"].astype(str).tolist()
 
-                df = enrich_dataframe(
-                    raw_df,
-                    previous_urls_by_segment.get(csv_name, set()),
-                    has_previous_run=has_previous_run,
-                )
-                segment_frames[sheet_tab] = df
-                df = prepare_dataframe(df)
+            df = enrich_dataframe(
+                raw_df,
+                previous_urls_by_segment.get(csv_name, set()),
+                has_previous_run=has_previous_run,
+            )
+            segment_frames[sheet_tab] = df
+            df_prepared = prepare_dataframe(df)
 
-                if "title" in df.columns:
-                    df = df.sort_values(
-                        by="title",
-                        key=lambda col: col.astype(str).str.lower(),
-                        ascending=True,
-                        na_position="last",
-                    ).reset_index(drop=True)
+            if "title" in df_prepared.columns:
+                df_prepared = df_prepared.sort_values(
+                    by="title",
+                    key=lambda col: col.astype(str).str.lower(),
+                    ascending=True,
+                    na_position="last",
+                ).reset_index(drop=True)
 
-                pattern = r"\b(?:analyst|analytics|data)\b"
-                if "title" in df.columns:
-                    mask = df["title"].astype(str).str.contains(pattern, flags=re.IGNORECASE, regex=True, na=False)
-                    filtered_df = df[mask].reset_index(drop=True)
-                else:
-                    filtered_df = pd.DataFrame(columns=df.columns)
+            pattern = r"\b(?:analyst|analytics|data)\b"
+            if "title" in df_prepared.columns:
+                mask = df_prepared["title"].astype(str).str.contains(pattern, flags=re.IGNORECASE, regex=True, na=False)
+                filtered_df = df_prepared[mask].reset_index(drop=True)
+            else:
+                filtered_df = pd.DataFrame(columns=df_prepared.columns)
 
-                df.to_excel(writer, sheet_name=sheet_tab, index=False)
-                filtered_sheet_tab = f"{sheet_tab} (Filtered)"
-                filtered_df.to_excel(writer, sheet_name=filtered_sheet_tab, index=False)
+            prepared_tabs.append((sheet_tab, f"{sheet_tab} (Filtered)", df_prepared, filtered_df))
+            has_data = True
 
-                for target_tab, tab_df in [(sheet_tab, df), (filtered_sheet_tab, filtered_df)]:
-                    format_worksheet(writer.sheets[target_tab], tab_df)
-
-                new_count = int(df["is_new"].sum()) if "is_new" in df.columns else 0
-                fresh_count = int(df["is_fresh_post"].sum()) if "is_fresh_post" in df.columns else 0
-                print(f"   -> {new_count} new, {fresh_count} fresh posts, apply types added")
-
-                has_data = True
-
-            action_items = build_action_items_sheet(segment_frames)
-            action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
-            action_items_prepared.to_excel(writer, sheet_name="Action Items", index=False)
-            if not action_items_prepared.empty:
-                format_worksheet(writer.sheets["Action Items"], action_items_prepared)
-            print(f" - Action Items tab: {len(action_items_prepared)} prioritized listings")
-                
         if not has_data:
             print("ERROR: No CSV files were found to compile into Excel!")
             sys.exit(1)
 
+        action_items = build_action_items_sheet(segment_frames)
+        action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
+
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            # Tab 1: Front-load Action Items
+            print(f" - Adding tab 'Action Items' (Fresher Spotlight)...")
+            action_items_prepared.to_excel(writer, sheet_name="Action Items", index=False)
+            if not action_items_prepared.empty:
+                format_worksheet(writer.sheets["Action Items"], action_items_prepared)
+            print(f"   -> Action Items tab: {len(action_items_prepared)} prioritized listings")
+
+            # Subsequent tabs: raw segment tabs and filtered tabs
+            for sheet_tab, filtered_sheet_tab, df_prepared, filtered_df in prepared_tabs:
+                print(f" - Adding tab '{sheet_tab}'...")
+                df_prepared.to_excel(writer, sheet_name=sheet_tab, index=False)
+                filtered_df.to_excel(writer, sheet_name=filtered_sheet_tab, index=False)
+
+                for target_tab, tab_df in [(sheet_tab, df_prepared), (filtered_sheet_tab, filtered_df)]:
+                    format_worksheet(writer.sheets[target_tab], tab_df)
+
+                new_count = int(df_prepared["is_new"].sum()) if "is_new" in df_prepared.columns else 0
+                fresh_count = int(df_prepared["is_fresh_post"].sum()) if "is_fresh_post" in df_prepared.columns else 0
+                print(f"   -> {new_count} new, {fresh_count} fresh posts, apply types added")
+
+            # Reorder safety check using openpyxl
+            if "Action Items" in writer.book.sheetnames:
+                action_idx = writer.book.sheetnames.index("Action Items")
+                if action_idx != 0:
+                    action_sheet = writer.book._sheets.pop(action_idx)
+                    writer.book._sheets.insert(0, action_sheet)
+
         if current_urls_by_segment:
-            save_current_urls(STATE_FILE, current_urls_by_segment)
+            save_current_urls(state_file, current_urls_by_segment)
             
         size_mb = excel_path.stat().st_size / (1024 * 1024)
         print(f"Excel workbook created successfully: {excel_path} ({size_mb:.2f} MB)")
@@ -247,7 +272,7 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
         f"Hello,\n\n"
         f"Please find attached the consolidated job scraper report for {datetime.now().strftime('%Y-%m-%d')}.\n\n"
         f"{format_email_summary(stats, has_previous_run=has_previous_run)}"
-        f"Start with the Action Items tab — new/fresh analyst and data roles sorted by priority.\n\n"
+        f"Start with the Action Items tab — curated early-career roles sorted by priority.\n\n"
         f"Best regards,\n"
         f"Jobspy Custom Pipeline"
     )
@@ -287,14 +312,7 @@ def main():
     validate_config(config)
     
     # List of expected CSV outputs mapping to target Excel tabs
-    expected_outputs = {
-        "all_city_remote_jobs.csv": "Remote Jobs",
-        "seattle_jobs.csv": "Seattle Jobs",
-        "seattle_entry_level_jobs.csv": "Seattle Entry Level",
-        "west_coast_jobs.csv": "West Coast Jobs",
-        "ats_direct_jobs.csv": "ATS Direct Jobs",
-        "tech_portals_jobs.csv": "Tech Portals Jobs",
-    }
+    expected_outputs = EXPECTED_OUTPUTS
     
     # Locate scraped jobs results directory
     timestamp_month = datetime.now().strftime("%Y_%m")

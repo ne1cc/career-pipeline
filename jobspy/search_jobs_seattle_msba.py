@@ -121,114 +121,115 @@ def recruits_msba_graduates(title: str, description: str) -> bool:
     return False
 
 
-all_jobs_list = []
+if __name__ == "__main__":
+    all_jobs_list = []
 
-print(f"Starting Seattle MSBA Job Scrape for last 72 hours...")
-print(f"Locations: {locations}")
-print(f"Search Terms: {len(search_terms)} terms\n")
+    print(f"Starting Seattle MSBA Job Scrape for last 72 hours...")
+    print(f"Locations: {locations}")
+    print(f"Search Terms: {len(search_terms)} terms\n")
 
-for loc in locations:
-    print(f"--- {loc} ---")
-    for term in search_terms:
-        print(f"  > Scraping: '{term}' in '{loc}'")
-        try:
-            # We fetch jobs posted within the last 72 hours
-            jobs = scrape_jobs(
-                site_name=[
-                    "indeed",
-                    "linkedin",
-                    "zip_recruiter",
-                    "glassdoor",
-                    "google",
-                ],
-                search_term=term,
-                location=loc,
-                country_indeed="USA",
-                results_wanted=9999,
-                hours_old=72,
-                # Setting this to True so we can parse LinkedIn descriptions for filtering.
-                # If experiencing speed/blocking issues, it can be set to False.
-                linkedin_fetch_description=True, 
-            )
-            
-            if not jobs.empty:
-                jobs["search_keyword"] = term
-                jobs["search_city"] = loc
-                all_jobs_list.append(jobs)
-                print(f"    Found {len(jobs)} jobs (raw)")
-            else:
-                print("    Found 0 jobs")
-        except Exception as e:
-            print(f"    Error scraping {term} in {loc}: {e}")
+    for loc in locations:
+        print(f"--- {loc} ---")
+        for term in search_terms:
+            print(f"  > Scraping: '{term}' in '{loc}'")
+            try:
+                # We fetch jobs posted within the last 72 hours
+                jobs = scrape_jobs(
+                    site_name=[
+                        "indeed",
+                        "linkedin",
+                        "zip_recruiter",
+                        "glassdoor",
+                        "google",
+                    ],
+                    search_term=term,
+                    location=loc,
+                    country_indeed="USA",
+                    results_wanted=9999,
+                    hours_old=72,
+                    # Setting this to True so we can parse LinkedIn descriptions for filtering.
+                    # If experiencing speed/blocking issues, it can be set to False.
+                    linkedin_fetch_description=True, 
+                )
+                
+                if not jobs.empty:
+                    jobs["search_keyword"] = term
+                    jobs["search_city"] = loc
+                    all_jobs_list.append(jobs)
+                    print(f"    Found {len(jobs)} jobs (raw)")
+                else:
+                    print("    Found 0 jobs")
+            except Exception as e:
+                print(f"    Error scraping {term} in {loc}: {e}")
 
-if all_jobs_list:
-    combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
-    combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
-    
-    raw_count = len(combined_jobs)
-    print(f"\nScraped {raw_count} unique raw jobs. Applying filters...")
-    
-    # Apply entry-to-mid level and MSBA recruitment filters
-    filtered_rows = []
-    today = date.today()
-    three_days_ago = today - timedelta(days=3)
-    
-    for idx, row in combined_jobs.iterrows():
-        title = str(row.get("title")) if pd.notna(row.get("title")) else ""
-        description = str(row.get("description")) if pd.notna(row.get("description")) else ""
-        date_posted = row.get("date_posted")
+    if all_jobs_list:
+        combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
+        combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
         
-        # 1. Double check date if present (must be within last 72 hours / 3 days)
-        # Convert date_posted string/date object if necessary
-        is_recent = True
-        if pd.notna(date_posted):
-            if isinstance(date_posted, str):
-                try:
-                    job_date = datetime.strptime(date_posted, "%Y-%m-%d").date()
-                except ValueError:
+        raw_count = len(combined_jobs)
+        print(f"\nScraped {raw_count} unique raw jobs. Applying filters...")
+        
+        # Apply entry-to-mid level and MSBA recruitment filters
+        filtered_rows = []
+        today = date.today()
+        three_days_ago = today - timedelta(days=3)
+        
+        for idx, row in combined_jobs.iterrows():
+            title = str(row.get("title")) if pd.notna(row.get("title")) else ""
+            description = str(row.get("description")) if pd.notna(row.get("description")) else ""
+            date_posted = row.get("date_posted")
+            
+            # 1. Double check date if present (must be within last 72 hours / 3 days)
+            # Convert date_posted string/date object if necessary
+            is_recent = True
+            if pd.notna(date_posted):
+                if isinstance(date_posted, str):
+                    try:
+                        job_date = datetime.strptime(date_posted, "%Y-%m-%d").date()
+                    except ValueError:
+                        job_date = None
+                elif isinstance(date_posted, (date, datetime)):
+                    job_date = date_posted if isinstance(date_posted, date) else date_posted.date()
+                else:
                     job_date = None
-            elif isinstance(date_posted, (date, datetime)):
-                job_date = date_posted if isinstance(date_posted, date) else date_posted.date()
-            else:
-                job_date = None
+                    
+                if job_date and job_date < three_days_ago:
+                    is_recent = False
+                    
+            if not is_recent:
+                continue
                 
-            if job_date and job_date < three_days_ago:
-                is_recent = False
+            # 2. Check level (Entry to Mid)
+            if not is_entry_to_mid_level(title, description):
+                continue
                 
-        if not is_recent:
-            continue
+            # 3. Check if role recruits MSBA / Business Analytics grads
+            if not recruits_msba_graduates(title, description):
+                continue
+                
+            filtered_rows.append(row)
             
-        # 2. Check level (Entry to Mid)
-        if not is_entry_to_mid_level(title, description):
-            continue
+        if filtered_rows:
+            final_jobs = pd.DataFrame(filtered_rows)
+            if "title" in final_jobs.columns:
+                final_jobs.sort_values(
+                    by="title",
+                    key=lambda col: col.astype(str).str.lower(),
+                    ascending=True,
+                    na_position="last",
+                    inplace=True,
+                )
+            print(f"Filters complete. Kept {len(final_jobs)} of {raw_count} jobs.")
             
-        # 3. Check if role recruits MSBA / Business Analytics grads
-        if not recruits_msba_graduates(title, description):
-            continue
-            
-        filtered_rows.append(row)
-        
-    if filtered_rows:
-        final_jobs = pd.DataFrame(filtered_rows)
-        if "title" in final_jobs.columns:
-            final_jobs.sort_values(
-                by="title",
-                key=lambda col: col.astype(str).str.lower(),
-                ascending=True,
-                na_position="last",
-                inplace=True,
+            output_path = OUTPUT_DIR / "seattle_msba_jobs.csv"
+            final_jobs.to_csv(
+                output_path,
+                quoting=csv.QUOTE_NONNUMERIC,
+                escapechar="\\",
+                index=False,
             )
-        print(f"Filters complete. Kept {len(final_jobs)} of {raw_count} jobs.")
-        
-        output_path = OUTPUT_DIR / "seattle_msba_recent_jobs.csv"
-        final_jobs.to_csv(
-            output_path,
-            quoting=csv.QUOTE_NONNUMERIC,
-            escapechar="\\",
-            index=False,
-        )
-        print(f"Saved results to {output_path}")
+            print(f"Saved results to {output_path}")
+        else:
+            print("No jobs matched the level and MSBA graduation recruitment criteria.")
     else:
-        print("No jobs matched the level and MSBA graduation recruitment criteria.")
-else:
-    print("No jobs found in the initial scrape.")
+        print("No jobs found in the initial scrape.")
