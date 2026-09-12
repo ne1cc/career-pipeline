@@ -94,6 +94,17 @@ BASE_DIR = Path(__file__).parent.resolve()
 CONFIG_FILE = BASE_DIR / "pipeline_config.json"
 STATE_FILE = BASE_DIR / ".pipeline_state" / "previous_job_urls.json"
 
+EXPECTED_OUTPUTS = {
+    "all_city_remote_jobs.csv": "Remote Jobs",
+    "seattle_jobs.csv": "Seattle Jobs",
+    "seattle_entry_level_jobs.csv": "Seattle Entry Level",
+    "west_coast_jobs.csv": "West Coast Jobs",
+    "seattle_msba_jobs.csv": "Seattle MSBA Jobs",
+    "west_coast_msba_jobs.csv": "West Coast MSBA Jobs",
+    "ats_direct_jobs.csv": "ATS Direct Jobs",
+    "tech_portals_jobs.csv": "Tech Portals Jobs",
+}
+
 def load_config():
     if not CONFIG_FILE.exists():
         default_config = {
@@ -287,14 +298,7 @@ def main():
     validate_config(config)
     
     # List of expected CSV outputs mapping to target Excel tabs
-    expected_outputs = {
-        "all_city_remote_jobs.csv": "Remote Jobs",
-        "seattle_jobs.csv": "Seattle Jobs",
-        "seattle_entry_level_jobs.csv": "Seattle Entry Level",
-        "west_coast_jobs.csv": "West Coast Jobs",
-        "ats_direct_jobs.csv": "ATS Direct Jobs",
-        "tech_portals_jobs.csv": "Tech Portals Jobs",
-    }
+    expected_outputs = EXPECTED_OUTPUTS
     
     # Locate scraped jobs results directory
     timestamp_month = datetime.now().strftime("%Y_%m")

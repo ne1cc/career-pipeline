@@ -7,19 +7,36 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 
+BASE_DIR = Path(__file__).parent.resolve()
+JOBSPY_DIR = BASE_DIR / "jobspy"
+
+SCRIPTS = [
+    JOBSPY_DIR / "search_jobs_remote.py",
+    JOBSPY_DIR / "search_jobs_seattle.py",
+    JOBSPY_DIR / "search_jobs_seattle_entry_level.py",
+    JOBSPY_DIR / "search_jobs_west.py",
+    JOBSPY_DIR / "search_jobs_seattle_msba.py",
+    JOBSPY_DIR / "search_jobs_msba_west.py",
+    JOBSPY_DIR / "search_jobs_ats.py",
+    JOBSPY_DIR / "search_jobs_portals.py",
+]
+
+EXPECTED_OUTPUTS = {
+    "search_jobs_remote.py": "all_city_remote_jobs.csv",
+    "search_jobs_seattle.py": "seattle_jobs.csv",
+    "search_jobs_seattle_entry_level.py": "seattle_entry_level_jobs.csv",
+    "search_jobs_west.py": "west_coast_jobs.csv",
+    "search_jobs_seattle_msba.py": "seattle_msba_jobs.csv",
+    "search_jobs_msba_west.py": "west_coast_msba_jobs.csv",
+    "search_jobs_ats.py": "ats_direct_jobs.csv",
+    "search_jobs_portals.py": "tech_portals_jobs.csv",
+}
+
 def main():
     # 1. Define paths
-    base_dir = Path(__file__).parent.resolve()
-    jobspy_dir = base_dir / "jobspy"
-    
-    scripts = [
-        jobspy_dir / "search_jobs_remote.py",
-        jobspy_dir / "search_jobs_seattle.py",
-        jobspy_dir / "search_jobs_seattle_entry_level.py",
-        jobspy_dir / "search_jobs_west.py",
-        jobspy_dir / "search_jobs_ats.py",
-        jobspy_dir / "search_jobs_portals.py",
-    ]
+    base_dir = BASE_DIR
+    jobspy_dir = JOBSPY_DIR
+    scripts = SCRIPTS
     
     # Verify all scripts exist
     for script in scripts:
@@ -146,14 +163,7 @@ def main():
     
     # 6. Show summary of generated results files
     print("\nDiscrete Results Summary:")
-    expected_outputs = {
-        "search_jobs_remote.py": "all_city_remote_jobs.csv",
-        "search_jobs_seattle.py": "seattle_jobs.csv",
-        "search_jobs_seattle_entry_level.py": "seattle_entry_level_jobs.csv",
-        "search_jobs_west.py": "west_coast_jobs.csv",
-        "search_jobs_ats.py": "ats_direct_jobs.csv",
-        "search_jobs_portals.py": "tech_portals_jobs.csv",
-    }
+    expected_outputs = EXPECTED_OUTPUTS
     
     for script_name, csv_name in expected_outputs.items():
         csv_path = results_dir / csv_name
