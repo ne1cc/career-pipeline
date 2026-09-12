@@ -151,6 +151,77 @@ def enrich_dataframe(
     return enriched[front + other]
 
 
+TRACK_A_PATTERN = r"\b(?:analyst|analytics|data|data scientist|statistician|quantitative|analytics engineer|bi\b|bi developer|business intelligence|reporting|insights)\b"
+TRACK_C_PATTERN = r"\b(?:product manager|apm\b|business operations|bizops|operations analyst|project coordinator|strategy & operations|strategy analyst)\b"
+TRACK_B_PATTERN = r"\b(?:software engineer|developer|swe\b|frontend|backend|full stack)\b"
+
+SENIOR_TITLE_PATTERN = r"\b(?:senior|sr\b|sr\.|lead|principal|staff|(?<!product\s)(?<!project\s)manager|director|vp\b|vice president|head of|chief|architect|distinguished|fellow|iii|iv|v)\b"
+HIGH_YOE_PATTERN = r"\b(?:[5-9]|1[0-9])\+\s*(?:years|yrs)\b|\b(?:[6-9]|1[0-9])\s*to\s*[0-9]+\s*(?:years|yrs)\b"
+ENTRY_TITLE_TAG_PATTERN = r"\b(?:new grad|junior|associate|entry level|early career|university|intern|internship|campus)\b"
+
+
+def matches_fresher_track(title: str) -> bool:
+    if not title or pd.isna(title):
+        return False
+    t = str(title).lower()
+    return bool(
+        re.search(TRACK_A_PATTERN, t)
+        or re.search(TRACK_C_PATTERN, t)
+        or (re.search(TRACK_B_PATTERN, t) and re.search(ENTRY_TITLE_TAG_PATTERN, t))
+    )
+
+
+def is_senior_or_high_yoe(title: str, description: str = "") -> bool:
+    t = "" if pd.isna(title) else str(title or "").lower()
+    if re.search(SENIOR_TITLE_PATTERN, t):
+        return True
+    d = "" if pd.isna(description) else str(description or "").lower()
+    if d and re.search(HIGH_YOE_PATTERN, d):
+        return True
+    return False
+
+
+def calculate_fresher_priority_score(row: pd.Series) -> int:
+    score = 0
+    is_new = row.get("is_new", False)
+    if pd.notna(is_new) and bool(is_new):
+        score += 5
+    is_fresh = row.get("is_fresh_post", False)
+    if pd.notna(is_fresh) and bool(is_fresh):
+        score += 3
+
+    title = "" if pd.isna(row.get("title")) else str(row.get("title", "")).lower()
+    if re.search(ENTRY_TITLE_TAG_PATTERN, title):
+        score += 3
+
+    apply_type = "" if pd.isna(row.get("apply_type")) else str(row.get("apply_type", "")).lower()
+    if any(k in apply_type for k in ["direct", "easy apply"]):
+        score += 2
+
+    if re.search(TRACK_A_PATTERN, title):
+        score += 2
+    elif re.search(TRACK_C_PATTERN, title) or re.search(TRACK_B_PATTERN, title):
+        score += 1
+
+    return score
+
+
+def deduplicate_action_items(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    df = df.copy()
+    # Prefer Direct ATS and higher priority scores
+    if "_score" in df.columns:
+        df = df.sort_values(by=["_score"], ascending=False)
+    # Deduplicate on normalized title and company
+    if "title" in df.columns and "company" in df.columns:
+        clean_title = df["title"].astype(str).str.lower().str.replace(r"[^\w\s]", "", regex=True)
+        clean_company = df["company"].astype(str).str.lower().str.replace(r"[^\w\s]", "", regex=True)
+        df["_dedup_key"] = clean_title + "::" + clean_company
+        df = df.drop_duplicates(subset=["_dedup_key"], keep="first").drop(columns=["_dedup_key"])
+    return df
+
+
 def analyst_mask(df: pd.DataFrame) -> pd.Series:
     if "title" not in df.columns:
         return pd.Series(False, index=df.index)
@@ -158,12 +229,21 @@ def analyst_mask(df: pd.DataFrame) -> pd.Series:
 
 
 def build_action_items_sheet(segment_frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Rows worth applying to today: analyst/data filter + new or freshly posted."""
     pieces = []
     for segment_name, df in segment_frames.items():
         if df.empty:
             continue
-        subset = df[analyst_mask(df) & (df["is_new"] | df["is_fresh_post"])].copy()
+        desc_col = "description" if "description" in df.columns else None
+
+        # Filter for fresher track & exclude senior
+        qualifying = []
+        for idx, row in df.iterrows():
+            title = "" if pd.isna(row.get("title")) else str(row.get("title", ""))
+            desc = "" if (not desc_col or pd.isna(row.get(desc_col))) else str(row.get(desc_col, ""))
+            if matches_fresher_track(title) and not is_senior_or_high_yoe(title, desc):
+                qualifying.append(idx)
+
+        subset = df.loc[qualifying].copy()
         if subset.empty:
             continue
         subset.insert(0, "segment", segment_name)
@@ -173,20 +253,15 @@ def build_action_items_sheet(segment_frames: dict[str, pd.DataFrame]) -> pd.Data
         return pd.DataFrame(columns=["segment", *ENRICHMENT_COLUMNS])
 
     combined = pd.concat(pieces, ignore_index=True)
-    easy_apply_rank = combined["apply_type"].str.contains("Easy Apply", case=False, na=False)
-    combined["_sort"] = (
-        combined["is_new"].astype(int) * 4
-        + combined["is_fresh_post"].astype(int) * 2
-        + easy_apply_rank.astype(int)
-    )
-    if "title" in combined.columns:
-        combined["_title_sort"] = combined["title"].astype(str).str.lower()
-        combined = combined.sort_values(
-            by=["_sort", "_title_sort"],
-            ascending=[False, True],
-        ).drop(columns=["_sort", "_title_sort"])
+    combined["_score"] = combined.apply(calculate_fresher_priority_score, axis=1)
+    combined = deduplicate_action_items(combined)
+
+    if "date_posted" in combined.columns:
+        combined["_date_sort"] = pd.to_datetime(combined["date_posted"], errors="coerce")
+        combined = combined.sort_values(by=["_score", "_date_sort"], ascending=[False, False]).drop(columns=["_score", "_date_sort"])
     else:
-        combined = combined.sort_values("_sort", ascending=False).drop(columns="_sort")
+        combined = combined.sort_values(by="_score", ascending=False).drop(columns="_score")
+
     return combined.reset_index(drop=True)
 
 
