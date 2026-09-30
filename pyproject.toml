@@ -17,7 +17,7 @@ include = "jobspy"
 line-length = 88
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.11,<3.14"
 requests = "^2.31.0"
 beautifulsoup4 = "^4.12.2"
 pandas = "^2.1.0"
@@ -36,3 +36,7 @@ jupyter = "^1.0.0"
 black = "*"
 pre-commit = "*"
 pytest = "^9.1.1"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+

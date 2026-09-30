@@ -155,6 +155,37 @@ TRACK_A_PATTERN = r"\b(?:analyst|analytics|data|data scientist|statistician|quan
 TRACK_C_PATTERN = r"\b(?:product manager|apm\b|business operations|bizops|operations analyst|project coordinator|strategy & operations|strategy and operations|strategy analyst)\b"
 TRACK_B_PATTERN = r"\b(?:software engineer|developer|swe\b|frontend|backend|full stack)\b"
 
+DEVELOPER_PATTERN = (
+    r"\b(?:"
+    r"software engineer|software developer|software dev\b|swe\b|sde\b|"
+    r"developer|programmer|"
+    r"frontend|front end|front-end|"
+    r"backend|back end|back-end|"
+    r"full stack|fullstack|full-stack|"
+    r"web developer|mobile developer|ios developer|android developer|"
+    r"cloud engineer|cloud developer|devops|sre\b|site reliability|"
+    r"platform engineer|infrastructure engineer|systems engineer|systems software|"
+    r"application developer|application engineer|apps developer|"
+    r"firmware engineer|embedded software|embedded engineer|"
+    r"machine learning engineer|ml engineer|ai engineer"
+    r")\b"
+)
+SECURITY_PATTERN = (
+    r"\b(?:"
+    r"security|cybersecurity|cyber security|infosec|information security|"
+    r"application security|appsec|cloud security|network security|"
+    r"security engineer|security analyst|soc analyst|security operations|"
+    r"penetration tester|pentester|vulnerability|threat intelligence|"
+    r"incident response|cyber defense|product security"
+    r")\b"
+)
+DEV_EXCLUSION_PATTERN = (
+    r"\b(?:"
+    r"business development|sales development|real estate development|"
+    r"donor development|fund development|biz dev|sdr\b|bdr\b"
+    r")\b"
+)
+
 SENIOR_TITLE_PATTERN = r"\b(?:senior|sr\b|sr\.|lead|principal|staff|(?<!product\s)(?<!project\s)manager|director|vp\b|vice president|head of|chief|architect|distinguished|fellow|iii|iv|v)\b"
 HIGH_YOE_PATTERN = r"\b(?:[5-9]|1[0-9])\+\s*(?:years|yrs)\b|\b(?:[5-9]|1[0-9])\s*(?:to|-|–)\s*[0-9]+\s*(?:years|yrs)\b"
 ENTRY_TITLE_TAG_PATTERN = r"\b(?:new grad|junior|associate|entry level|early career|university|intern|internship|campus)\b"
@@ -171,6 +202,17 @@ def matches_fresher_track(title: str) -> bool:
     )
 
 
+def matches_developer_security_track(title: str, description: str = "") -> bool:
+    if not title or pd.isna(title):
+        return False
+    t = str(title).lower()
+    if re.search(DEV_EXCLUSION_PATTERN, t):
+        return False
+    if not (re.search(DEVELOPER_PATTERN, t) or re.search(SECURITY_PATTERN, t)):
+        return False
+    return not is_senior_or_high_yoe(t, description)
+
+
 def is_senior_or_high_yoe(title: str, description: str = "") -> bool:
     t = "" if pd.isna(title) else str(title or "").lower()
     if re.search(SENIOR_TITLE_PATTERN, t):
@@ -179,6 +221,7 @@ def is_senior_or_high_yoe(title: str, description: str = "") -> bool:
     if d and re.search(HIGH_YOE_PATTERN, d):
         return True
     return False
+
 
 
 def calculate_fresher_priority_score(row: pd.Series) -> int:
@@ -201,6 +244,33 @@ def calculate_fresher_priority_score(row: pd.Series) -> int:
     if re.search(TRACK_A_PATTERN, title):
         score += 2
     elif re.search(TRACK_C_PATTERN, title) or re.search(TRACK_B_PATTERN, title):
+        score += 1
+
+    return score
+
+
+def calculate_developer_security_priority_score(row: pd.Series) -> int:
+    score = 0
+    is_new = row.get("is_new", False)
+    if pd.notna(is_new) and bool(is_new):
+        score += 5
+    is_fresh = row.get("is_fresh_post", False)
+    if pd.notna(is_fresh) and bool(is_fresh):
+        score += 3
+
+    title = "" if pd.isna(row.get("title")) else str(row.get("title", "")).lower()
+    if re.search(ENTRY_TITLE_TAG_PATTERN, title):
+        score += 4
+    elif re.search(r"\b(?:i\b|1\b|associate)\b", title):
+        score += 2
+
+    apply_type = "" if pd.isna(row.get("apply_type")) else str(row.get("apply_type", "")).lower()
+    if any(k in apply_type for k in ["direct", "easy apply"]):
+        score += 2
+
+    if re.search(SECURITY_PATTERN, title):
+        score += 2
+    if re.search(DEVELOPER_PATTERN, title):
         score += 1
 
     return score
@@ -265,6 +335,42 @@ def build_action_items_sheet(segment_frames: dict[str, pd.DataFrame]) -> pd.Data
     return combined.reset_index(drop=True)
 
 
+def build_developer_security_sheet(segment_frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    pieces = []
+    for segment_name, df in segment_frames.items():
+        if df.empty:
+            continue
+        desc_col = "description" if "description" in df.columns else None
+
+        title_series = df["title"].fillna("").astype(str) if "title" in df.columns else pd.Series("", index=df.index)
+        desc_series = df[desc_col].fillna("").astype(str) if desc_col else pd.Series("", index=df.index)
+        mask = [
+            matches_developer_security_track(t, d)
+            for t, d in zip(title_series, desc_series)
+        ]
+
+        subset = df[mask].copy()
+        if subset.empty:
+            continue
+        subset.insert(0, "segment", segment_name)
+        pieces.append(subset)
+
+    if not pieces:
+        return pd.DataFrame(columns=["segment", *ENRICHMENT_COLUMNS])
+
+    combined = pd.concat(pieces, ignore_index=True)
+    combined["_score"] = combined.apply(calculate_developer_security_priority_score, axis=1)
+    combined = deduplicate_action_items(combined)
+
+    if "date_posted" in combined.columns:
+        combined["_date_sort"] = pd.to_datetime(combined["date_posted"], errors="coerce")
+        combined = combined.sort_values(by=["_score", "_date_sort"], ascending=[False, False]).drop(columns=["_score", "_date_sort"])
+    else:
+        combined = combined.sort_values(by="_score", ascending=False).drop(columns="_score")
+
+    return combined.reset_index(drop=True)
+
+
 def apply_row_highlights(ws, df: pd.DataFrame) -> None:
     """Highlight full rows for new listings and recently posted jobs."""
     if df.empty or ws.max_row < 2:
@@ -294,6 +400,7 @@ def summarize_enrichment(segment_frames: dict[str, pd.DataFrame]) -> dict[str, i
         "easy_apply": 0,
         "direct_ats": 0,
         "action_items": 0,
+        "developer_security": 0,
     }
     for df in segment_frames.values():
         if df.empty:
@@ -312,6 +419,8 @@ def summarize_enrichment(segment_frames: dict[str, pd.DataFrame]) -> dict[str, i
             )
     action_items = build_action_items_sheet(segment_frames)
     totals["action_items"] = len(action_items)
+    dev_sec_items = build_developer_security_sheet(segment_frames)
+    totals["developer_security"] = len(dev_sec_items)
     return totals
 
 
@@ -322,10 +431,12 @@ def format_email_summary(stats: dict[str, int], *, has_previous_run: bool) -> st
         else "- New since last run: (first run — all jobs treated as baseline)\n"
     )
     direct_ats_count = stats.get("direct_ats", 0)
+    dev_sec_count = stats.get("developer_security", 0)
     return (
         f"Quick stats:\n"
         f"- Total Raw Postings: {stats.get('total_jobs', 0)}\n"
         f"- Action Items (Fresher Spotlight): {stats.get('action_items', 0)}\n"
+        f"- Developer & Security Roles: {dev_sec_count}\n"
         f"- Direct ATS listings: {direct_ats_count}\n"
         f"{new_line}"
         f"- Posted in last {FRESH_POST_DAYS} days: {stats.get('fresh_posts', 0)}\n"
