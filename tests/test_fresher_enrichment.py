@@ -2,10 +2,13 @@ import pandas as pd
 import pytest
 from pipeline_enrichment import (
     matches_fresher_track,
+    matches_developer_security_track,
     is_senior_or_high_yoe,
     calculate_fresher_priority_score,
+    calculate_developer_security_priority_score,
     deduplicate_action_items,
     build_action_items_sheet,
+    build_developer_security_sheet,
 )
 
 
@@ -128,4 +131,102 @@ def test_empty_action_items_sheet():
     assert res_empty_df.empty
     assert "segment" in res_empty_df.columns
     assert deduplicate_action_items(pd.DataFrame()).empty
+
+
+def test_matches_developer_security_track():
+    # Developer positive matches
+    assert matches_developer_security_track("Junior Software Engineer")
+    assert matches_developer_security_track("Associate Software Engineer")
+    assert matches_developer_security_track("Software Developer")
+    assert matches_developer_security_track("Full Stack Developer")
+    assert matches_developer_security_track("Frontend Engineer")
+    assert matches_developer_security_track("Backend Developer")
+    assert matches_developer_security_track("Cloud Engineer")
+    assert matches_developer_security_track("DevOps Engineer")
+    assert matches_developer_security_track("Site Reliability Engineer")
+    assert matches_developer_security_track("Embedded Software Engineer")
+    assert matches_developer_security_track("Software Engineer I")
+
+    # Security positive matches
+    assert matches_developer_security_track("Cybersecurity Analyst")
+    assert matches_developer_security_track("Information Security Analyst")
+    assert matches_developer_security_track("Junior Security Engineer")
+    assert matches_developer_security_track("SOC Analyst")
+    assert matches_developer_security_track("Application Security Engineer")
+    assert matches_developer_security_track("Cloud Security Engineer")
+
+    # Exclusions (Senior / Management / Non-technical)
+    assert not matches_developer_security_track("Senior Software Engineer")
+    assert not matches_developer_security_track("Lead Cloud Architect")
+    assert not matches_developer_security_track("Principal Security Engineer")
+    assert not matches_developer_security_track("Engineering Manager")
+    assert not matches_developer_security_track("Director of Security")
+    assert not matches_developer_security_track("Business Development Representative")
+    assert not matches_developer_security_track("Sales Development Representative")
+    assert not matches_developer_security_track("Software Engineer", "Must have 7+ years of experience")
+    assert not matches_developer_security_track("Registered Nurse")
+    assert not matches_developer_security_track("Truck Driver")
+
+
+def test_developer_security_scoring_and_sheet():
+    df = pd.DataFrame([
+        {
+            "title": "Senior Security Engineer",
+            "description": "5+ years",
+            "is_new": True,
+            "is_fresh_post": True,
+            "apply_type": "Company Site",
+            "job_url": "http://1",
+            "company": "Corp A",
+        },
+        {
+            "title": "Junior Software Engineer",
+            "description": "0-1 years",
+            "is_new": True,
+            "is_fresh_post": True,
+            "apply_type": "Greenhouse Direct",
+            "job_url": "http://2",
+            "company": "Corp B",
+        },
+        {
+            "title": "Cybersecurity Analyst",
+            "description": "Bachelor's degree or internship experience",
+            "is_new": False,
+            "is_fresh_post": True,
+            "apply_type": "Lever Direct",
+            "job_url": "http://3",
+            "company": "Corp C",
+        },
+        {
+            "title": "Sales Development Representative",
+            "description": "Sales",
+            "is_new": True,
+            "is_fresh_post": True,
+            "apply_type": "Company Site",
+            "job_url": "http://4",
+            "company": "Corp D",
+        },
+    ])
+    result = build_developer_security_sheet({"Remote": df})
+    # Senior & Sales Development should be filtered out
+    assert len(result) == 2
+    titles = result["title"].tolist()
+    assert "Junior Software Engineer" in titles
+    assert "Cybersecurity Analyst" in titles
+    assert "Senior Security Engineer" not in titles
+    assert "Sales Development Representative" not in titles
+
+    # Junior Software Engineer should rank first due to is_new (5) + is_fresh (3) + junior tag (4)
+    assert result.iloc[0]["title"] == "Junior Software Engineer"
+
+
+def test_empty_developer_security_sheet():
+    res_empty_dict = build_developer_security_sheet({})
+    assert res_empty_dict.empty
+    assert "segment" in res_empty_dict.columns
+
+    res_empty_df = build_developer_security_sheet({"Empty": pd.DataFrame()})
+    assert res_empty_df.empty
+    assert "segment" in res_empty_df.columns
+
 

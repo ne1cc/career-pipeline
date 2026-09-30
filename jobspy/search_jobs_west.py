@@ -143,11 +143,23 @@ search_terms = [
     "Project Coordinator",
     "Strategy & Operations Associate",
 
-    # Junior Software Engineering Roles
+    # Junior Software Engineering & Developer Roles
     "Associate Software Engineer",
     "Junior Software Engineer",
     "Software Engineer - Early Career",
     "Software Engineer - New Grad",
+    "Junior Developer",
+    "Junior Full Stack Developer",
+    "Junior Frontend Engineer",
+    "Junior Backend Engineer",
+    "Junior DevOps Engineer",
+
+    # Security Roles
+    "Junior Security Engineer",
+    "Associate Security Engineer",
+    "Cybersecurity Analyst",
+    "Information Security Analyst",
+    "SOC Analyst",
 ]
 
 if __name__ == "__main__":

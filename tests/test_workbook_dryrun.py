@@ -14,6 +14,9 @@ def test_build_excel_workbook_end_to_end(tmp_path):
         {"title": "Junior Data Analyst", "company": "Co A", "job_url": "https://a.com/job1", "date_posted": "2026-09-10", "site": "linkedin"},
         {"title": "Senior Data Scientist", "company": "Co B", "job_url": "https://b.com/job2", "date_posted": "2026-09-08", "site": "indeed"},
         {"title": "Analytics Engineer", "company": "Co C", "job_url": "https://c.com/job3", "date_posted": "2026-09-11", "site": "ats"},
+        {"title": "Junior Software Engineer", "company": "Co D", "job_url": "https://d.com/job4", "date_posted": "2026-09-11", "site": "ats"},
+        {"title": "Cybersecurity Analyst", "company": "Co E", "job_url": "https://e.com/job5", "date_posted": "2026-09-11", "site": "ats"},
+        {"title": "Senior Security Engineer", "company": "Co F", "job_url": "https://f.com/job6", "date_posted": "2026-09-11", "site": "indeed"},
     ]
     df = pd.DataFrame(sample_jobs)
     for csv_name in EXPECTED_OUTPUTS.keys():
@@ -23,14 +26,18 @@ def test_build_excel_workbook_end_to_end(tmp_path):
     excel_path, stats, has_previous_run = build_excel_workbook(results_dir, EXPECTED_OUTPUTS, state_file=state_file)
     assert excel_path.exists()
     assert stats["total_jobs"] == len(EXPECTED_OUTPUTS) * len(sample_jobs)
-    assert stats["action_items"] == 2
-    assert stats["direct_ats"] == len(EXPECTED_OUTPUTS)
+    # Action Items: Junior Data Analyst, Analytics Engineer, Junior Software Engineer, Cybersecurity Analyst (analyst match)
+    assert stats["action_items"] == 4
+    # Developer & Security: Junior Software Engineer, Cybersecurity Analyst
+    assert stats["developer_security"] == 2
+    assert stats["direct_ats"] == 3 * len(EXPECTED_OUTPUTS)
 
     wb = openpyxl.load_workbook(excel_path)
     sheet_names = wb.sheetnames
 
-    # Verify Tab 1 is Action Items
+    # Verify Tab 1 is Action Items, Tab 2 is Developer & Security
     assert sheet_names[0] == "Action Items"
+    assert sheet_names[1] == "Developer & Security"
 
     # Verify all raw tabs exist
     for target_tab in EXPECTED_OUTPUTS.values():
@@ -43,15 +50,23 @@ def test_build_excel_workbook_end_to_end(tmp_path):
     all_action_titles = [row[title_idx] for row in ws_action.iter_rows(min_row=2, values_only=True)]
     assert "Senior Data Scientist" not in all_action_titles
     assert "Analytics Engineer" in all_action_titles
-    all_text = " ".join([str(val) for row in ws_action.iter_rows(values_only=True) for val in row if val])
-    assert "Senior Data Scientist" not in all_text
-    assert "Analytics Engineer" in all_text
+
+    # Verify Developer & Security tab contents
+    ws_dev_sec = wb["Developer & Security"]
+    dev_header = [cell.value for cell in ws_dev_sec[1]]
+    dev_title_idx = dev_header.index("title")
+    all_dev_titles = [row[dev_title_idx] for row in ws_dev_sec.iter_rows(min_row=2, values_only=True)]
+    assert "Junior Software Engineer" in all_dev_titles
+    assert "Cybersecurity Analyst" in all_dev_titles
+    assert "Senior Security Engineer" not in all_dev_titles
+    assert "Junior Data Analyst" not in all_dev_titles
 
 
 def test_email_summary_highlights():
     sample_df = pd.DataFrame([
         {"title": "Junior Data Analyst", "company": "Co A", "job_url": "https://a.com/job1", "date_posted": "2026-09-10", "site": "ats", "apply_type": "Company ATS Direct", "is_new": True, "is_fresh_post": True},
         {"title": "Analytics Engineer", "company": "Co B", "job_url": "https://b.com/job2", "date_posted": "2026-09-11", "site": "linkedin", "apply_type": "LinkedIn Easy Apply", "is_new": True, "is_fresh_post": True},
+        {"title": "Junior Software Engineer", "company": "Co C", "job_url": "https://c.com/job3", "date_posted": "2026-09-11", "site": "ats", "apply_type": "Company ATS Direct", "is_new": True, "is_fresh_post": True},
     ])
     segment_frames = {"Test Segment": sample_df}
     stats = summarize_enrichment(segment_frames)
@@ -59,4 +74,5 @@ def test_email_summary_highlights():
 
     assert "Total Raw Postings" in summary
     assert "Action Items (Fresher Spotlight)" in summary
+    assert "Developer & Security Roles" in summary
     assert "Direct ATS" in summary

@@ -81,6 +81,12 @@ DEFAULT_SEARCH_TERMS = [
     "New Grad Software Engineer",
     "Junior Data Analyst",
     "Early Career Analyst",
+    "Junior Software Engineer",
+    "Associate Software Engineer",
+    "Junior Developer",
+    "Junior Security Engineer",
+    "Cybersecurity Analyst",
+    "SOC Analyst",
 ]
 SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
@@ -92,7 +98,10 @@ ROLE_REGEX = re.compile(
     r"reporting analyst|healthcare analyst|clinical data|health informatics|"
     r"financial analyst|market research|marketing analytics|supply chain analyst|"
     r"pricing analyst|revenue analyst|operations analyst|product analyst|growth analyst|"
-    r"risk analyst|strategy consultant"
+    r"risk analyst|strategy consultant|"
+    r"software engineer|software developer|swe|developer|programmer|"
+    r"cybersecurity|infosec|security engineer|security analyst|soc analyst|"
+    r"devops|cloud engineer|sre\b"
     r")\b",
     re.IGNORECASE,
 )

@@ -48,6 +48,21 @@ search_terms = [
     "Technology Advisory Associate",
     "Entry Level Strategy Consultant",
     "Junior Business Analytics Consultant",
+
+    # Software Engineering & Developer (Entry Level)
+    "Associate Software Engineer",
+    "Junior Software Engineer",
+    "Entry Level Software Engineer",
+    "Junior Developer",
+    "Junior Full Stack Developer",
+    "Entry Level Software Developer",
+
+    # Security (Entry Level)
+    "Junior Security Engineer",
+    "Associate Security Engineer",
+    "Entry Level Security Engineer",
+    "Cybersecurity Analyst",
+    "SOC Analyst",
 ]
 
 all_jobs_list = []

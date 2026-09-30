@@ -62,6 +62,12 @@ DEFAULT_SEARCH_TERMS = [
     "New Grad Software Engineer",
     "Junior Data Analyst",
     "Early Career Analyst",
+    "Junior Software Engineer",
+    "Associate Software Engineer",
+    "Junior Developer",
+    "Junior Security Engineer",
+    "Cybersecurity Analyst",
+    "SOC Analyst",
 ]
 SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 

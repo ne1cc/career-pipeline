@@ -17,6 +17,7 @@ from openpyxl.utils import get_column_letter
 from pipeline_enrichment import (
     apply_row_highlights,
     build_action_items_sheet,
+    build_developer_security_sheet,
     enrich_dataframe,
     format_email_summary,
     load_previous_urls,
@@ -213,6 +214,9 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
         action_items = build_action_items_sheet(segment_frames)
         action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
 
+        dev_sec_items = build_developer_security_sheet(segment_frames)
+        dev_sec_prepared = prepare_dataframe(dev_sec_items) if not dev_sec_items.empty else dev_sec_items
+
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
             # Tab 1: Front-load Action Items
             print(f" - Adding tab 'Action Items' (Fresher Spotlight)...")
@@ -220,6 +224,13 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
             if not action_items_prepared.empty:
                 format_worksheet(writer.sheets["Action Items"], action_items_prepared)
             print(f"   -> Action Items tab: {len(action_items_prepared)} prioritized listings")
+
+            # Tab 2: Developer & Security Roles
+            print(f" - Adding tab 'Developer & Security'...")
+            dev_sec_prepared.to_excel(writer, sheet_name="Developer & Security", index=False)
+            if not dev_sec_prepared.empty:
+                format_worksheet(writer.sheets["Developer & Security"], dev_sec_prepared)
+            print(f"   -> Developer & Security tab: {len(dev_sec_prepared)} prioritized listings")
 
             # Subsequent tabs: raw segment tabs and filtered tabs
             for sheet_tab, filtered_sheet_tab, df_prepared, filtered_df in prepared_tabs:
@@ -235,11 +246,13 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
                 print(f"   -> {new_count} new, {fresh_count} fresh posts, apply types added")
 
             # Reorder safety check using openpyxl
-            if "Action Items" in writer.book.sheetnames:
-                action_idx = writer.book.sheetnames.index("Action Items")
-                if action_idx != 0:
-                    action_sheet = writer.book._sheets.pop(action_idx)
-                    writer.book._sheets.insert(0, action_sheet)
+            desired_front_tabs = ["Action Items", "Developer & Security"]
+            for target_idx, tab_name in enumerate(desired_front_tabs):
+                if tab_name in writer.book.sheetnames:
+                    current_idx = writer.book.sheetnames.index(tab_name)
+                    if current_idx != target_idx:
+                        sheet_obj = writer.book._sheets.pop(current_idx)
+                        writer.book._sheets.insert(target_idx, sheet_obj)
 
         if current_urls_by_segment:
             save_current_urls(state_file, current_urls_by_segment)
@@ -272,7 +285,7 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
         f"Hello,\n\n"
         f"Please find attached the consolidated job scraper report for {datetime.now().strftime('%Y-%m-%d')}.\n\n"
         f"{format_email_summary(stats, has_previous_run=has_previous_run)}"
-        f"Start with the Action Items tab — curated early-career roles sorted by priority.\n\n"
+        f"Start with the Action Items and Developer & Security tabs — curated early-career roles sorted by priority.\n\n"
         f"Best regards,\n"
         f"Jobspy Custom Pipeline"
     )
