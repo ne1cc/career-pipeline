@@ -104,6 +104,11 @@ def main():
         # to ensure it uses the active virtualenv/poetry environment.
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{base_dir}:{existing_pythonpath}" if existing_pythonpath else str(base_dir)
+        if "/home/linuxbrew/.linuxbrew/opt/openblas/lib" not in env.get("LD_LIBRARY_PATH", ""):
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = f"/home/linuxbrew/.linuxbrew/opt/openblas/lib:{existing_ld}" if existing_ld else "/home/linuxbrew/.linuxbrew/opt/openblas/lib"
         p = subprocess.Popen(
             [sys.executable, str(script)],
             stdout=lf,
