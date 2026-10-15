@@ -137,7 +137,8 @@ def uv_invocation(repo_root: Path, uv_path: str) -> str:
 
 def render_plist(repo_root: Path, uv_path: str) -> str:
     run = uv_invocation(repo_root, uv_path)
-    cmd = f"cd '{repo_root}' && {run} ingest && {run} sync-mail"
+    # `;` not `&&`: a missing CSV folder must not stop mail sync.
+    cmd = f"cd '{repo_root}' && {{ {run} ingest; {run} sync-mail; }}"
     return plistlib.dumps({
         "Label": AGENT_LABEL,
         "ProgramArguments": ["/bin/zsh", "-lc", cmd],
