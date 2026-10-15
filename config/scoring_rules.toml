@@ -1,0 +1,41 @@
+[resumes]
+swe_backend = "~/resumes/swe_backend_v1.pdf"
+data_eng = "~/resumes/data_eng_lakehouse_v1.pdf"
+analytics_msba = "~/resumes/analytics_msba_v1.pdf"
+
+[penalties]
+points = 45.0
+title_contains = ["staff", "principal", "director", "vp", "senior", "sr.", "lead", "manager", "8+ years", "10+ years"]
+
+[boosts]
+points = 15.0
+title_contains = ["intern", "new grad", "early career", "junior", "associate", "i", "1"]
+
+# A keyword found in the title counts double.
+[weights.data_eng]
+duckdb = 4.0
+polars = 4.0
+dbt = 4.0
+pyspark = 4.0
+"delta lake" = 4.0
+sql = 2.0
+docker = 1.0
+
+[weights.swe_backend]
+fastapi = 4.0
+rust = 3.0
+go = 3.0
+typescript = 3.0
+docker = 2.0
+sql = 1.0
+
+[weights.analytics_msba]
+"a/b" = 4.0
+experimentation = 4.0
+analytics = 3.0
+sql = 2.0
+
+[outreach]
+template = """Hi — I'm Alex, and I just applied for the {title} role at {company}. \
+My background maps closely to the {resume_archetype} side of the work, and I'd value hearing how your team approaches it. \
+Would you be open to a 10-minute chat, or pointing me to the right person?"""
