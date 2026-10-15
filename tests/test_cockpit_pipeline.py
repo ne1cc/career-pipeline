@@ -125,7 +125,7 @@ def test_y_copies_outreach_to_clipboard(db_path, calls):
     asyncio.run(drive())
     pb = [c for c in calls if c["cmd"] == ["/usr/bin/pbcopy"]]
     assert pb and pb[-1]["input"].decode() == expected
-    assert "Stripe" in expected and "Software Engineer I" in expected and job["resume_archetype"] in expected
+    assert "Stripe" in expected and "Software Engineer I" in expected and "{" not in expected
 
 
 def test_install_agent_plist_is_valid_xml_with_absolute_paths():
@@ -137,3 +137,31 @@ def test_install_agent_plist_is_valid_xml_with_absolute_paths():
     assert plist["StartCalendarInterval"] == [{"Hour": 8, "Minute": 30}, {"Hour": 13, "Minute": 30}]
     assert plist["WorkingDirectory"].startswith("/") and "/Users/alex/.local/bin/uv run --no-project" in cmd and "python -m cockpit.cli ingest" in cmd
     assert plist["StandardOutPath"] == "/tmp/jobcockpit.out.log"
+
+
+def test_title_decides_archetype_over_default():
+    rules = load_rules()
+    assert score_job("Software Engineer I", "marketing analytics dashboards", rules).archetype.value == "swe_backend"
+    assert score_job("Analytics Engineer, Associate", "", rules).archetype.value == "data_eng"
+    assert score_job("Business Analyst I", "", rules).archetype.value == "analytics_msba"
+
+
+def test_location_boost_tiers():
+    rules = load_rules()
+    base = score_job("Data Analyst", "", rules).score
+    assert score_job("Data Analyst", "", rules, "Seattle, WA, US").score == base + 10
+    assert score_job("Data Analyst", "", rules, "", is_remote=True).score == base + 10
+    assert score_job("Data Analyst", "", rules, "Los Angeles, CA, US").score == base + 5
+    assert score_job("Data Analyst", "", rules, "Washington, DC, US").score == base  # DC is not WA
+
+
+def test_min_score_hides_queued_noise_and_rescore_updates(db_path):
+    df = frame({}, {"company": "Acme", "title": "Senior Staff Engineer"})
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, df)
+        assert [j["company"] for j in db.fetch_jobs(con, "QUEUED", floor=10)] == ["Stripe"]
+        assert db.scoreboard(con)["queued"] == 1
+        con.execute("UPDATE jobs_master SET priority_score = 0, resume_archetype = 'analytics_msba'")
+        assert db.rescore_queued(con) == 2
+        stripe = [j for j in db.fetch_jobs(con) if j["company"] == "Stripe"][0]
+    assert stripe["resume_archetype"] == "swe_backend" and stripe["priority_score"] > 10

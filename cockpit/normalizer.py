@@ -55,23 +55,42 @@ class Scored:
     matched: list[str] = field(default_factory=list)
 
 
-def score_job(title: str, description: str, rules: Mapping[str, Any]) -> Scored:
+_TITLE_ORDER = (ResumeArchetype.DATA_ENG, ResumeArchetype.ANALYTICS_MSBA, ResumeArchetype.SWE_BACKEND)
+
+
+def _location_points(location: str, is_remote: bool, rules: Mapping[str, Any]) -> float:
+    loc, cfg = location.lower(), rules["location"]
+    if is_remote or any(_has(loc, k) for k in cfg["primary"]):
+        return cfg["primary_points"]
+    if any(_has(loc, k) for k in cfg["secondary"]):
+        return cfg["secondary_points"]
+    return 0.0
+
+
+def score_job(
+    title: str, description: str, rules: Mapping[str, Any], location: str = "", is_remote: bool = False
+) -> Scored:
     t, d = title.lower(), description.lower()
-    best: tuple[float, ResumeArchetype, list[str]] | None = None
-    for arch in ResumeArchetype:  # enum order = tie-break order
+    totals: dict[ResumeArchetype, tuple[float, list[str]]] = {}
+    for arch in ResumeArchetype:
         total, hits = 0.0, []
         for kw, w in rules["weights"].get(arch.value, {}).items():
             in_title = _has(t, kw)
             if in_title or _has(d, kw):
                 total += w * (2 if in_title else 1)
                 hits.append(kw)
-        if best is None or total > best[0]:
-            best = (total, arch, hits)
-    total, arch, hits = best  # type: ignore[misc]
+        totals[arch] = (total, hits)
+    from_title = next(
+        (a for a in _TITLE_ORDER if any(_has(t, k) for k in rules["title_archetype"].get(a.value, []))), None
+    )
+    # max() keeps the first archetype on ties, so enum order is the tie-break.
+    arch = from_title or max(ResumeArchetype, key=lambda a: totals[a][0])
+    total, hits = totals[arch]
     if any(_has(t, k) for k in rules["penalties"]["title_contains"]):
         total -= rules["penalties"]["points"]
     if any(_has(t, k) for k in rules["boosts"]["title_contains"]):
         total += rules["boosts"]["points"]
+    total += _location_points(location, is_remote, rules)
     return Scored(total, arch, resolve_resume(rules["resumes"][arch.value]), hits)
 
 
@@ -87,7 +106,9 @@ def normalize_row(row: Mapping[str, Any], rules: Mapping[str, Any]) -> JobRow | 
         return None
     c_norm = norm_company(company)
     description = _text(row.get("description")) or ""
-    scored = score_job(title, description, rules)
+    location = _text(row.get("location"))
+    is_remote = row.get("is_remote") in (True, "True", "true", 1)
+    scored = score_job(title, description, rules, location or "", is_remote)
     posted = row.get("date_posted")
     return JobRow(
         dedup_key=dedup_key(c_norm, norm_title(title)),
@@ -96,7 +117,8 @@ def normalize_row(row: Mapping[str, Any], rules: Mapping[str, Any]) -> JobRow | 
         company=company,
         company_norm=c_norm,
         title=title,
-        location=_text(row.get("location")),
+        location=location,
+        is_remote=is_remote,
         apply_url=apply_url,
         description=description or None,
         date_posted=None if posted is None or posted != posted else str(posted),

@@ -31,6 +31,7 @@ class JobRow(BaseModel):
     company_norm: str
     title: str
     location: str | None
+    is_remote: bool = False
     apply_url: str
     description: str | None
     date_posted: str | None

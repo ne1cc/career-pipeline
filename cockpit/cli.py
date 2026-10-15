@@ -46,6 +46,13 @@ def ingest(
 
 
 @app.command()
+def rescore() -> None:
+    """Re-apply scoring_rules.toml to QUEUED jobs (applied/skipped/held are untouched)."""
+    with db.session() as con:
+        console.print(f"Rescored {db.rescore_queued(con)} queued job(s)")
+
+
+@app.command()
 def tui() -> None:
     """Launch the Textual cockpit."""
     from cockpit.tui import JobCockpitApp
@@ -57,7 +64,7 @@ def tui() -> None:
 def sprint(limit: int = 15) -> None:
     """Blocking loop: stage resume + open URL, then record the outcome."""
     with db.session() as con:
-        jobs = db.fetch_jobs(con, "QUEUED")[:limit]
+        jobs = db.fetch_jobs(con, "QUEUED", db.min_score())[:limit]
     outcomes = {"a": FunnelState.APPLIED, "s": FunnelState.SKIPPED, "h": FunnelState.REFERRAL_HOLD}
     for i, job in enumerate(jobs, 1):
         console.print(Panel(

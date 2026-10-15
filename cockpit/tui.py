@@ -16,6 +16,7 @@ from cockpit.db import (
     DB_PATH,
     expire_stale_referral_holds,
     fetch_jobs,
+    min_score,
     scoreboard,
     session,
     set_resume_archetype,
@@ -92,7 +93,7 @@ class JobCockpitApp(App[None]):
 
     def _reload(self, row: int | None = None) -> None:
         with session(self.db_path) as con:
-            self.rows = fetch_jobs(con, FILTERS[self.filter_idx])
+            self.rows = fetch_jobs(con, FILTERS[self.filter_idx], min_score())
             b = scoreboard(con)
         table = self.query_one(DataTable)
         table.clear()
@@ -120,7 +121,7 @@ class JobCockpitApp(App[None]):
             detail.update("No jobs in this view.")
             return
         r = self.rows[index]
-        matched = score_job(r["title"], r["description"] or "", self.rules).matched
+        matched = score_job(r["title"], r["description"] or "", self.rules, r["location"] or "", bool(r["is_remote"])).matched
         detail.update(
             f"[b]{escape(r['title'])}[/b]\n{escape(r['company'])} — {escape(r['location'] or '')}\n\n"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"

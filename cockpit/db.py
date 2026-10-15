@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs_master (
     company_norm VARCHAR NOT NULL,
     title VARCHAR NOT NULL,
     location VARCHAR,
+    is_remote BOOLEAN DEFAULT FALSE,
     apply_url VARCHAR NOT NULL,
     description VARCHAR,
     date_posted VARCHAR,
@@ -53,10 +54,11 @@ CREATE TABLE IF NOT EXISTS state_transitions (
     notes VARCHAR,
     transitioned_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_remote BOOLEAN DEFAULT FALSE;
 """
 
 _INSERT_COLS = (
-    "dedup_key, jobspy_id, site, company, company_norm, title, location, apply_url, "
+    "dedup_key, jobspy_id, site, company, company_norm, title, location, is_remote, apply_url, "
     "description, date_posted, priority_score, resume_archetype, resume_path"
 )
 # TIMESTAMPTZ values come back as text so the driver never needs pytz.
@@ -84,6 +86,10 @@ def session(path: Path = DB_PATH) -> Iterator[duckdb.DuckDBPyConnection]:
         con.close()
 
 
+def min_score() -> float:
+    return load_rules()["display"]["min_score"]
+
+
 def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
     midnight = datetime.now(PACIFIC).replace(hour=0, minute=0, second=0, microsecond=0)
     one = lambda sql, p=(): con.execute(sql, list(p)).fetchone()[0]  # noqa: E731
@@ -91,7 +97,9 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
         "applied_today": one(
             "SELECT count(*) FROM jobs_master WHERE applied_at >= CAST(? AS TIMESTAMPTZ)", [midnight.isoformat()]
         ),
-        "queued": one("SELECT count(*) FROM jobs_master WHERE status = 'QUEUED'"),
+        "queued": one(
+            "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND priority_score >= ?", [min_score()]
+        ),
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
         "positive": one(f"SELECT count(DISTINCT dedup_key) FROM ({_positive_keys_sql()})"),
     }
@@ -199,13 +207,53 @@ def set_resume_archetype(con: duckdb.DuckDBPyConnection, dedup_key: str, archety
     )
 
 
-def fetch_jobs(con: duckdb.DuckDBPyConnection, status: str | None = None) -> list[dict[str, Any]]:
-    where, params = ("WHERE status = ?", [status]) if status else ("", [])
+def fetch_jobs(
+    con: duckdb.DuckDBPyConnection, status: str | None = None, floor: float | None = None
+) -> list[dict[str, Any]]:
+    """`floor` hides QUEUED jobs below that score; jobs in any other state always show."""
+    clauses, params = [], []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if floor is not None:
+        clauses.append("(status <> 'QUEUED' OR priority_score >= ?)")
+        params.append(floor)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
         f"SELECT {_TS_AS_TEXT} FROM jobs_master {where} ORDER BY priority_score DESC, discovered_at", params
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def rescore_queued(con: duckdb.DuckDBPyConnection, rules: dict[str, Any] | None = None) -> int:
+    """Recompute score, archetype and resume for QUEUED jobs only. Resets manual 1/2/3 overrides."""
+    import polars as pl
+
+    from cockpit.normalizer import score_job
+
+    rules = rules or load_rules()
+    rows = con.execute(
+        "SELECT dedup_key, title, description, location, is_remote FROM jobs_master WHERE status = 'QUEUED'"
+    ).fetchall()
+    if not rows:
+        return 0
+    scored = [
+        (key, s.score, s.archetype.value, s.resume_path)
+        for key, title, desc, loc, remote in rows
+        for s in [score_job(title, desc or "", rules, loc or "", bool(remote))]
+    ]
+    batch = pl.DataFrame(scored, schema=["dedup_key", "score", "arch", "path"], orient="row")
+    con.register("rescored", batch.to_arrow())
+    try:
+        con.execute(
+            "UPDATE jobs_master SET priority_score = r.score, resume_archetype = r.arch, resume_path = r.path "
+            "FROM rescored r WHERE jobs_master.dedup_key = r.dedup_key"
+        )
+    finally:
+        con.unregister("rescored")
+    write_tmux_cache(con)
+    return len(scored)
 
 
 def _positive_keys_sql() -> str:
