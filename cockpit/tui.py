@@ -79,14 +79,18 @@ class JobCockpitApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="score")
         with Horizontal():
-            yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+            yield DataTable(id="table", cursor_type="row", zebra_stripes=True, cell_padding=1)
             with VerticalScroll(id="detail-pane"):
                 yield Static(id="detail")
         yield Footer()
 
     # Every DB touch below opens and closes its own connection.
     def on_mount(self) -> None:
-        self.query_one(DataTable).add_columns("Score", "Company", "Title", "Location", "Site", "Archetype", "Status")
+        table = self.query_one(DataTable)
+        # Fixed widths: auto-sizing let the longest company name starve the Title column.
+        for label, width in (("Score", 5), ("Company", 20), ("Title", 38), ("Location", 14),
+                             ("Site", 8), ("Archetype", 14), ("Status", 8)):
+            table.add_column(label, width=width)
         with session(self.db_path) as con:
             expire_stale_referral_holds(con)
         self._reload()
