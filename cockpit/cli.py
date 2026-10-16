@@ -38,7 +38,10 @@ def ingest(
     paths = csvs or sorted(_default_results_dir().glob("*_jobs.csv"))
     if not paths:
         raise typer.BadParameter(f"No CSVs found in {_default_results_dir()}; pass paths explicitly.")
-    frame = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+    # The CSV name is the scraper sheet (seattle_entry_level_jobs.csv -> "seattle_entry_level").
+    frame = pd.concat(
+        [pd.read_csv(p).assign(segment=p.stem.removesuffix("_jobs")) for p in paths], ignore_index=True
+    )
     with db.session() as con:
         stats = db.upsert_jobspy_frame(con, frame)
         expired = db.expire_stale_referral_holds(con)
@@ -61,10 +64,14 @@ def tui() -> None:
 
 
 @app.command()
-def sprint(limit: int = 15) -> None:
+def sprint(
+    limit: int = 15,
+    segment: Annotated[Optional[str], typer.Option(help="Only this scraper sheet, e.g. seattle")] = None,
+    location: Annotated[Optional[str], typer.Option(help="Location text, e.g. 'wa' or 'remote'")] = None,
+) -> None:
     """Blocking loop: stage resume + open URL, then record the outcome."""
     with db.session() as con:
-        jobs = db.fetch_jobs(con, "QUEUED", db.min_score())[:limit]
+        jobs = db.fetch_jobs(con, "QUEUED", db.min_score(), segment, location)[:limit]
     outcomes = {"a": FunnelState.APPLIED, "s": FunnelState.SKIPPED, "h": FunnelState.REFERRAL_HOLD}
     for i, job in enumerate(jobs, 1):
         console.print(Panel(

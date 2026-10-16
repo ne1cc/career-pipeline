@@ -165,3 +165,21 @@ def test_min_score_hides_queued_noise_and_rescore_updates(db_path):
         assert db.rescore_queued(con) == 2
         stripe = [j for j in db.fetch_jobs(con) if j["company"] == "Stripe"][0]
     assert stripe["resume_archetype"] == "swe_backend" and stripe["priority_score"] > 10
+
+
+def test_segments_are_kept_and_filterable(db_path):
+    df = frame(
+        {"segment": "seattle", "location": "Seattle, WA, US"},
+        {"segment": "seattle_entry_level", "location": "Seattle, WA, US"},  # same job, second sheet
+        {"segment": "remote", "company": "Acme", "location": "Austin, TX, US"},
+    )
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, df)
+        db.upsert_jobspy_frame(con, df)  # re-ingest must not duplicate segment rows
+        assert db.list_segments(con) == ["remote", "seattle", "seattle_entry_level"]
+        assert con.execute("SELECT count(*) FROM job_segments").fetchone()[0] == 3
+        names = lambda **kw: sorted(j["company"] for j in db.fetch_jobs(con, **kw))  # noqa: E731
+        assert names(segment="seattle_entry_level") == ["Stripe"]
+        assert names(segment="remote") == ["Acme"]
+        assert names(location="wa") == ["Stripe"]
+        assert names(location="tx") == ["Acme"]

@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS jobs_master (
     last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     notes VARCHAR
 );
+CREATE TABLE IF NOT EXISTS job_segments (
+    dedup_key VARCHAR NOT NULL,
+    segment VARCHAR NOT NULL,
+    PRIMARY KEY (dedup_key, segment)
+);
 CREATE TABLE IF NOT EXISTS state_transitions (
     transition_id INTEGER PRIMARY KEY DEFAULT nextval('transition_seq'),
     dedup_key VARCHAR NOT NULL,
@@ -128,7 +133,13 @@ def upsert_jobspy_frame(
 
     rules = rules or load_rules()
     frame = df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
-    rows = [j.model_dump(mode="json") for r in frame.iter_rows(named=True) if (j := normalize_row(r, rules))]
+    rows, pairs = [], set()  # pairs: one job can sit in several scraper sheets
+    for r in frame.iter_rows(named=True):
+        if (j := normalize_row(r, rules)) is None:
+            continue
+        rows.append(j.model_dump(mode="json"))
+        if r.get("segment"):
+            pairs.add((j.dedup_key, r["segment"]))
     stats = {"seen": frame.height, "invalid": frame.height - len(rows), "inserted": 0, "duplicates": 0}
     if rows:
         # Best-scored copy wins when one batch holds the same job from several boards.
@@ -147,6 +158,12 @@ def upsert_jobspy_frame(
         finally:
             con.unregister("incoming")
         stats["inserted"] = con.execute("SELECT count(*) FROM jobs_master").fetchone()[0] - before
+        if pairs:
+            con.register("seg_in", pl.DataFrame(sorted(pairs), schema=["dedup_key", "segment"], orient="row").to_arrow())
+            try:
+                con.execute("INSERT INTO job_segments SELECT dedup_key, segment FROM seg_in ON CONFLICT DO NOTHING")
+            finally:
+                con.unregister("seg_in")
         stats["duplicates"] = len(rows) - stats["inserted"]
     write_tmux_cache(con)
     return stats
@@ -208,7 +225,11 @@ def set_resume_archetype(con: duckdb.DuckDBPyConnection, dedup_key: str, archety
 
 
 def fetch_jobs(
-    con: duckdb.DuckDBPyConnection, status: str | None = None, floor: float | None = None
+    con: duckdb.DuckDBPyConnection,
+    status: str | None = None,
+    floor: float | None = None,
+    segment: str | None = None,
+    location: str | None = None,
 ) -> list[dict[str, Any]]:
     """`floor` hides QUEUED jobs below that score; jobs in any other state always show."""
     clauses, params = [], []
@@ -218,12 +239,22 @@ def fetch_jobs(
     if floor is not None:
         clauses.append("(status <> 'QUEUED' OR priority_score >= ?)")
         params.append(floor)
+    if segment:
+        clauses.append("dedup_key IN (SELECT dedup_key FROM job_segments WHERE segment = ?)")
+        params.append(segment)
+    if location:
+        clauses.append("(lower(COALESCE(location, '')) LIKE ? OR (is_remote AND ? = 'remote'))")
+        params += [f"%{location.lower()}%", location.lower()]
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
         f"SELECT {_TS_AS_TEXT} FROM jobs_master {where} ORDER BY priority_score DESC, discovered_at", params
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def list_segments(con: duckdb.DuckDBPyConnection) -> list[str]:
+    return [r[0] for r in con.execute("SELECT DISTINCT segment FROM job_segments ORDER BY 1").fetchall()]
 
 
 def rescore_queued(con: duckdb.DuckDBPyConnection, rules: dict[str, Any] | None = None) -> int:

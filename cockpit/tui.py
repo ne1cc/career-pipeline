@@ -16,6 +16,7 @@ from cockpit.db import (
     DB_PATH,
     expire_stale_referral_holds,
     fetch_jobs,
+    list_segments,
     min_score,
     scoreboard,
     session,
@@ -33,9 +34,13 @@ class NoteModal(ModalScreen[str | None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
     DEFAULT_CSS = "NoteModal { align: center middle; } #note-box { width: 60; height: auto; border: round $accent; padding: 1 2; background: $surface; }"
 
+    def __init__(self, prompt: str = "Referral contact / note") -> None:
+        super().__init__()
+        self.prompt = prompt
+
     def compose(self) -> ComposeResult:
         with Vertical(id="note-box"):
-            yield Label("Referral contact / note (Enter to save, Esc to cancel)")
+            yield Label(f"{self.prompt} (Enter to save, Esc to cancel)")
             yield Input(id="note")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -65,6 +70,8 @@ class JobCockpitApp(App[None]):
         Binding("3", "archetype('analytics_msba')", "analytics"),
         Binding("y", "yank", "Outreach"),
         Binding("f", "cycle_filter", "Filter"),
+        Binding("g", "segment", "Sheet"),
+        Binding("slash", "location", "Location"),
         Binding("R", "sync", "Sync mail"),
         Binding("q", "quit", "Quit"),
     ]
@@ -75,6 +82,8 @@ class JobCockpitApp(App[None]):
         self.rules = load_rules()
         self.rows: list[dict[str, Any]] = []
         self.filter_idx = 0
+        self.segment: str | None = None
+        self.loc_query: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -97,7 +106,7 @@ class JobCockpitApp(App[None]):
 
     def _reload(self, row: int | None = None) -> None:
         with session(self.db_path) as con:
-            self.rows = fetch_jobs(con, FILTERS[self.filter_idx], min_score())
+            self.rows = fetch_jobs(con, FILTERS[self.filter_idx], min_score(), self.segment, self.loc_query)
             b = scoreboard(con)
         table = self.query_one(DataTable)
         table.clear()
@@ -111,7 +120,8 @@ class JobCockpitApp(App[None]):
         label = FILTERS[self.filter_idx] or "ALL"
         self.query_one("#score", Static).update(
             f"Applied Today: {b['applied_today']}/{DAILY_GOAL} | Queued: {b['queued']} | "
-            f"Referral Hold: {b['hold']} | Positive Signals: {b['positive']}   [filter: {label}]"
+            f"Referral Hold: {b['hold']} | Positive Signals: {b['positive']}   "
+            f"[{label} | sheet: {self.segment or 'all'} | loc: {self.loc_query or 'any'}]"
         )
         self._show(table.cursor_row)
 
@@ -194,6 +204,21 @@ class JobCockpitApp(App[None]):
     def action_cycle_filter(self) -> None:
         self.filter_idx = (self.filter_idx + 1) % len(FILTERS)
         self._reload(0)
+
+    def action_segment(self) -> None:
+        with session(self.db_path) as con:
+            options: list[str | None] = [None, *list_segments(con)]
+        at = options.index(self.segment) if self.segment in options else 0
+        self.segment = options[(at + 1) % len(options)]
+        self._reload(0)
+
+    def action_location(self) -> None:
+        def done(value: str | None) -> None:
+            if value is not None:
+                self.loc_query = value.strip().lower() or None
+                self._reload(0)
+
+        self.push_screen(NoteModal("Filter by location, e.g. wa, seattle, remote (blank clears)"), done)
 
     def action_sync(self) -> None:
         self.notify("Syncing Gmail…")
