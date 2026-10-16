@@ -28,24 +28,60 @@ def _default_results_dir() -> Path:
     return REPO_ROOT / "jobspy" / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")
 
 
+def _find_default_inputs() -> list[Path]:
+    csvs = sorted(_default_results_dir().glob("*_jobs.csv"))
+    if csvs:
+        return csvs
+    downloads = Path.home() / "Downloads"
+    if downloads.exists():
+        excel_reports = sorted(downloads.glob("Job_Report_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if excel_reports:
+            return [excel_reports[0]]
+    return []
+
+
+def _load_input_frame(p: Path, sheet: str | None = None) -> "pd.DataFrame":
+    import pandas as pd
+
+    if p.suffix.lower() in (".xlsx", ".xls"):
+        xl = pd.ExcelFile(p)
+        if sheet and sheet != "all":
+            df = pd.read_excel(xl, sheet_name=sheet)
+            if "segment" not in df.columns:
+                df = df.assign(segment=sheet.lower().replace(" ", "_"))
+            return df
+        if sheet == "all":
+            base_sheets = [s for s in xl.sheet_names if not s.endswith("(Filtered)") and s != "Action Items"]
+            return pd.concat(
+                [pd.read_excel(xl, sheet_name=s).assign(segment=s.lower().replace(" ", "_")) for s in base_sheets],
+                ignore_index=True,
+            )
+        if "Action Items" in xl.sheet_names:
+            return pd.read_excel(xl, sheet_name="Action Items")
+        base_sheets = [s for s in xl.sheet_names if not s.endswith("(Filtered)")]
+        return pd.concat(
+            [pd.read_excel(xl, sheet_name=s).assign(segment=s.lower().replace(" ", "_")) for s in base_sheets],
+            ignore_index=True,
+        )
+    return pd.read_csv(p).assign(segment=p.stem.removesuffix("_jobs"))
+
+
 @app.command()
 def ingest(
-    csvs: Annotated[Optional[list[Path]], typer.Argument(help="JobSpy CSVs; default: this month's results dir")] = None,
+    inputs: Annotated[Optional[list[Path]], typer.Argument(help="JobSpy CSVs or Excel workbooks; default: results dir or ~/Downloads/Job_Report_*.xlsx")] = None,
+    sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
 ) -> None:
     """Dedupe, score and upsert scraped jobs into DuckDB."""
     import pandas as pd
 
-    paths = csvs or sorted(_default_results_dir().glob("*_jobs.csv"))
+    paths = inputs or _find_default_inputs()
     if not paths:
-        raise typer.BadParameter(f"No CSVs found in {_default_results_dir()}; pass paths explicitly.")
-    # The CSV name is the scraper sheet (seattle_entry_level_jobs.csv -> "seattle_entry_level").
-    frame = pd.concat(
-        [pd.read_csv(p).assign(segment=p.stem.removesuffix("_jobs")) for p in paths], ignore_index=True
-    )
+        raise typer.BadParameter(f"No CSVs found in {_default_results_dir()} and no Job_Report_*.xlsx found in ~/Downloads; pass paths explicitly.")
+    frame = pd.concat([_load_input_frame(p, sheet=sheet) for p in paths], ignore_index=True)
     with db.session() as con:
         stats = db.upsert_jobspy_frame(con, frame)
         expired = db.expire_stale_referral_holds(con)
-    console.print(f"[green]{len(paths)} file(s)[/green] {stats} | stale holds flagged: {expired}")
+    console.print(f"[green]{len(paths)} file(s)[/green] ({', '.join(p.name for p in paths)}) {stats} | stale holds flagged: {expired}")
 
 
 @app.command()
