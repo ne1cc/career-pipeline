@@ -42,7 +42,7 @@ def scrape_jobs(
     proxies: list[str] | str | None = None,
     ca_cert: str | None = None,
     description_format: str = "markdown",
-    linkedin_fetch_description: bool | None = False,
+    linkedin_fetch_description: bool | None = True,
     linkedin_company_ids: list[int] | None = None,
     offset: int | None = 0,
     hours_old: int = None,

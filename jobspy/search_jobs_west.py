@@ -186,6 +186,7 @@ if __name__ == "__main__":
                     country_indeed="USA",
                     results_wanted=9999,
                     hours_old=256,
+                    linkedin_fetch_description=True,
                 )
                 if not jobs.empty:
                     jobs["search_keyword"] = term
