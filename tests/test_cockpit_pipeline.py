@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import plistlib
 import subprocess
 import sys
@@ -304,6 +305,35 @@ def test_load_context_reads_career_ops_in_place(career_ops):
         intel.load_context(career_ops)
 
 
+def test_load_context_requires_detailed_dossier_without_losing_career_ops(career_ops):
+    prompt = intel.load_context(career_ops).prompt
+    for heading in (
+        "1. The Unspoken Translation (Deconstructing the JD)",
+        "2. Industry “Taste” & Production Reality",
+        "3. Resume-to-Role Gap Analysis & Positioning",
+        "4. Curated “No-Fluff” Study & Resource Guide",
+        "5. The Technical Interview Playbook",
+    ):
+        assert heading in prompt
+
+    assert "Blocks A through G" in prompt
+    assert "# Mode: job — Full A-G Evaluation" in prompt
+    assert "---SCORE_SUMMARY---" in prompt and "---END_SUMMARY---" in prompt
+    assert "JD facts" in prompt and "hypotheses" in prompt
+    assert "candidate experience" in prompt and "Do not invent" in prompt
+    assert "untrusted" in prompt.lower()
+    assert "search queries" in prompt and "URLs" in prompt
+
+
+def test_context_hash_covers_rendered_prompt_and_selected_model(career_ops):
+    ctx = intel.load_context(career_ops, model="gemini-2.5-pro")
+    assert ctx.hash == hashlib.sha256((ctx.prompt + ctx.model).encode("utf-8")).hexdigest()[:16]
+
+    other_model = intel.load_context(career_ops, model="gemini-2.5-flash")
+    assert other_model.prompt == ctx.prompt
+    assert other_model.hash != ctx.hash
+
+
 def test_process_batch_writes_dossier_and_caches(db_path, career_ops, tmp_path):
     out, fake = tmp_path / "dossiers", FakeGemini()
     ctx = intel.load_context(career_ops)
@@ -312,6 +342,7 @@ def test_process_batch_writes_dossier_and_caches(db_path, career_ops, tmp_path):
         key = _key(con)
         db.toggle_saved(con, key)
     assert intel.process_batch(db_path, ctx, fake, out) == [key]
+    assert fake.calls[0][0] == ctx.prompt
     assert "We use FastAPI and Docker." in fake.calls[0][1] and "UNTRUSTED INPUT" in fake.calls[0][1]
     with db.session(db_path) as con:
         fit, status, path = con.execute("SELECT fit_score, intel_status, intel_path FROM jobs_master").fetchone()
