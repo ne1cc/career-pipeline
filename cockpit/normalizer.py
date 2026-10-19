@@ -132,3 +132,30 @@ def render_outreach(job: Mapping[str, Any], rules: Mapping[str, Any]) -> str:
     return rules["outreach"]["template"].format(
         company=job["company"], title=job["title"], resume_archetype=job["resume_archetype"]
     )
+
+
+def highlight_jd(text: str, matched: list[str], rules: Mapping[str, Any]) -> str:
+    """Escapes Rich markup from text and applies [bold green] to matched keywords and [bold red] to penalties."""
+    from rich.markup import escape
+
+    safe = escape(text)
+    # Highlight matched keywords in bold green
+    for kw in matched:
+        pattern = re.compile(rf"(?i)\b({re.escape(kw)})\b")
+        safe = pattern.sub(r"[bold green]\1[/bold green]", safe)
+
+    # Highlight penalties / red flags in bold red
+    penalties = rules.get("penalties", {}).get("title_contains", [])
+    for p in penalties:
+        pattern = re.compile(rf"(?i)\b({re.escape(p)})\b")
+        safe = pattern.sub(r"[bold red]\1[/bold red]", safe)
+
+    return safe
+
+
+def linkedin_referral_url(company: str) -> str:
+    import urllib.parse
+
+    query = urllib.parse.quote(company)
+    return f"https://www.linkedin.com/search/results/people/?keywords={query}"
+
