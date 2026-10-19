@@ -185,7 +185,7 @@ if __name__ == "__main__":
                     google_search_term=f"{term} jobs near {loc} since yesterday",
                     country_indeed="USA",
                     results_wanted=9999,
-                    hours_old=256,
+                    hours_old=48,
                     linkedin_fetch_description=True,
                 )
                 if not jobs.empty:
