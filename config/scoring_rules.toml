@@ -55,3 +55,8 @@ sql = 2.0
 template = """Hi — I'm Alex Sun. I just applied for the {title} role at {company} and wanted to reach out directly. \
 My background is a strong fit for the work, and I'd welcome a quick 10-minute chat, \
 or a pointer to the right person to talk to."""
+
+[intel]
+career_ops_root = "~/Github/ne1cc/career-ops"
+export_dir = "~/Documents/jobspy-cockpit"
+model = "gemini-3.5-flash-lite"

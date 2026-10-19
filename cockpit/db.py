@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +61,14 @@ CREATE TABLE IF NOT EXISTS state_transitions (
     transitioned_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_remote BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_saved BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS fit_score DOUBLE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_status VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_path VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_error VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_hash VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_updated_at TIMESTAMPTZ;
 """
 
 _INSERT_COLS = (
@@ -67,16 +76,22 @@ _INSERT_COLS = (
     "description, date_posted, priority_score, resume_archetype, resume_path"
 )
 # TIMESTAMPTZ values come back as text so the driver never needs pytz.
-_TS_AS_TEXT = (
-    "* EXCLUDE (discovered_at, applied_at, last_updated_at), "
-    "discovered_at::VARCHAR AS discovered_at, applied_at::VARCHAR AS applied_at, "
-    "last_updated_at::VARCHAR AS last_updated_at"
-)
+_TS_COLS = ("discovered_at", "applied_at", "last_updated_at", "saved_at", "intel_updated_at")
+_TS_AS_TEXT = f"* EXCLUDE ({', '.join(_TS_COLS)}), " + ", ".join(f"{c}::VARCHAR AS {c}" for c in _TS_COLS)
+LOCK_RETRIES, LOCK_WAIT_S = 10, 0.2
 
 
 def connect(path: Path = DB_PATH) -> duckdb.DuckDBPyConnection:
+    """Waits up to LOCK_RETRIES x LOCK_WAIT_S for another process's short session to finish."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(path))
+    for attempt in range(LOCK_RETRIES + 1):
+        try:
+            con = duckdb.connect(str(path))
+            break
+        except duckdb.IOException as e:
+            if "lock" not in str(e).lower() or attempt == LOCK_RETRIES:
+                raise
+            time.sleep(LOCK_WAIT_S)
     con.execute(SCHEMA)
     return con
 
@@ -106,6 +121,7 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
             "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND priority_score >= ?", [min_score()]
         ),
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
+        "saved": one("SELECT count(*) FROM jobs_master WHERE is_saved"),
         "positive": one(f"SELECT count(DISTINCT dedup_key) FROM ({_positive_keys_sql()})"),
     }
 
@@ -175,12 +191,13 @@ def transition_job_state(
     new_status: FunnelState,
     triggered_by: str,
     notes: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     con.begin()
     try:
-        row = con.execute("SELECT status FROM jobs_master WHERE dedup_key = ?", [dedup_key]).fetchone()
+        row = con.execute("SELECT status, applied_at, notes FROM jobs_master WHERE dedup_key = ?", [dedup_key]).fetchone()
         if row is None:
             raise KeyError(dedup_key)
+        prev_snapshot = {"status": row[0], "applied_at": row[1], "notes": row[2]}
         con.execute(
             """UPDATE jobs_master SET status = ?, last_updated_at = CURRENT_TIMESTAMP,
                    applied_at = CASE WHEN ? = 'APPLIED' THEN CURRENT_TIMESTAMP ELSE applied_at END,
@@ -198,6 +215,143 @@ def transition_job_state(
         con.rollback()
         raise
     write_tmux_cache(con)
+    return prev_snapshot
+
+
+def restore_job_state(
+    con: duckdb.DuckDBPyConnection,
+    dedup_key: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Restores a previous status, applied_at, and notes (used by undo), recording an audit row."""
+    con.begin()
+    try:
+        row = con.execute("SELECT status FROM jobs_master WHERE dedup_key = ?", [dedup_key]).fetchone()
+        if row is None:
+            raise KeyError(dedup_key)
+        current_status = row[0]
+        con.execute(
+            """UPDATE jobs_master SET status = ?, last_updated_at = CURRENT_TIMESTAMP,
+                   applied_at = ?, notes = ?
+               WHERE dedup_key = ?""",
+            [snapshot["status"], snapshot.get("applied_at"), snapshot.get("notes"), dedup_key],
+        )
+        con.execute(
+            "INSERT INTO state_transitions (dedup_key, from_status, to_status, triggered_by, notes) "
+            "VALUES (?, ?, ?, 'undo', ?)",
+            [dedup_key, current_status, snapshot["status"], snapshot.get("notes")],
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    write_tmux_cache(con)
+
+
+def toggle_saved(con: duckdb.DuckDBPyConnection, dedup_key: str) -> bool:
+    """Toggle is_saved. When true, sets saved_at and marks intel_status='pending' if not already done."""
+    con.begin()
+    try:
+        row = con.execute("SELECT is_saved, intel_status FROM jobs_master WHERE dedup_key = ?", [dedup_key]).fetchone()
+        if row is None:
+            raise KeyError(dedup_key)
+        now_saved = not bool(row[0])
+        intel_status = row[1]
+        if now_saved:
+            new_intel = "pending" if intel_status != "done" else "done"
+            con.execute(
+                """UPDATE jobs_master SET is_saved = TRUE, saved_at = CURRENT_TIMESTAMP,
+                       last_updated_at = CURRENT_TIMESTAMP, intel_status = ?
+                   WHERE dedup_key = ?""",
+                [new_intel, dedup_key],
+            )
+        else:
+            con.execute(
+                """UPDATE jobs_master SET is_saved = FALSE, last_updated_at = CURRENT_TIMESTAMP
+                   WHERE dedup_key = ?""",
+                [dedup_key],
+            )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    write_tmux_cache(con)
+    return now_saved
+
+
+def set_job_note(con: duckdb.DuckDBPyConnection, dedup_key: str, note: str | None) -> None:
+    con.execute(
+        "UPDATE jobs_master SET notes = ?, last_updated_at = CURRENT_TIMESTAMP WHERE dedup_key = ?",
+        [note, dedup_key],
+    )
+
+
+def claim_intel(con: duckdb.DuckDBPyConnection, limit: int = 2) -> list[dict[str, Any]]:
+    """Atomically claim pending jobs for intel processing, marking them running."""
+    con.begin()
+    try:
+        keys = [
+            r[0]
+            for r in con.execute(
+                """SELECT dedup_key FROM jobs_master
+                   WHERE is_saved = TRUE AND intel_status = 'pending'
+                   ORDER BY priority_score DESC
+                   LIMIT ?""",
+                [limit],
+            ).fetchall()
+        ]
+        if not keys:
+            con.commit()
+            return []
+        con.execute(
+            f"""UPDATE jobs_master SET intel_status = 'running', intel_updated_at = CURRENT_TIMESTAMP
+                WHERE dedup_key IN ({', '.join('?' for _ in keys)})""",
+            keys,
+        )
+        cur = con.execute(
+            f"SELECT {_TS_AS_TEXT} FROM jobs_master WHERE dedup_key IN ({', '.join('?' for _ in keys)})",
+            keys,
+        )
+        cols = [d[0] for d in cur.description]
+        jobs = [dict(zip(cols, r)) for r in cur.fetchall()]
+        con.commit()
+        return jobs
+    except Exception:
+        con.rollback()
+        raise
+
+
+def finish_intel(
+    con: duckdb.DuckDBPyConnection,
+    dedup_key: str,
+    status: str,
+    fit_score: float | None = None,
+    path: str | None = None,
+    error: str | None = None,
+    intel_hash: str | None = None,
+) -> None:
+    con.execute(
+        """UPDATE jobs_master SET intel_status = ?, fit_score = ?, intel_path = ?,
+               intel_error = ?, intel_hash = ?, intel_updated_at = CURRENT_TIMESTAMP
+           WHERE dedup_key = ?""",
+        [status, fit_score, path, error, intel_hash, dedup_key],
+    )
+
+
+def requeue_stale_intel(con: duckdb.DuckDBPyConnection, minutes: int = 15) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    rows = con.execute(
+        """SELECT dedup_key FROM jobs_master
+           WHERE intel_status = 'running' AND intel_updated_at < CAST(? AS TIMESTAMPTZ)""",
+        [cutoff],
+    ).fetchall()
+    if rows:
+        keys = [r[0] for r in rows]
+        con.execute(
+            f"UPDATE jobs_master SET intel_status = 'pending' WHERE dedup_key IN ({', '.join('?' for _ in keys)})",
+            keys,
+        )
+    return len(rows)
 
 
 def expire_stale_referral_holds(con: duckdb.DuckDBPyConnection, hours: int = 24) -> int:
@@ -230,14 +384,19 @@ def fetch_jobs(
     floor: float | None = None,
     segment: str | None = None,
     location: str | None = None,
+    query: str | None = None,
 ) -> list[dict[str, Any]]:
-    """`floor` hides QUEUED jobs below that score; jobs in any other state always show."""
+    """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
     clauses, params = [], []
-    if status:
+    order_by = "priority_score DESC, discovered_at"
+    if status == "SAVED":
+        clauses.append("is_saved = TRUE")
+        order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
+    elif status:
         clauses.append("status = ?")
         params.append(status)
-    if floor is not None:
-        clauses.append("(status <> 'QUEUED' OR priority_score >= ?)")
+    if floor is not None and status != "SAVED":
+        clauses.append("(status <> 'QUEUED' OR is_saved OR priority_score >= ?)")
         params.append(floor)
     if segment:
         clauses.append("dedup_key IN (SELECT dedup_key FROM job_segments WHERE segment = ?)")
@@ -245,9 +404,13 @@ def fetch_jobs(
     if location:
         clauses.append("(lower(COALESCE(location, '')) LIKE ? OR (is_remote AND ? = 'remote'))")
         params += [f"%{location.lower()}%", location.lower()]
+    if query:
+        q = f"%{query.lower()}%"
+        clauses.append("(lower(company) LIKE ? OR lower(title) LIKE ? OR lower(COALESCE(description, '')) LIKE ?)")
+        params += [q, q, q]
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
-        f"SELECT {_TS_AS_TEXT} FROM jobs_master {where} ORDER BY priority_score DESC, discovered_at", params
+        f"SELECT {_TS_AS_TEXT} FROM jobs_master {where} ORDER BY {order_by}", params
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]

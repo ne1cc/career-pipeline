@@ -43,8 +43,15 @@ def notify(message: str, title: str = "JobCockpit") -> None:
     subprocess.run(["/usr/bin/osascript", "-e", script], check=False)
 
 
-def keychain_password(service: str = KEYCHAIN_SERVICE) -> str | None:
-    """Gmail app password from the login Keychain, falling back to $GMAIL_APP_PASSWORD."""
+KEYCHAIN_GEMINI_SERVICE = "jobcockpit-gemini"
+
+
+def open_file(path: str | Path) -> None:
+    subprocess.run(["/usr/bin/open", str(path)], check=True)
+
+
+def keychain_password(service: str = KEYCHAIN_SERVICE, env_var: str = "GMAIL_APP_PASSWORD") -> str | None:
+    """Password from login Keychain, falling back to an environment variable."""
     r = subprocess.run(
         ["/usr/bin/security", "find-generic-password", "-s", service, "-w"],
         capture_output=True,
@@ -53,4 +60,8 @@ def keychain_password(service: str = KEYCHAIN_SERVICE) -> str | None:
     )
     if r.returncode == 0 and r.stdout.strip():
         return r.stdout.strip()
-    return os.getenv("GMAIL_APP_PASSWORD") or None
+    return os.getenv(env_var) or None
+
+
+def gemini_api_key() -> str | None:
+    return keychain_password(KEYCHAIN_GEMINI_SERVICE, "GEMINI_API_KEY")

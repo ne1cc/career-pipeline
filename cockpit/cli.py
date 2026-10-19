@@ -17,8 +17,16 @@ from cockpit import db, macos
 from cockpit.models import FunnelState
 from cockpit.normalizer import REPO_ROOT
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+app = typer.Typer(no_args_is_help=False, add_completion=False)
 console = Console()
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """JobCockpit — terminal application engine and intelligence pipeline."""
+    if ctx.invoked_subcommand is None:
+        tui()
+
 
 AGENT_LABEL = "com.jobcockpit.sync"
 AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
@@ -118,10 +126,15 @@ def sprint(
         macos.copy_resume_path(job["resume_path"])
         macos.open_url(job["apply_url"])
         choice = ""
-        while choice not in (*outcomes, "q"):
-            choice = typer.prompt("[a]pplied [s]kip [h]old [q]uit").strip().lower()[:1]
+        while choice not in (*outcomes, "b", "q"):
+            choice = typer.prompt("[a]pplied [s]kip [h]old [b]ookmark [q]uit").strip().lower()[:1]
         if choice == "q":
             break
+        if choice == "b":
+            with db.session() as con:
+                is_saved = db.toggle_saved(con, job["dedup_key"])
+            console.print(f"[bold {'green' if is_saved else 'yellow'}]{'Saved' if is_saved else 'Unsaved'}[/bold {'green' if is_saved else 'yellow'}] {job['title']} @ {job['company']}")
+            continue
         note = typer.prompt("contact/note", default="") if choice == "h" else None
         with db.session() as con:
             db.transition_job_state(con, job["dedup_key"], outcomes[choice], "sprint", note or None)
@@ -139,13 +152,73 @@ def sync_mail(user: Annotated[Optional[str], typer.Option(help="Gmail address (d
 
 
 @app.command("keychain-setup")
-def keychain_setup(run: Annotated[bool, typer.Option(help="Execute it (security prompts for the password)")] = False) -> None:
-    """Store the Gmail app password in the login Keychain."""
+def keychain_setup(
+    service: Annotated[str, typer.Option(help="Keychain service: 'gmail' (default) or 'gemini' (or custom name)")] = "gmail",
+    run: Annotated[bool, typer.Option(help="Execute it (security prompts for the password)")] = False,
+    password: Annotated[Optional[str], typer.Option(help="Password or API key to store non-interactively")] = None,
+) -> None:
+    """Store credentials (Gmail app password or Gemini API key) in the login Keychain."""
+    if service.lower() in ("gemini", "jobcockpit-gemini"):
+        service_name = macos.KEYCHAIN_GEMINI_SERVICE
+    elif service.lower() in ("gmail", "mail", "jobcockpit-gmail"):
+        service_name = macos.KEYCHAIN_SERVICE
+    else:
+        service_name = service
+
     cmd = ["/usr/bin/security", "add-generic-password", "-a", os.environ.get("USER", ""),
-           "-s", macos.KEYCHAIN_SERVICE, "-U", "-w"]  # trailing -w with no value => interactive prompt
-    console.print("Run: " + " ".join(cmd))
-    if run:
+           "-s", service_name, "-U"]
+    if password is not None:
+        cmd.extend(["-w", password])
+    else:
+        cmd.append("-w")
+
+    display_cmd = cmd.copy()
+    if password is not None:
+        display_cmd[-1] = "[REDACTED]"
+    console.print("Run: " + " ".join(display_cmd))
+    if run or password is not None:
         subprocess.run(cmd, check=True)
+
+
+@app.command()
+def intel(
+    limit: Annotated[int, typer.Option(help="Maximum jobs to process in this run")] = 20,
+    stale_hours: Annotated[int, typer.Option(help="Requeue jobs whose intel is running/pending for longer than N hours")] = 0,
+    model: Annotated[Optional[str], typer.Option(help="Gemini model name (default: gemini-3.5-flash-lite)")] = None,
+    career_ops_root: Annotated[Optional[Path], typer.Option(help="Path to career-ops repository")] = None,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Path to export directory")] = None,
+) -> None:
+    """Run batch fit-scoring and Markdown dossier generation for saved jobs."""
+    from cockpit import intel as intel_module
+
+    try:
+        ctx = intel_module.load_context(career_ops_root, model=model)
+    except intel_module.IntelUnavailable as e:
+        console.print(f"[bold red]Career-ops error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    try:
+        generator = intel_module.create_gemini_client(model_name=ctx.model)
+    except intel_module.IntelUnavailable as e:
+        console.print(f"[bold red]Gemini API error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    out_dir = export_dir or intel_module.resolve_export_dir()
+    if stale_hours > 0:
+        with db.session() as con:
+            requeued = db.requeue_stale_intel(con, minutes=stale_hours * 60)
+            if requeued:
+                console.print(f"[yellow]Requeued {requeued} stale intel job(s)[/yellow]")
+
+    console.print(f"Running intel pipeline with model [cyan]{ctx.model}[/cyan]...")
+    processed = intel_module.process_batch(
+        db.DB_PATH,
+        ctx,
+        generator,
+        export_dir=out_dir,
+        limit=limit,
+    )
+    console.print(f"Intel pipeline finished: processed [bold green]{len(processed)}[/bold green] job(s)")
 
 
 @app.command()
