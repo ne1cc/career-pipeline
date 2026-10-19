@@ -1,0 +1,57 @@
+[display]
+# Queued jobs scoring below this stay in the DB but are hidden from the TUI, sprint and counters.
+min_score = 10.0
+
+[resumes]
+swe_backend = "~/resumes/swe_backend_v1.pdf"
+data_eng = "~/resumes/data_eng_lakehouse_v1.pdf"
+analytics_msba = "~/resumes/analytics_msba_v1.pdf"
+
+[penalties]
+points = 45.0
+title_contains = ["staff", "principal", "director", "vp", "senior", "sr.", "lead", "manager", "8+ years", "10+ years"]
+
+[boosts]
+points = 15.0
+title_contains = ["intern", "new grad", "early career", "junior", "associate", "i", "1"]
+
+# The job title picks the archetype first (checked in this order); keyword weights decide otherwise.
+[title_archetype]
+data_eng = ["data engineer", "analytics engineer", "etl", "data platform", "data infrastructure", "big data", "lakehouse"]
+analytics_msba = ["analyst", "analytics", "data scientist", "business intelligence", "decision science", "business analyst"]
+swe_backend = ["software", "backend", "back end", "full stack", "fullstack", "developer", "devops", "platform", "site reliability"]
+
+[location]
+primary_points = 10.0
+primary = ["seattle", "bellevue", "redmond", "kirkland", "wa", "remote"]
+secondary_points = 5.0
+secondary = ["ca", "california", "oregon", "portland", "san francisco", "los angeles", "san diego", "san jose"]
+
+# A keyword found in the title counts double.
+[weights.data_eng]
+duckdb = 4.0
+polars = 4.0
+dbt = 4.0
+pyspark = 4.0
+"delta lake" = 4.0
+sql = 2.0
+docker = 1.0
+
+[weights.swe_backend]
+fastapi = 4.0
+rust = 3.0
+go = 3.0
+typescript = 3.0
+docker = 2.0
+sql = 1.0
+
+[weights.analytics_msba]
+"a/b" = 4.0
+experimentation = 4.0
+analytics = 3.0
+sql = 2.0
+
+[outreach]
+template = """Hi — I'm Alex Sun. I just applied for the {title} role at {company} and wanted to reach out directly. \
+My background is a strong fit for the work, and I'd welcome a quick 10-minute chat, \
+or a pointer to the right person to talk to."""

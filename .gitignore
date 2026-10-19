@@ -22,3 +22,7 @@ docs/superpowers/
 superpowers/
 jobspy/results/
 results/
+
+# job cockpit
+data/*.duckdb
+data/*.duckdb.wal

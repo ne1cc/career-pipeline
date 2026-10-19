@@ -44,9 +44,11 @@ def test_scraper_hours_old_and_fetch_description(script_path: Path):
     for kwargs in kwargs_list:
         assert kwargs.get("hours_old", 0) <= 48, f"{script_path.name} has hours_old > 48"
         assert kwargs.get("results_wanted") == 9999, f"{script_path.name} results_wanted != 9999"
-        assert kwargs.get("linkedin_fetch_description", False) is False, (
-            f"{script_path.name} must not fetch linkedin descriptions"
-        )
+        should_fetch_description = script_path.name not in {
+            "search_jobs_seattle_msba.py",
+            "search_jobs_msba_west.py",
+        }
+        assert kwargs.get("linkedin_fetch_description", False) is should_fetch_description
 
 
 def test_msba_recruitment_filter_handles_empty_description():
