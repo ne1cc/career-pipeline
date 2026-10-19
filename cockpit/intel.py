@@ -209,16 +209,25 @@ def parse_summary(evaluation_text: str) -> Summary:
     )
 
 
-def slugify(text: str) -> str:
-    s = re.sub(r"[^\w\s-]", "", text.lower())
-    return re.sub(r"[-\s]+", "-", s).strip("-")
+def sanitize_filename_part(text: str | None, default: str = "unknown") -> str:
+    s = re.sub(r'[/\\:*?"<>|]', " ", str(text or "")).strip()
+    s = " ".join(s.split())
+    return s if s else default
+
+
+def format_date_saved(saved_at: Any) -> str:
+    if isinstance(saved_at, datetime):
+        return saved_at.strftime("%Y-%m-%d")
+    if saved_at:
+        return str(saved_at)[:10]
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def dossier_path(job: Mapping[str, Any], export_dir: Path = DEFAULT_EXPORT_DIR) -> Path:
-    date_str = (job.get("date_posted") or datetime.now().strftime("%Y-%m-%d")).replace("/", "-")
-    comp_slug = slugify(job.get("company", "company"))
-    title_slug = slugify(job.get("title", "role"))
-    return export_dir / f"{date_str}_{comp_slug}_{title_slug}.md"
+    title = sanitize_filename_part(job.get("title"), default="role")
+    loc = sanitize_filename_part(job.get("location"), default="remote")
+    date_saved = format_date_saved(job.get("saved_at"))
+    return export_dir / f"{title} - {loc} - {date_saved}.md"
 
 
 def render_dossier(
@@ -375,6 +384,12 @@ def process_batch(
             raw_output = generator(ctx.prompt, jd_text)
             summary = parse_summary(raw_output)
             dossier_content = render_dossier(job, summary=summary, evaluation_text=raw_output)
+            old_path = job.get("intel_path")
+            if old_path and Path(old_path).exists() and Path(old_path).resolve() != out_file.resolve():
+                try:
+                    Path(old_path).unlink()
+                except OSError:
+                    pass
             out_file.write_text(dossier_content, "utf-8")
             with db.session(db_path) as con:
                 db.finish_intel(
