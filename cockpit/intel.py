@@ -35,14 +35,17 @@ class Summary:
     legitimacy: str
 
 
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+
+
 def spend_tier_to_model(tier: str) -> str:
     match tier:
         case "economy":
-            return "gemini-2.5-flash-lite"
+            return "gemini-3.5-flash-lite"
         case "premium":
             return "gemini-2.5-pro"
         case _:
-            return "gemini-2.5-flash"
+            return "gemini-3.5-flash-lite"
 
 
 def resolve_career_ops_root(given: Path | str | None = None) -> Path:
@@ -83,7 +86,7 @@ def resolve_export_dir(given: Path | str | None = None) -> Path:
     return DEFAULT_EXPORT_DIR.resolve()
 
 
-def load_context(root: Path | str | None = None) -> Context:
+def load_context(root: Path | str | None = None, model: str | None = None) -> Context:
     base = resolve_career_ops_root(root)
     if not base.exists():
         raise IntelUnavailable(f"career-ops repository not found at {base}")
@@ -104,17 +107,34 @@ def load_context(root: Path | str | None = None) -> Context:
     yml = profile_yml.read_text("utf-8").strip() if profile_yml.exists() else ""
     prof_md = profile_md.read_text("utf-8").strip() if profile_md.exists() else ""
 
-    # Spend tier extraction
-    spend_tier = "standard"
-    if yml:
-        m = re.search(r"^[ \t]*spend_tier[ \t]*:[ \t]*(.+)$", yml, re.MULTILINE)
-        if m:
-            spend_tier = m.group(1).strip()
-    model = spend_tier_to_model(spend_tier)
+    # Model resolution: explicit arg > rules config > env > spend_tier > DEFAULT_MODEL
+    selected_model = model
+    if not selected_model:
+        import os
+
+        selected_model = os.environ.get("GEMINI_MODEL")
+    if not selected_model:
+        try:
+            from cockpit.normalizer import load_rules
+
+            rules = load_rules()
+            selected_model = rules.get("intel", {}).get("model")
+        except Exception:
+            pass
+    if not selected_model:
+        spend_tier = "economy"
+        if yml:
+            m = re.search(r"^[ \t]*spend_tier[ \t]*:[ \t]*(.+)$", yml, re.MULTILINE)
+            if m:
+                spend_tier = m.group(1).strip()
+        selected_model = spend_tier_to_model(spend_tier)
+
+    if selected_model and not selected_model.startswith("gemini-"):
+        selected_model = f"gemini-{selected_model}"
 
     # Hash of source files to detect CV / rubric modifications
     h = hashlib.sha256()
-    for text in (oferta, shared, cv, yml, prof_md):
+    for text in (oferta, shared, cv, yml, prof_md, selected_model):
         h.update(text.encode("utf-8"))
     content_hash = h.hexdigest()[:16]
 
@@ -161,7 +181,7 @@ ARCHETYPE: <detected archetype>
 LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 ---END_SUMMARY---
 """
-    return Context(prompt=system_prompt, hash=content_hash, model=model, root=base)
+    return Context(prompt=system_prompt, hash=content_hash, model=selected_model, root=base)
 
 
 def parse_summary(evaluation_text: str) -> Summary:

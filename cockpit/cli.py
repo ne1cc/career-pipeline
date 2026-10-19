@@ -176,6 +176,7 @@ def keychain_setup(
 def intel(
     limit: Annotated[int, typer.Option(help="Maximum jobs to process in this run")] = 20,
     stale_hours: Annotated[int, typer.Option(help="Requeue jobs whose intel is running/pending for longer than N hours")] = 0,
+    model: Annotated[Optional[str], typer.Option(help="Gemini model name (default: gemini-3.5-flash-lite)")] = None,
     career_ops_root: Annotated[Optional[Path], typer.Option(help="Path to career-ops repository")] = None,
     export_dir: Annotated[Optional[Path], typer.Option(help="Path to export directory")] = None,
 ) -> None:
@@ -183,7 +184,7 @@ def intel(
     from cockpit import intel as intel_module
 
     try:
-        ctx = intel_module.load_context(career_ops_root)
+        ctx = intel_module.load_context(career_ops_root, model=model)
     except intel_module.IntelUnavailable as e:
         console.print(f"[bold red]Career-ops error:[/bold red] {e}")
         raise typer.Exit(1)

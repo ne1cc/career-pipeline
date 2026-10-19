@@ -59,3 +59,4 @@ or a pointer to the right person to talk to."""
 [intel]
 career_ops_root = "~/Github/ne1cc/career-ops"
 export_dir = "~/Documents/jobspy-cockpit"
+model = "gemini-3.5-flash-lite"

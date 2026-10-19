@@ -97,6 +97,7 @@ class JobCockpitApp(App[None]):
         db_path: Path = DB_PATH,
         export_dir: Path | None = None,
         career_ops_root: Path | None = None,
+        model: str | None = None,
         generate: Callable[[str, str], str] | None = None,
     ) -> None:
         super().__init__()
@@ -105,6 +106,7 @@ class JobCockpitApp(App[None]):
         intel_cfg = self.rules.get("intel", {})
         self.export_dir = Path(export_dir or intel_cfg.get("export_dir", intel.DEFAULT_EXPORT_DIR)).expanduser()
         self.career_ops_root = Path(career_ops_root or intel_cfg.get("career_ops_root", intel.DEFAULT_CAREER_OPS)).expanduser()
+        self.model = model or intel_cfg.get("model")
         self.generate = generate
         self.rows: list[dict[str, Any]] = []
         self.filter_idx = 0
@@ -396,7 +398,7 @@ class JobCockpitApp(App[None]):
 
     def _run_intel_worker(self) -> None:
         try:
-            ctx = intel.load_context(self.career_ops_root)
+            ctx = intel.load_context(self.career_ops_root, model=self.model)
         except intel.IntelUnavailable as e:
             return
         except Exception as e:

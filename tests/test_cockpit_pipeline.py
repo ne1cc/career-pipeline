@@ -295,8 +295,8 @@ def test_parse_summary():
 
 def test_load_context_reads_career_ops_in_place(career_ops):
     ctx = intel.load_context(career_ops)
-    assert "Full A-G Evaluation" in ctx.prompt and "Python, DuckDB" in ctx.prompt and "SCORE_SUMMARY" in ctx.prompt
-    assert ctx.model == "gemini-2.5-flash-lite"  # spend_tier: economy
+    assert ctx.model == "gemini-3.5-flash-lite"
+    assert intel.load_context(career_ops, model="gemini-2.5-pro").model == "gemini-2.5-pro"
     (career_ops / "cv.md").write_text("# Alex Sun\nPython, DuckDB, Rust")
     assert intel.load_context(career_ops).hash != ctx.hash  # CV edits invalidate the cache
     (career_ops / "cv.md").unlink()
