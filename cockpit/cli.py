@@ -17,8 +17,16 @@ from cockpit import db, macos
 from cockpit.models import FunnelState
 from cockpit.normalizer import REPO_ROOT
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+app = typer.Typer(no_args_is_help=False, add_completion=False)
 console = Console()
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """JobCockpit — terminal application engine and intelligence pipeline."""
+    if ctx.invoked_subcommand is None:
+        tui()
+
 
 AGENT_LABEL = "com.jobcockpit.sync"
 AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
