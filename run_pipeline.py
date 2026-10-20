@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import re
+import shutil
 import smtplib
 import subprocess
 import sys
@@ -328,6 +329,44 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
         print(f"ERROR: Failed to send email: {e}")
         sys.exit(1)
 
+def run_cockpit_ingest(results_dir: Path | None = None) -> bool:
+    print(f"\n[{datetime.now()}] Step 4: Running Cockpit Ingest...")
+    reqs_path = BASE_DIR / "cockpit" / "requirements.txt"
+    uv_bin = shutil.which("uv") or "/opt/homebrew/bin/uv"
+
+    if Path(uv_bin).is_file() and reqs_path.is_file():
+        cmd = [
+            str(uv_bin),
+            "run",
+            "--no-project",
+            "--python",
+            "3.12",
+            "--with-requirements",
+            str(reqs_path),
+            "python",
+            "-m",
+            "cockpit.cli",
+            "ingest",
+        ]
+    else:
+        cmd = [sys.executable, "-m", "cockpit.cli", "ingest"]
+
+    if results_dir and results_dir.is_dir():
+        csv_files = sorted(results_dir.glob("*_jobs.csv"))
+        if csv_files:
+            cmd.extend(str(p) for p in csv_files)
+
+    try:
+        res = subprocess.run(cmd, cwd=str(BASE_DIR))
+        if res.returncode != 0:
+            print(f"[!] Warning: Cockpit ingest exited with code {res.returncode}")
+            return False
+        print("Cockpit ingest completed successfully.")
+        return True
+    except Exception as exc:
+        print(f"[!] Warning: Failed to run Cockpit ingest: {exc}")
+        return False
+
 def main():
     config = load_config()
     validate_config(config)
@@ -346,7 +385,10 @@ def main():
     
     excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
     
-    send_email_with_attachment(config, excel_path, stats, has_previous_run)
+    try:
+        send_email_with_attachment(config, excel_path, stats, has_previous_run)
+    finally:
+        run_cockpit_ingest(results_dir)
     
     print(f"\n[{datetime.now()}] --- PIPELINE RUN COMPLETE ---")
 
