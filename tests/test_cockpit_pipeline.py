@@ -12,6 +12,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import pytest
+from rich.style import Style
 from rich.text import Text
 from textual.widgets import DataTable, Static
 
@@ -410,6 +411,8 @@ def _app(db_path, tmp_path, career_ops=None, fake=None) -> JobCockpitApp:
 def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame({}))
+        f2 = frame({"company": "Acme Corp", "title": "Data Engineer", "link": "https://example.com/job-2"})
+        db.upsert_jobspy_frame(con, f2)
     fake = FakeGemini()
 
     async def drive() -> None:
@@ -418,10 +421,25 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
             await pilot.press("b")
             await app.workers.wait_for_complete()
             await pilot.pause()
-            row = app.query_one(DataTable).get_row_at(0)
-            assert isinstance(row[0], Text) and "grey23" in str(row[0].style)
-            assert isinstance(row[1], Text) and "grey23" in str(row[1].style) and "★" in row[1].plain
+            table = app.query_one(DataTable)
+            row = table.get_row_at(0)
+            assert "grey23" in str(table._get_row_style(0, Style()).bgcolor)
+            assert "★" in (row[1].plain if isinstance(row[1], Text) else str(row[1]))
             assert "4.2" in [c.plain if isinstance(c, Text) else str(c) for c in row]
+
+            # When cursor moves off row 0, verify the entire row line is highlighted uniformly
+            await pilot.press("down")
+            await pilot.pause()
+            lines = table.render_lines(table.region)
+            row_0_segs = [s for s in lines[0] if s.text]
+            assert len(row_0_segs) > 0
+            for seg in row_0_segs:
+                assert "grey23" in str(seg.style.bgcolor) or "58" in str(seg.style.bgcolor)
+
+            # In SAVED view, saved jobs must NOT be highlighted
+            await pilot.press("f")
+            await pilot.pause()
+            assert "grey23" not in str(table._get_row_style(0, Style()).bgcolor)
 
     asyncio.run(drive())
     assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - Seattle, WA - *.md"))

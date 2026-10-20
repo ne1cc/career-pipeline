@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from rich.markup import escape
+from rich.style import Style
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -64,6 +65,20 @@ class NoteModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class CockpitTable(DataTable):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.highlighted_row_keys: set[Any] = set()
+
+    def _get_row_style(self, row_index: int, base_style: Style) -> Style:
+        style = super()._get_row_style(row_index, base_style)
+        if 0 <= row_index < len(self.ordered_rows):
+            row_key = self.ordered_rows[row_index].key
+            if row_key in self.highlighted_row_keys or getattr(row_key, "value", None) in self.highlighted_row_keys:
+                return style + Style(bgcolor="grey23")
+        return style
 
 
 class JobCockpitApp(App[None]):
@@ -135,7 +150,7 @@ class JobCockpitApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="score")
         with Horizontal():
-            yield DataTable(id="table", cursor_type="row", zebra_stripes=True, cell_padding=1)
+            yield CockpitTable(id="table", cursor_type="row", zebra_stripes=True, cell_padding=1)
             with VerticalScroll(id="detail-pane"):
                 yield Static(id="detail")
         yield Footer()
@@ -233,14 +248,18 @@ class JobCockpitApp(App[None]):
             )
             b = scoreboard(con)
         self._apply_sort()
-        table = self.query_one(DataTable)
+        table = self.query_one(CockpitTable)
         table.clear()
+        table.highlighted_row_keys.clear()
         self._update_column_headers()
+        is_saved_filter = FILTERS[self.filter_idx] == "SAVED"
         target_row = row
         for idx, r in enumerate(self.rows):
             if preserve_key and r.get("dedup_key") == preserve_key:
                 target_row = idx
             is_saved = bool(r.get("is_saved"))
+            if is_saved and not is_saved_filter:
+                table.highlighted_row_keys.add(r["dedup_key"])
             # Format Fit column: "…" if pending/running, "4.2" if done, "!" if failed
             fit_val = r.get("fit_score")
             intel_st = r.get("intel_status")
@@ -255,21 +274,15 @@ class JobCockpitApp(App[None]):
 
             score_str = f"★ {r['priority_score']:.0f}" if is_saved else f"{r['priority_score']:.0f}"
 
-            def c(val: Any) -> Text | str:
-                s = str(val or "")
-                if is_saved:
-                    return Text(s, style="on grey23")
-                return s
-
             table.add_row(
-                c(fit_str),
-                c(score_str),
-                c(r["company"]),
-                c(r["title"]),
-                c(r["location"] or ""),
-                c(r["site"] or ""),
-                c(r["resume_archetype"]),
-                c(r["status"]),
+                fit_str,
+                score_str,
+                r["company"],
+                r["title"],
+                r["location"] or "",
+                r["site"] or "",
+                r["resume_archetype"],
+                r["status"],
                 key=r["dedup_key"],
             )
         if self.rows:
