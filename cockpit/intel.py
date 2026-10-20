@@ -308,9 +308,10 @@ def format_date_saved(saved_at: Any) -> str:
 
 def dossier_path(job: Mapping[str, Any], export_dir: Path = DEFAULT_EXPORT_DIR) -> Path:
     title = sanitize_filename_part(job.get("title"), default="role")
+    company = sanitize_filename_part(job.get("company"), default="unknown company")
     loc = sanitize_filename_part(job.get("location"), default="remote")
     date_saved = format_date_saved(job.get("saved_at"))
-    return export_dir / f"{title} - {loc} - {date_saved}.md"
+    return export_dir / f"{title} - {company} - {loc} - {date_saved}.md"
 
 
 def render_dossier(

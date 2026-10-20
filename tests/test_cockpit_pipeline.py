@@ -442,17 +442,18 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
             assert "grey23" not in str(table._get_row_style(0, Style()).bgcolor)
 
     asyncio.run(drive())
-    assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - Seattle, WA - *.md"))
+    assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - * - Seattle, WA - *.md"))
 
 
 def test_dossier_path_format(tmp_path):
     job = {
         "title": "Senior Data / Platform Engineer",
+        "company": "Acme: Corp",
         "location": "Seattle, WA",
         "saved_at": "2026-10-19 14:30:00",
     }
     p = intel.dossier_path(job, tmp_path)
-    assert p.name == "Senior Data Platform Engineer - Seattle, WA - 2026-10-19.md"
+    assert p.name == "Senior Data Platform Engineer - Acme Corp - Seattle, WA - 2026-10-19.md"
 
 
 def test_jd_pane_scrolls_with_keys(db_path, tmp_path, calls):
