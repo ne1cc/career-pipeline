@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 from rich.style import Style
 from rich.text import Text
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Static
 
 from cockpit import db, intel, macos
 from cockpit.cli import render_plist
@@ -548,3 +548,114 @@ def test_cli_intel(db_path, career_ops, tmp_path, monkeypatch):
     with db.session(db_path) as con:
         fit, status = con.execute("SELECT fit_score, intel_status FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()
     assert fit == 4.2 and status == "done"
+
+
+
+def test_column_sorting_by_click(db_path, tmp_path, calls):
+    df = pd.DataFrame([
+        {
+            "id": "1",
+            "site": "linkedin",
+            "title": "Software Engineer I",
+            "company": "Zebra Technologies",
+            "location": "Seattle, WA",
+            "job_url": "https://linkedin.com/jobs/view/1",
+            "job_url_direct": None,
+            "description": "Python, FastAPI",
+            "date_posted": "2026-10-15",
+        },
+        {
+            "id": "2",
+            "site": "indeed",
+            "title": "Data Platform Engineer",
+            "company": "Alpha Corp",
+            "location": "Remote",
+            "job_url": "https://indeed.com/viewjob?jk=2",
+            "job_url_direct": None,
+            "description": "Python, DuckDB",
+            "date_posted": "2026-10-16",
+        },
+        {
+            "id": "3",
+            "site": "zip_recruiter",
+            "title": "Backend Architect",
+            "company": "Beta Systems",
+            "location": "New York, NY",
+            "job_url": "https://ziprecruiter.com/jobs/3",
+            "job_url_direct": None,
+            "description": "FastAPI, PostgreSQL",
+            "date_posted": "2026-10-14",
+        },
+    ])
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, df)
+        con.execute("UPDATE jobs_master SET priority_score = 95.0, fit_score = 3.5 WHERE company = 'Zebra Technologies'")
+        con.execute("UPDATE jobs_master SET priority_score = 75.0, fit_score = 4.8 WHERE company = 'Alpha Corp'")
+        con.execute("UPDATE jobs_master SET priority_score = 85.0, fit_score = NULL WHERE company = 'Beta Systems'")
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            table = app.query_one(DataTable)
+            # Default order is priority_score DESC: Zebra (95), Beta (85), Alpha (75)
+            assert [r["company"] for r in app.rows] == ["Zebra Technologies", "Beta Systems", "Alpha Corp"]
+
+            # 1. Click 'Company' header: Ascending (A -> Z)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["company"].key, 2, Text("Company")))
+            await pilot.pause()
+            assert [r["company"] for r in app.rows] == ["Alpha Corp", "Beta Systems", "Zebra Technologies"]
+            assert "▲" in str(table.columns["company"].label)
+            assert "sort:company↑" in str(app.query_one("#score", Static).content)
+
+            # 2. Click 'Company' header again: Descending (Z -> A)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["company"].key, 2, table.columns["company"].label))
+            await pilot.pause()
+            assert [r["company"] for r in app.rows] == ["Zebra Technologies", "Beta Systems", "Alpha Corp"]
+            assert "▼" in str(table.columns["company"].label)
+            assert "sort:company↓" in str(app.query_one("#score", Static).content)
+
+            # 3. Click 'Company' header 3rd time: Reset to default order
+            table.post_message(DataTable.HeaderSelected(table, table.columns["company"].key, 2, table.columns["company"].label))
+            await pilot.pause()
+            assert [r["company"] for r in app.rows] == ["Zebra Technologies", "Beta Systems", "Alpha Corp"]
+            assert "▲" not in str(table.columns["company"].label) and "▼" not in str(table.columns["company"].label)
+            assert "sort:" not in str(app.query_one("#score", Static).content)
+
+            # 4. Click 'Score' header: 1st click Descending (highest score first)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["score"].key, 1, Text("Score")))
+            await pilot.pause()
+            assert [r["priority_score"] for r in app.rows] == [95.0, 85.0, 75.0]
+            assert "▼" in str(table.columns["score"].label)
+
+            # 5. Click 'Score' header again: Ascending (lowest score first)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["score"].key, 1, table.columns["score"].label))
+            await pilot.pause()
+            assert [r["priority_score"] for r in app.rows] == [75.0, 85.0, 95.0]
+            assert "▲" in str(table.columns["score"].label)
+
+            # 6. Click 'Fit' header: 1st click Descending (None at bottom)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["fit"].key, 0, Text("Fit")))
+            await pilot.pause()
+            assert [r["company"] for r in app.rows] == ["Alpha Corp", "Zebra Technologies", "Beta Systems"]
+            assert [r["fit_score"] for r in app.rows] == [4.8, 3.5, None]
+            assert "▼" in str(table.columns["fit"].label)
+
+            # 7. Click 'Fit' header again: Ascending (None still at bottom)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["fit"].key, 0, table.columns["fit"].label))
+            await pilot.pause()
+            assert [r["company"] for r in app.rows] == ["Zebra Technologies", "Alpha Corp", "Beta Systems"]
+            assert [r["fit_score"] for r in app.rows] == [3.5, 4.8, None]
+            assert "▲" in str(table.columns["fit"].label)
+
+            # 8. Selection preservation across sorts:
+            table.move_cursor(row=2)
+            await pilot.pause()
+            assert app._job()["company"] == "Beta Systems"
+
+            # Sort by company ascending (Beta Systems moves to row index 1)
+            table.post_message(DataTable.HeaderSelected(table, table.columns["company"].key, 2, Text("Company")))
+            await pilot.pause()
+            assert table.cursor_row == 1
+            assert app._job()["company"] == "Beta Systems"
+
+    asyncio.run(drive())

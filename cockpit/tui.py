@@ -35,6 +35,17 @@ from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, 
 
 FILTERS: list[str | None] = ["QUEUED", "SAVED", "REFERRAL_HOLD", "APPLIED", None]
 
+COLUMNS: tuple[tuple[str, str, int], ...] = (
+    ("fit", "Fit", 6),
+    ("score", "Score", 8),
+    ("company", "Company", 18),
+    ("title", "Title", 34),
+    ("location", "Location", 14),
+    ("site", "Site", 8),
+    ("archetype", "Archetype", 14),
+    ("status", "Status", 8),
+)
+
 
 class NoteModal(ModalScreen[str | None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -128,6 +139,8 @@ class JobCockpitApp(App[None]):
         self.model = model or intel_cfg.get("model")
         self.generate = generate
         self.rows: list[dict[str, Any]] = []
+        self.sort_col: str | None = None
+        self.sort_reverse: bool = False
         self.filter_idx = 0
         self.segment: str | None = None
         self.loc_query: str | None = None
@@ -144,23 +157,86 @@ class JobCockpitApp(App[None]):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        for label, width in (
-            ("Fit", 5),
-            ("Score", 6),
-            ("Company", 18),
-            ("Title", 34),
-            ("Location", 14),
-            ("Site", 8),
-            ("Archetype", 14),
-            ("Status", 8),
-        ):
-            table.add_column(label, width=width)
+        for key, label, width in COLUMNS:
+            table.add_column(label, width=width, key=key)
         with session(self.db_path) as con:
             expire_stale_referral_holds(con)
         self._reload()
         self._kick_intel()
 
-    def _reload(self, row: int | None = None) -> None:
+    def _apply_sort(self) -> None:
+        if not self.sort_col:
+            return
+
+        col = self.sort_col
+        if col == "fit":
+            if self.sort_reverse:
+                self.rows.sort(
+                    key=lambda r: (r.get("fit_score") is not None, r.get("fit_score") or 0.0),
+                    reverse=True,
+                )
+            else:
+                self.rows.sort(
+                    key=lambda r: (r.get("fit_score") is None, r.get("fit_score") or 0.0),
+                    reverse=False,
+                )
+        elif col == "score":
+            self.rows.sort(
+                key=lambda r: (r.get("priority_score") if r.get("priority_score") is not None else 0.0),
+                reverse=self.sort_reverse,
+            )
+        else:
+            field_map = {
+                "company": "company",
+                "title": "title",
+                "location": "location",
+                "site": "site",
+                "archetype": "resume_archetype",
+                "status": "status",
+            }
+            field = field_map.get(col, col)
+            self.rows.sort(
+                key=lambda r: (r.get(field) or "").lower(),
+                reverse=self.sort_reverse,
+            )
+
+    def _update_column_headers(self) -> None:
+        table = self.query_one(DataTable)
+        for key, base_label, _ in COLUMNS:
+            if key in table.columns:
+                col = table.columns[key]
+                if self.sort_col == key:
+                    arrow = "▼" if self.sort_reverse else "▲"
+                    col.label = Text(f"{base_label} {arrow}")
+                else:
+                    col.label = Text(base_label)
+        table.refresh()
+
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        col_key = str(event.column_key.value)
+        cur_job = self._job()
+        cur_key = cur_job.get("dedup_key") if cur_job else None
+
+        if self.sort_col == col_key:
+            if col_key in ("score", "fit"):
+                if self.sort_reverse:
+                    self.sort_reverse = False
+                else:
+                    self.sort_col = None
+                    self.sort_reverse = False
+            else:
+                if not self.sort_reverse:
+                    self.sort_reverse = True
+                else:
+                    self.sort_col = None
+                    self.sort_reverse = False
+        else:
+            self.sort_col = col_key
+            self.sort_reverse = col_key in ("score", "fit")
+
+        self._reload(preserve_key=cur_key)
+
+    def _reload(self, row: int | None = None, preserve_key: str | None = None) -> None:
         with session(self.db_path) as con:
             self.rows = fetch_jobs(
                 con,
@@ -171,11 +247,16 @@ class JobCockpitApp(App[None]):
                 query=self.search_query,
             )
             b = scoreboard(con)
+        self._apply_sort()
         table = self.query_one(CockpitTable)
         table.clear()
         table.highlighted_row_keys.clear()
+        self._update_column_headers()
         is_saved_filter = FILTERS[self.filter_idx] == "SAVED"
-        for r in self.rows:
+        target_row = row
+        for idx, r in enumerate(self.rows):
+            if preserve_key and r.get("dedup_key") == preserve_key:
+                target_row = idx
             is_saved = bool(r.get("is_saved"))
             if is_saved and not is_saved_filter:
                 table.highlighted_row_keys.add(r["dedup_key"])
@@ -204,13 +285,17 @@ class JobCockpitApp(App[None]):
                 r["status"],
                 key=r["dedup_key"],
             )
-        if self.rows and row is not None:
-            table.move_cursor(row=min(row, len(self.rows) - 1))
+        if self.rows:
+            if target_row is not None:
+                table.move_cursor(row=min(target_row, len(self.rows) - 1))
+            elif row is not None:
+                table.move_cursor(row=min(row, len(self.rows) - 1))
         label = FILTERS[self.filter_idx] or "ALL"
+        sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         self.query_one("#score", Static).update(
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
-            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}]"
+            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}{sort_indicator}]"
         )
         self._show(table.cursor_row)
 
