@@ -16,6 +16,7 @@ locations = [
     "Seattle, WA",
     "San Francisco, CA",
     "Los Angeles, CA",
+    "Portland, OR",
 ]
 
 # Broad set of search terms that align with roles business analytics/MSBA graduates typically target.

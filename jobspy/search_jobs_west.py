@@ -87,6 +87,7 @@ locations = [
     "Seattle, WA",
     "San Francisco, CA",
     "Los Angeles, CA",
+    "Portland, OR",
 ]
 
 search_terms = [
@@ -153,9 +154,16 @@ search_terms = [
     "Junior Frontend Engineer",
     "Junior Backend Engineer",
     "Junior DevOps Engineer",
+    "Data Engineer",
+    "Backend Engineer",
+    "Platform Engineer",
+    "Product Engineer",
+    "Associate Product Engineer",
 
     # Security Roles
     "Junior Security Engineer",
+    "Security Engineer",
+    "Application Security Engineer",
     "Associate Security Engineer",
     "Cybersecurity Analyst",
     "Information Security Analyst",

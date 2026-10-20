@@ -9,6 +9,7 @@ from pipeline_enrichment import (
     deduplicate_action_items,
     build_action_items_sheet,
     build_developer_security_sheet,
+    build_last_72_hours_sheet,
 )
 
 
@@ -20,7 +21,7 @@ def test_matches_fresher_track():
     assert matches_fresher_track("BizOps Analyst")
     assert matches_fresher_track("Associate Software Engineer")
     assert matches_fresher_track("Strategy and Operations Analyst")
-    assert not matches_fresher_track("Software Engineer")
+    assert matches_fresher_track("Software Engineer")
     assert not matches_fresher_track("Registered Nurse")
     assert not matches_fresher_track("Truck Driver")
 
@@ -57,6 +58,54 @@ def test_priority_scoring():
     score = calculate_fresher_priority_score(high_priority_row)
     # is_new (5) + is_fresh (3) + explicit entry (3) + direct ATS (2) + Track A (2) = 15
     assert score >= 14
+
+
+def test_data_and_software_tracks_receive_equal_base_priority():
+    base = {"is_new": False, "is_fresh_post": False, "apply_type": "Company Site"}
+    analytics = calculate_fresher_priority_score(pd.Series({**base, "title": "Data Analyst"}))
+    software = calculate_fresher_priority_score(pd.Series({**base, "title": "Software Engineer"}))
+    assert analytics == software
+
+
+def test_last_72_hours_uses_timestamp_and_keeps_distinct_requisitions():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+    df = pd.DataFrame([
+        {"title": "Data Analyst", "company": "Acme", "job_url": "https://jobs.example/1", "date_posted": "2026-10-19", "posted_at": "2026-10-19T10:00:00Z", "site": "Dice"},
+        {"title": "Data Analyst", "company": "Acme", "job_url": "https://jobs.example/1", "date_posted": "2026-10-19", "posted_at": "2026-10-19T10:00:00Z", "site": "WWR"},
+        {"title": "Data Analyst", "company": "Acme", "job_url": "https://jobs.example/2", "date_posted": "2026-10-19", "posted_at": "2026-10-19T10:00:00Z", "site": "ATS"},
+        {"title": "Backend Engineer", "company": "Acme", "job_url": "https://jobs.example/3", "date_posted": "2026-10-16", "posted_at": "2026-10-16T11:59:59Z", "site": "ATS"},
+        {"title": "Security Analyst", "company": "Acme", "job_url": "https://jobs.example/4", "date_posted": "2026-10-19", "posted_at": "2026-10-19T12:00:01Z", "site": "ATS"},
+        {"title": "Junior Data Analyst", "company": "Acme", "job_url": "https://jobs.example/5", "date_posted": "2026-10-17", "site": "ATS"},
+        {"title": "Junior Data Analyst", "company": "Acme", "job_url": "https://jobs.example/6", "date_posted": "", "site": "ATS"},
+        {"title": "Data Engineer", "company": "Acme", "job_url": "https://jobs.example/7", "date_posted": "2026-10-16", "site": "ATS"},
+    ])
+
+    result = build_last_72_hours_sheet({"source": df}, reference_now=now)
+
+    assert set(result["job_url"]) == {"https://jobs.example/1", "https://jobs.example/2"}
+    duplicate = result[result["job_url"] == "https://jobs.example/1"].iloc[0]
+    assert set(duplicate["sources"].split(", ")) == {"Dice", "WWR"}
+
+
+def test_last_72_hours_includes_headers_when_no_jobs_match():
+    result = build_last_72_hours_sheet({})
+    assert result.empty
+    assert "job_url" in result.columns
+    assert "posted_at" in result.columns
+
+
+def test_last_72_hours_preserves_distinct_requisition_query_ids():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+    df = pd.DataFrame([
+        {"title": "Data Analyst", "company": "Acme", "job_url": f"https://jobs.example/apply?jobId={job_id}", "posted_at": "2026-10-19T10:00:00Z", "site": "ATS"}
+        for job_id in ("123", "456")
+    ])
+    result = build_last_72_hours_sheet({"source": df}, reference_now=now)
+    assert len(result) == 2
 
 
 def test_action_items_filters_seniors_and_ranks():

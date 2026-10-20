@@ -8,12 +8,15 @@ import os
 import sys
 import csv
 import time
+import json
 import logging
 import argparse
-from datetime import datetime, timezone
+import email.utils
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import re
 import html
+import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
 
@@ -27,6 +30,9 @@ COLUMNS = [
     "company",
     "location",
     "date_posted",
+    "posted_at",
+    "first_seen_at",
+    "description",
     "is_remote",
     "search_keyword",
 ]
@@ -45,6 +51,11 @@ DEFAULT_SEARCH_TERMS = [
     "Analytics Engineer",
     "Full Stack Analytics Engineer",
     "Data Engineer",
+    "Junior Backend Engineer",
+    "Backend Engineer",
+    "Platform Engineer",
+    "Product Engineer",
+    "Associate Product Engineer",
     # Business Intelligence
     "Business Intelligence Analyst",
     "BI Developer",
@@ -93,18 +104,238 @@ SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 # Compiled regex pattern for title matching across broad feeds
 ROLE_REGEX = re.compile(
     r"\b(?:"
-    r"data analyst|business analyst|data scientist|statistician|quantitative|"
-    r"analytics engineer|data engineer|business intelligence|bi developer|bi engineer|"
-    r"reporting analyst|healthcare analyst|clinical data|health informatics|"
-    r"financial analyst|market research|marketing analytics|supply chain analyst|"
-    r"pricing analyst|revenue analyst|operations analyst|product analyst|growth analyst|"
-    r"risk analyst|strategy consultant|"
-    r"software engineer|software developer|swe|developer|programmer|"
-    r"cybersecurity|infosec|security engineer|security analyst|soc analyst|"
-    r"devops|cloud engineer|sre\b"
+    r"data analysts?|business analysts?|data scientists?|statisticians?|quantitative analysts?|"
+    r"operations research analysts?|product analysts?|growth analysts?|analytics engineers?|"
+    r"full stack analytics engineers?|data engineers?|business intelligence analysts?|"
+    r"bi developers?|bi engineers?|reporting analysts?|healthcare analysts?|clinical data analysts?|"
+    r"clinical research analysts?|health informatics analysts?|financial analysts?|"
+    r"market research analysts?|marketing data analysts?|marketing analytics specialists?|"
+    r"supply chain analysts?|pricing analysts?|revenue analysts?|sales operations analysts?|"
+    r"risk analysts?|business analytics consultants?|computer systems analysts?|programmer analysts?|"
+    r"associate data & analytics|technology advisory associates?|strategy consultants?|"
+    r"associate product managers?|apm|business operations associates?|"
+    r"software engineers?|software developers?|swe|junior developers?|"
+    r"backend engineers?|back-end engineers?|backend developers?|back-end developers?|"
+    r"platform engineers?|product engineers?|frontend engineers?|front-end engineers?|"
+    r"cloud engineers?|devops engineers?|site reliability engineers?|sre|"
+    r"cybersecurity analysts?|information security analysts?|infosec|"
+    r"security engineers?|security analysts?|soc analysts?"
     r")\b",
     re.IGNORECASE,
 )
+
+TARGET_STATE_PATTERN = re.compile(r"\b(?:california|ca|oregon|or|washington|wa)\b", re.I)
+TARGET_LOCATION_PATTERN = re.compile(
+    r"\b(?:seattle|san francisco|los angeles|portland|california|oregon|washington|ca|or|wa)\b", re.I
+)
+US_REMOTE_PATTERN = re.compile(
+    r"\b(?:us|usa|u\.s\.|united states|us only|north america|worldwide|anywhere in the world)\b", re.I
+)
+
+
+def parse_posted_at(value) -> datetime | None:
+    if value is None or value == "":
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        try:
+            parsed = email.utils.parsedate_to_datetime(str(value))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def is_target_location(location: str, is_remote: bool = False) -> bool:
+    text = (location or "").strip()
+    if TARGET_LOCATION_PATTERN.search(text):
+        return True
+    return bool(is_remote and US_REMOTE_PATTERN.search(text))
+
+
+def normalize_portal_job(source, job_id, title, company, url, location, posted_at, term, description=""):
+    posted = parse_posted_at(posted_at)
+    if not title or not ROLE_REGEX.search(title) or not url or not posted:
+        return None
+    location = str(location or "")
+    is_remote = "remote" in location.lower() or source == "We Work Remotely"
+    if not is_target_location(location, is_remote):
+        return None
+    posted_text = str(posted_at or "").strip()
+    has_exact_time = isinstance(posted_at, (int, float)) or bool(re.search(r"[T ]\d{2}:\d{2}", posted_text))
+    return {
+        "id": f"{source.lower().replace(' ', '-')}-{job_id or url}",
+        "site": source,
+        "job_url": url,
+        "job_url_direct": url,
+        "title": html.unescape(str(title)).strip(),
+        "company": html.unescape(str(company or "Unknown employer")).strip(),
+        "location": location,
+        "date_posted": posted.strftime("%Y-%m-%d"),
+        "posted_at": posted.isoformat() if has_exact_time else "",
+        "description": html.unescape(str(description or "")).strip(),
+        "is_remote": is_remote,
+        "search_keyword": term,
+    }
+
+
+def parse_dice_jobs(page_text: str, term: str = "Dice") -> list[dict]:
+    jobs = []
+    for match in re.finditer(r"self\.__next_f\.push\((.+?)\);?\s*</script>", page_text, re.S):
+        try:
+            frame = json.loads(match.group(1))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(frame, list) or len(frame) < 2 or not isinstance(frame[1], str):
+            continue
+        payload = frame[1]
+        marker = '"jobList":{"data":'
+        start = payload.find(marker)
+        if start < 0:
+            continue
+        start += len(marker)
+        try:
+            data, _ = json.JSONDecoder().raw_decode(payload[start:])
+        except json.JSONDecodeError:
+            continue
+        for job in data:
+            loc = job.get("jobLocation") or ""
+            if isinstance(loc, dict):
+                loc = ", ".join(str(loc.get(key)) for key in ("city", "adminDistrict", "state", "country") if loc.get(key))
+            elif isinstance(loc, list):
+                loc = ", ".join(str(value) for value in loc)
+            workplace = " ".join(job.get("workplaceTypes") or [])
+            summary = job.get("summary", "")
+            if job.get("isRemote") or "remote" in workplace.lower():
+                loc = f"{loc} Remote US {summary[:300]}"
+            normalized = normalize_portal_job(
+                "Dice", job.get("guid") or job.get("id"), job.get("title"),
+                job.get("companyName"), job.get("detailsPageUrl"), loc,
+                job.get("postedDate"), term,
+                description=summary,
+            )
+            if normalized:
+                jobs.append(normalized)
+        break
+    return jobs
+
+
+def parse_weworkremotely_feed(xml_text: str, term: str = "We Work Remotely") -> list[dict]:
+    jobs = []
+    root = ET.fromstring(xml_text)
+    for item in root.findall(".//item"):
+        jobs.append(normalize_portal_job(
+            "We Work Remotely", item.findtext("guid"), item.findtext("title"),
+            item.findtext("company"), item.findtext("link"),
+            item.findtext("region") or item.findtext("location") or "",
+            item.findtext("pubDate"), term,
+            description=item.findtext("description") or "",
+        ))
+    return [job for job in jobs if job]
+
+
+def fetch_python_job_detail(url: str) -> dict:
+    response = _get_request(url, headers=HEADERS, retries=2)
+    if not response or response.status_code != 200:
+        return {}
+    soup = BeautifulSoup(response.text, "html.parser")
+    time_element = soup.find("time", attrs={"datetime": True})
+    description = soup.find("div", class_="job-content") or soup.find("main") or soup
+    return {
+        "posted_at": time_element.get("datetime") if time_element else None,
+        "description": description.get_text(" ", strip=True),
+    }
+
+
+def parse_hn_job(item: dict, term: str = "Hacker News") -> dict | None:
+    if not isinstance(item, dict) or item.get("deleted") or item.get("dead"):
+        return None
+    title = html.unescape(item.get("title", ""))
+    body = BeautifulSoup(item.get("text", ""), "html.parser").get_text(" ", strip=True)
+    location_match = TARGET_LOCATION_PATTERN.search(f"{title} {body}")
+    location = location_match.group(0) if location_match else ""
+    if re.search(r"\bremote\b", f"{title} {body}", re.I) and US_REMOTE_PATTERN.search(f"{title} {body}"):
+        location = "Remote, United States"
+    return normalize_portal_job(
+        "Hacker News", item.get("id"), title, title.split(" is hiring", 1)[0],
+        item.get("url") or f"https://news.ycombinator.com/item?id={item.get('id')}",
+        location, item.get("time"), term,
+        description=body,
+    )
+
+
+def parse_python_jobs_feed(xml_text: str, term: str = "Python.org", detail_loader=None) -> list[dict]:
+    jobs = []
+    root = ET.fromstring(xml_text)
+    for item in root.findall(".//item"):
+        description = BeautifulSoup(item.findtext("description") or "", "html.parser").get_text(" ", strip=True)
+        url = item.findtext("link")
+        posted_at = item.findtext("pubDate")
+        if not posted_at and detail_loader and url:
+            try:
+                detail = detail_loader(url)
+                posted_at = detail.get("posted_at")
+                description = f"{description} {detail.get('description', '')}"
+            except Exception as exc:
+                logging.debug("Python.org detail lookup failed for %s: %s", url, exc)
+        jobs.append(normalize_portal_job(
+            "Python.org", item.findtext("guid"), item.findtext("title"),
+            "Python Job Board employer", url, description,
+            posted_at, term,
+            description=description,
+        ))
+    return [job for job in jobs if job]
+
+
+def scrape_fast_sources(term: str = "Data & Software", is_smoke: bool = False, hours_old: int = 336) -> list[dict]:
+    jobs = []
+    dice_locations = ["Seattle, WA", "San Francisco, CA", "Los Angeles, CA", "Portland, OR", "Remote, US"]
+    dice_terms = [
+        "Data Analyst", "Data Engineer", "Analytics Engineer",
+        "Software Engineer", "Security Engineer", "Platform Engineer",
+    ]
+    if is_smoke:
+        dice_locations = dice_locations[:1]
+        dice_terms = dice_terms[:1]
+    posted_filter = "ONE" if hours_old <= 24 else "THREE" if hours_old <= 72 else "SEVEN" if hours_old <= 168 else "THIRTY"
+    for location in dice_locations:
+        for dice_term in dice_terms:
+            response = _get_request(
+                "https://www.dice.com/jobs",
+                headers=HEADERS,
+                params={"q": dice_term, "location": location, "countryCode": "US", "page": 1, "pageSize": 100, "sortBy": "DATE", "filters.postedDate": posted_filter},
+            )
+            if response and response.status_code == 200:
+                jobs.extend(parse_dice_jobs(response.text, term))
+
+    feeds = [
+        ("https://weworkremotely.com/remote-jobs.rss", parse_weworkremotely_feed),
+        ("https://www.python.org/jobs/feed/rss/", parse_python_jobs_feed),
+    ]
+    for url, parser in feeds:
+        response = _get_request(url, headers=HEADERS)
+        if response and response.status_code == 200:
+            if parser is parse_python_jobs_feed:
+                jobs.extend(parser(response.text, term, detail_loader=fetch_python_job_detail))
+            else:
+                jobs.extend(parser(response.text, term))
+
+    response = _get_request("https://hacker-news.firebaseio.com/v0/jobstories.json", headers=JSON_HEADERS)
+    if response and response.status_code == 200:
+        for job_id in response.json()[:20]:
+            item_response = _get_request(
+                f"https://hacker-news.firebaseio.com/v0/item/{job_id}.json", headers=JSON_HEADERS
+            )
+            if item_response and item_response.status_code == 200:
+                job = parse_hn_job(item_response.json(), term)
+                if job:
+                    jobs.append(job)
+    return jobs
 
 # Standard HTTP headers mimicking desktop browsers
 HEADERS = {
@@ -182,10 +413,10 @@ def scrape_builtin_portal(term: str, is_smoke: bool = False) -> list[dict]:
 
                 card_text = card.get_text(" ", strip=True)
                 is_remote = "remote" in card_text.lower()
-                loc = "Seattle, WA" if "seattle" in base_url else "Remote"
+                loc = "Seattle, WA" if "seattle" in base_url else ("Remote" if is_remote else "")
 
-                date_posted = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                job_id = card.get("id", "").replace("job-card-", "") or str(abs(hash(job_url)))
+                date_posted = ""
+                job_id = card.get("id", "").replace("job-card-", "") or job_url
 
                 jobs.append({
                     "id": f"builtin-{job_id}",
@@ -196,6 +427,7 @@ def scrape_builtin_portal(term: str, is_smoke: bool = False) -> list[dict]:
                     "company": company or "BuiltIn Employer",
                     "location": loc,
                     "date_posted": date_posted,
+                    "posted_at": "",
                     "is_remote": is_remote,
                     "search_keyword": term,
                 })
@@ -221,19 +453,21 @@ def scrape_himalayas_portal(term: str, is_smoke: bool = False) -> list[dict]:
             if not title or not ROLE_REGEX.search(title):
                 continue
 
-            app_link = j.get("applicationLink") or j.get("guid") or ""
+            app_link = j.get("applicationLink") or ""
             if not app_link:
                 continue
 
-            pub_date_ts = j.get("pubDate")
-            date_posted = ""
-            if pub_date_ts:
-                try:
-                    date_posted = datetime.fromtimestamp(pub_date_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                except Exception:
-                    date_posted = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            restrictions = j.get("locationRestrictions") or []
+            timezones = j.get("timezoneRestrictions") or []
+            us_allowed = not restrictions or any("united states" in str(value).lower() or str(value).lower() == "us" for value in restrictions)
+            west_allowed = not timezones or any(offset in timezones for offset in (-8, -7, -6, -5))
+            if not us_allowed or not west_allowed:
+                continue
+            location = "Remote, Worldwide" if not restrictions else "Remote, US"
+            posted_at = parse_posted_at(j.get("pubDate"))
+            date_posted = posted_at.strftime("%Y-%m-%d") if posted_at else ""
 
-            job_id = str(j.get("guid", abs(hash(app_link))))
+            job_id = str(j.get("guid") or app_link)
 
             jobs.append({
                 "id": f"himalayas-{job_id}",
@@ -242,8 +476,9 @@ def scrape_himalayas_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 "job_url_direct": app_link,
                 "title": title,
                 "company": j.get("companyName", "Himalayas Employer"),
-                "location": "Remote, US",
+                "location": location,
                 "date_posted": date_posted,
+                "posted_at": posted_at.isoformat() if posted_at else "",
                 "is_remote": True,
                 "search_keyword": term,
             })
@@ -272,8 +507,9 @@ def scrape_remotive_portal(term: str, is_smoke: bool = False) -> list[dict]:
             if not app_link:
                 continue
 
-            pub_date = j.get("publication_date", "")[:10]
-            job_id = str(j.get("id", abs(hash(app_link))))
+            posted_at = parse_posted_at(j.get("publication_date"))
+            pub_date = posted_at.strftime("%Y-%m-%d") if posted_at else ""
+            job_id = str(j.get("id") or app_link)
 
             jobs.append({
                 "id": f"remotive-{job_id}",
@@ -282,8 +518,9 @@ def scrape_remotive_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 "job_url_direct": app_link,
                 "title": title,
                 "company": j.get("company_name", "Remotive Employer"),
-                "location": j.get("candidate_required_location") or "Remote",
-                "date_posted": pub_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "location": j.get("candidate_required_location") or "",
+                "date_posted": pub_date,
+                "posted_at": posted_at.isoformat() if posted_at else "",
                 "is_remote": True,
                 "search_keyword": term,
             })
@@ -313,8 +550,9 @@ def scrape_jobicy_portal(term: str, is_smoke: bool = False) -> list[dict]:
             if not app_link:
                 continue
 
-            pub_date = j.get("pubDate", "")[:10]
-            job_id = str(j.get("id", abs(hash(app_link))))
+            posted_at = parse_posted_at(j.get("pubDate"))
+            pub_date = posted_at.strftime("%Y-%m-%d") if posted_at else ""
+            job_id = str(j.get("id") or app_link)
 
             jobs.append({
                 "id": f"jobicy-{job_id}",
@@ -323,8 +561,9 @@ def scrape_jobicy_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 "job_url_direct": app_link,
                 "title": title,
                 "company": j.get("companyName", "Jobicy Employer"),
-                "location": j.get("jobGeo") or "Remote, US",
-                "date_posted": pub_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "location": j.get("jobGeo") or "",
+                "date_posted": pub_date,
+                "posted_at": posted_at.isoformat() if posted_at else "",
                 "is_remote": True,
                 "search_keyword": term,
             })
@@ -356,8 +595,9 @@ def scrape_remoteok_portal(term: str, is_smoke: bool = False) -> list[dict]:
             if not job_url:
                 continue
 
-            date_str = j.get("date", "")[:10]
-            job_id = str(j.get("id", abs(hash(job_url))))
+            posted_at = parse_posted_at(j.get("date"))
+            date_str = posted_at.strftime("%Y-%m-%d") if posted_at else ""
+            job_id = str(j.get("id") or job_url)
 
             jobs.append({
                 "id": f"remoteok-{job_id}",
@@ -366,8 +606,9 @@ def scrape_remoteok_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 "job_url_direct": job_url,
                 "title": title,
                 "company": html.unescape(j.get("company", "RemoteOK Employer")),
-                "location": j.get("location") or "Remote",
-                "date_posted": date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "location": j.get("location") or "",
+                "date_posted": date_str,
+                "posted_at": posted_at.isoformat() if posted_at else "",
                 "is_remote": True,
                 "search_keyword": term,
             })
@@ -396,8 +637,9 @@ def scrape_arbeitnow_portal(term: str, is_smoke: bool = False) -> list[dict]:
             if not app_link:
                 continue
 
-            job_id = str(j.get("slug", abs(hash(app_link))))
+            job_id = str(j.get("slug") or app_link)
             is_remote = bool(j.get("remote"))
+            posted_at = parse_posted_at(j.get("created_at") or j.get("date"))
 
             jobs.append({
                 "id": f"arbeitnow-{job_id}",
@@ -406,8 +648,9 @@ def scrape_arbeitnow_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 "job_url_direct": app_link,
                 "title": title,
                 "company": j.get("company_name", "Arbeitnow Employer"),
-                "location": j.get("location") or ("Remote" if is_remote else "USA"),
-                "date_posted": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "location": j.get("location") or "",
+                "date_posted": posted_at.strftime("%Y-%m-%d") if posted_at else "",
+                "posted_at": posted_at.isoformat() if posted_at else "",
                 "is_remote": is_remote,
                 "search_keyword": term,
             })
@@ -419,6 +662,9 @@ def scrape_arbeitnow_portal(term: str, is_smoke: bool = False) -> list[dict]:
 def main():
     parser = argparse.ArgumentParser(description="JobSpy High-Traffic Tech Portals Scraper")
     parser.add_argument("--smoke-test", action="store_true", help="Quick run on 1 term across portals")
+    parser.add_argument("--hours-old", type=int, default=336, help="Keep postings from the last N hours (default: 336)")
+    parser.add_argument("--watch", action="store_true", help="Poll fast sources continuously, without sending email")
+    parser.add_argument("--poll-interval", type=int, default=600, help="Seconds between watch passes (minimum: 60)")
     args = parser.parse_args()
 
     # Paths
@@ -440,70 +686,96 @@ def main():
         ],
     )
 
-    terms = ["Data Analyst"] if args.smoke_test else SEARCH_TERMS
-    logging.info(f"Starting Tech Portals Scraper with {len(terms)} search terms (smoke_test={args.smoke_test})")
-
-    all_jobs = []
-
-    # 1. Broad feed portals (query once and match against regex)
-    logging.info("--- Querying Himalayas API ---")
-    himalayas_jobs = scrape_himalayas_portal("Data & Analytics", is_smoke=args.smoke_test)
-    logging.info(f"Himalayas returned {len(himalayas_jobs)} matched jobs")
-    all_jobs.extend(himalayas_jobs)
-
-    logging.info("--- Querying Remotive API ---")
-    remotive_jobs = scrape_remotive_portal("Data & Analytics", is_smoke=args.smoke_test)
-    logging.info(f"Remotive returned {len(remotive_jobs)} matched jobs")
-    all_jobs.extend(remotive_jobs)
-
-    logging.info("--- Querying RemoteOK API ---")
-    remoteok_jobs = scrape_remoteok_portal("Data & Analytics", is_smoke=args.smoke_test)
-    logging.info(f"RemoteOK returned {len(remoteok_jobs)} matched jobs")
-    all_jobs.extend(remoteok_jobs)
-
-    logging.info("--- Querying Jobicy API ---")
-    jobicy_jobs = scrape_jobicy_portal("Data & Analytics", is_smoke=args.smoke_test)
-    logging.info(f"Jobicy returned {len(jobicy_jobs)} matched jobs")
-    all_jobs.extend(jobicy_jobs)
-
-    logging.info("--- Querying Arbeitnow API ---")
-    arbeitnow_jobs = scrape_arbeitnow_portal("Data & Analytics", is_smoke=args.smoke_test)
-    logging.info(f"Arbeitnow returned {len(arbeitnow_jobs)} matched jobs")
-    all_jobs.extend(arbeitnow_jobs)
-
-    # 2. Term-based portals (BuiltIn)
-    logging.info(f"--- Querying BuiltIn Portals ({len(terms)} terms) ---")
-    for i, term in enumerate(terms, 1):
-        logging.info(f"[{i}/{len(terms)}] BuiltIn searching: {term}")
-        bi_jobs = scrape_builtin_portal(term, is_smoke=args.smoke_test)
-        logging.info(f"  Found {len(bi_jobs)} jobs for '{term}'")
-        all_jobs.extend(bi_jobs)
-
-    # Deduplicate by job_url
-    deduped = {}
-    for job in all_jobs:
-        url = job.get("job_url", "").strip()
-        if url and url not in deduped:
-            deduped[url] = job
-
-    final_list = list(deduped.values())
-    final_list.sort(key=lambda x: x.get("title", "").lower())
-
     out_csv = results_dir / "tech_portals_jobs.csv"
-    with open(out_csv, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=COLUMNS,
-            quoting=csv.QUOTE_NONNUMERIC,
-            escapechar="\\",
-        )
-        writer.writeheader()
-        for row in final_list:
-            filtered_row = {k: row.get(k, "") for k in COLUMNS}
-            writer.writerow(filtered_row)
+    first_seen_path = base_dir.parent / ".pipeline_state" / "portal_first_seen.json"
 
-    logging.info(f"Saved {len(final_list)} deduplicated tech portal jobs to {out_csv}")
-    print(f"DONE: {len(final_list)} jobs written to {out_csv}")
+    def collect_once():
+        all_jobs = scrape_fast_sources(
+            is_smoke=args.smoke_test,
+            hours_old=24 if args.watch else args.hours_old,
+        )
+        if not args.watch:
+            all_jobs.extend(scrape_himalayas_portal("Data & Analytics", is_smoke=args.smoke_test))
+            all_jobs.extend(scrape_remotive_portal("Data & Analytics", is_smoke=args.smoke_test))
+            all_jobs.extend(scrape_remoteok_portal("Data & Software", is_smoke=args.smoke_test))
+            all_jobs.extend(scrape_jobicy_portal("Data & Analytics", is_smoke=args.smoke_test))
+            all_jobs.extend(scrape_arbeitnow_portal("Data & Software", is_smoke=args.smoke_test))
+            terms = ["Data Analyst"] if args.smoke_test else SEARCH_TERMS
+            for term in terms:
+                all_jobs.extend(scrape_builtin_portal(term, is_smoke=args.smoke_test))
+
+        now_utc = datetime.now(timezone.utc)
+        cutoff = now_utc - timedelta(hours=max(1, args.hours_old))
+        kept = {}
+        for job in all_jobs:
+            posted = parse_posted_at(job.get("posted_at") or job.get("date_posted"))
+            url = str(job.get("job_url", "")).strip()
+            if (
+                not posted
+                or posted < cutoff
+                or posted > now_utc
+                or not url
+                or not ROLE_REGEX.search(str(job.get("title", "")))
+                or not is_target_location(str(job.get("location", "")), bool(job.get("is_remote")))
+            ):
+                continue
+            if job.get("posted_at"):
+                job["posted_at"] = posted.isoformat()
+            job["date_posted"] = posted.strftime("%Y-%m-%d")
+            kept[url] = job
+
+        previous = {}
+        seen = {}
+        try:
+            with open(first_seen_path, encoding="utf-8") as state_file:
+                seen = json.load(state_file)
+        except (OSError, json.JSONDecodeError):
+            pass
+        if args.watch and out_csv.exists():
+            with open(out_csv, newline="", encoding="utf-8") as old_file:
+                for row in csv.DictReader(old_file):
+                    url = row.get("job_url", "").strip()
+                    posted = parse_posted_at(row.get("posted_at") or row.get("date_posted"))
+                    if url and posted and cutoff <= posted <= now_utc:
+                        previous[url] = row
+
+        for job in kept.values():
+            key = job["job_url"]
+            seen.setdefault(key, now_utc.isoformat())
+            job["first_seen_at"] = seen[key]
+        for url, row in previous.items():
+            seen.setdefault(url, row.get("first_seen_at") or now_utc.isoformat())
+        merged = {**previous, **kept}
+        seen = {url: seen.get(url, now_utc.isoformat()) for url in merged}
+        final_list = sorted(merged.values(), key=lambda job: job.get("posted_at", ""), reverse=True)
+
+        temp_csv = out_csv.with_suffix(".csv.tmp")
+        with open(temp_csv, mode="w", newline="", encoding="utf-8") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=COLUMNS, quoting=csv.QUOTE_NONNUMERIC, escapechar="\\")
+            writer.writeheader()
+            writer.writerows({key: row.get(key, "") for key in COLUMNS} for row in final_list)
+        os.replace(temp_csv, out_csv)
+
+        first_seen_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_state = first_seen_path.with_suffix(".json.tmp")
+        temp_state.write_text(json.dumps(seen, indent=2), encoding="utf-8")
+        os.replace(temp_state, first_seen_path)
+        logging.info("Saved %s fresh portal jobs to %s", len(final_list), out_csv)
+        print(f"DONE: {len(final_list)} jobs written to {out_csv}")
+
+    if args.watch:
+        interval = max(60, args.poll_interval)
+        logging.info("Watching fast sources every %s seconds; press Ctrl+C to stop", interval)
+        while True:
+            try:
+                collect_once()
+            except KeyboardInterrupt:
+                break
+            except Exception:
+                logging.exception("Portal watch pass failed; prior CSV is retained")
+            time.sleep(interval)
+    else:
+        collect_once()
 
 
 if __name__ == "__main__":
