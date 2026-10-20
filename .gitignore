@@ -26,3 +26,8 @@ results/
 # job cockpit
 data/*.duckdb
 data/*.duckdb.wal
+
+# assistant sessions
+.claude/
+.gemini/
+
