@@ -5,7 +5,7 @@
   macOS launchd job for the JobSpy Custom pipeline.
 
   This replaces the Linux crontab entry:
-    0 6 */2 * * cd ~/Github/Jobspy-Custom && poetry run python run_pipeline.py >> pipeline_cron.log 2>&1
+    daily at 8:00 AM Pacific using this project's Python environment
 
   launchd is the macOS-native way to run this daily (cron exists on macOS
   but needs manual Full Disk Access grants and doesn't run missed jobs on
@@ -16,14 +16,16 @@
     - REPLACE_WITH_HOME_DIR       e.g. /Users/yourname
     - REPLACE_WITH_REPO_PATH      absolute path to this cloned repo,
                                    e.g. /Users/yourname/Github/Jobspy-Custom
+    - REPLACE_WITH_PYTHON_PATH    absolute path to the project's Python,
+                                   e.g. /Users/yourname/.local/venvs/jobspy/bin/python
 
   Then install with (copy first — do not sed this template in git):
     cp launchd/com.jobspy-custom.pipeline.plist ~/Library/LaunchAgents/
-    sed -i '' "s|REPLACE_WITH_REPO_PATH|/Users/yourname/Github/Jobspy-Custom|g; s|REPLACE_WITH_HOME_DIR|/Users/yourname|g" \
+    sed -i '' "s|REPLACE_WITH_REPO_PATH|/Users/yourname/Github/Jobspy-Custom|g; s|REPLACE_WITH_HOME_DIR|/Users/yourname|g; s|REPLACE_WITH_PYTHON_PATH|/Users/yourname/.local/venvs/jobspy-custom-3.12/bin/python|g" \
       ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
 
-  To test immediately instead of waiting for 6am:
+  To test immediately instead of waiting for 8am:
     launchctl kickstart -k gui/$(id -u)/com.jobspy-custom.pipeline
 
   To remove:
@@ -36,15 +38,17 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>-lc</string>
-        <string>cd REPLACE_WITH_REPO_PATH && poetry run python run_pipeline.py</string>
+        <string>REPLACE_WITH_PYTHON_PATH</string>
+        <string>REPLACE_WITH_REPO_PATH/run_pipeline.py</string>
     </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_REPO_PATH</string>
 
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>6</integer>
+        <integer>8</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>
@@ -53,9 +57,6 @@
     <string>REPLACE_WITH_REPO_PATH/pipeline_cron.log</string>
     <key>StandardErrorPath</key>
     <string>REPLACE_WITH_REPO_PATH/pipeline_cron.log</string>
-
-    <key>WorkingDirectory</key>
-    <string>REPLACE_WITH_REPO_PATH</string>
 
     <key>RunAtLoad</key>
     <false/>

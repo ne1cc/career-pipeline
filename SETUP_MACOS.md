@@ -1,7 +1,7 @@
 # Running JobSpy Custom on macOS
 
 This is the full setup guide for moving the daily job-scrape pipeline from
-the Linux box (cron, every 2 days) onto a Mac (launchd, every day at 6:00 AM).
+the Linux box (cron, every 2 days) onto a Mac (launchd, every day at 8:00 AM Pacific).
 
 On Linux it currently looks like:
 
@@ -11,7 +11,7 @@ On Linux it currently looks like:
 
 On macOS, **do not use crontab**. Cron needs a manual Full Disk Access grant
 and silently skips a run if the Mac was asleep. **launchd** is the native
-scheduler: it runs as your user and catches up a missed 6 AM run when the
+scheduler: it runs as your user and catches up a missed 8 AM run when the
 Mac wakes.
 
 ---
@@ -39,6 +39,16 @@ Not part of the daily job (run them by hand if you want them):
 
 A full run takes a while (four scrapers hitting several job boards). Test
 the email config with a real run before scheduling anything.
+
+### Optional 10-minute portal monitor
+
+For faster source checks, run the source-only monitor separately from the daily email pipeline:
+
+```sh
+poetry run python jobspy/search_jobs_portals.py --watch --poll-interval 600
+```
+
+The optional `launchd/com.jobspy-custom.portals.plist` template runs the same command at login and restarts it after exits. Copy it to `~/Library/LaunchAgents`, replace the path placeholders, then bootstrap it as described in the template. The monitor writes only the portal CSV and first-seen state. It does not build or email reports. A sleeping or offline Mac cannot poll until it wakes.
 
 ---
 
@@ -184,6 +194,18 @@ jobspy/scraped jobs/logs/YYYY_MM/search_jobs_seattle.log
 
 A template job lives in
 [`launchd/com.jobspy-custom.pipeline.plist`](launchd/com.jobspy-custom.pipeline.plist).
+It calls a dedicated Python 3.12 environment directly, so launchd does not
+depend on Poetry's shell activation or interactive PATH. Create that environment
+once with:
+
+```bash
+python3.12 -m venv "$HOME/.local/venvs/jobspy-custom-3.12"
+"$HOME/.local/venvs/jobspy-custom-3.12/bin/python" -m pip install \
+  'requests>=2.31' 'beautifulsoup4>=4.12.2' 'pandas>=2.1,<3' 'numpy>=1.26' \
+  'pydantic>=2.3' 'tls-client>=1.0.1' 'markdownify>=1.1' 'regex>=2024.4.28' \
+  'gspread>=6.2.1' 'openpyxl>=3.1.5' 'google-api-python-client>=2.198' \
+  'ats-scrapers[scrapers]>=0.2.0'
+```
 
 **Copy first, then fill in paths on the copy** — do not `sed` the file in
 the git repo, or a later `git pull` will fight your local paths.
@@ -192,7 +214,7 @@ the git repo, or a later `git pull` will fight your local paths.
 # From the repo root
 cp launchd/com.jobspy-custom.pipeline.plist ~/Library/LaunchAgents/
 
-sed -i '' "s|REPLACE_WITH_REPO_PATH|$(pwd)|g; s|REPLACE_WITH_HOME_DIR|$HOME|g" \
+sed -i '' "s|REPLACE_WITH_REPO_PATH|$(pwd)|g; s|REPLACE_WITH_HOME_DIR|$HOME|g; s|REPLACE_WITH_PYTHON_PATH|$HOME/.local/venvs/jobspy-custom-3.12/bin/python|g" \
   ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
 
 # Confirm no placeholders remain
@@ -200,12 +222,15 @@ grep REPLACE_ ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist && echo "F
 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
 
-# Fire it now (don't wait until 6 AM)
+# Fire it now (don't wait until 8 AM)
 launchctl kickstart -k gui/$(id -u)/com.jobspy-custom.pipeline
 tail -f pipeline_cron.log
 ```
 
-Default schedule: **6:00 AM local, daily**. Linux was every 2 days; this is
+Default schedule: **8:00 AM Pacific, daily**. This overlaps late morning on
+the East Coast while West Coast employers are starting their day. There is
+no universally optimal posting hour; weekday volume is higher, with Tuesday
+and Wednesday near the top. Linux was every 2 days; this is
 once a day. To change the time, edit `Hour` / `Minute` in
 `~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist`, then:
 
@@ -219,11 +244,9 @@ Notes:
 - This is a **LaunchAgent** (not a LaunchDaemon). It runs while you are
   logged in, which matches how it ran on Linux. Stay logged in (lid closed
   with “prevent sleep” / power adapter is fine; a full logout will skip it).
-- If the Mac is asleep at 6 AM, launchd runs the job when it next wakes.
-- `poetry` must be on the plist's `PATH`. The template includes Homebrew
-  Apple Silicon (`/opt/homebrew/bin`), Intel (`/usr/local/bin`), and pipx
-  (`~/.local/bin`). If `which poetry` prints something else, add that
-  directory to the `PATH` string in the plist.
+- If the Mac is asleep at 8 AM, launchd runs the job when it next wakes.
+- The plist executes the dedicated Python path directly; verify it exists
+  and imports pandas before bootstrapping the job.
 
 ---
 

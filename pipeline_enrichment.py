@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pathlib import Path
 from typing import Iterable
 
@@ -198,7 +199,8 @@ def matches_fresher_track(title: str) -> bool:
     return bool(
         re.search(TRACK_A_PATTERN, t)
         or re.search(TRACK_C_PATTERN, t)
-        or (re.search(TRACK_B_PATTERN, t) and re.search(ENTRY_TITLE_TAG_PATTERN, t))
+        or re.search(TRACK_B_PATTERN, t)
+        or re.search(SECURITY_PATTERN, t)
     )
 
 
@@ -241,9 +243,7 @@ def calculate_fresher_priority_score(row: pd.Series) -> int:
     if any(k in apply_type for k in ["direct", "easy apply"]):
         score += 2
 
-    if re.search(TRACK_A_PATTERN, title):
-        score += 2
-    elif re.search(TRACK_C_PATTERN, title) or re.search(TRACK_B_PATTERN, title):
+    if re.search(TRACK_A_PATTERN, title) or re.search(TRACK_C_PATTERN, title) or re.search(TRACK_B_PATTERN, title) or re.search(SECURITY_PATTERN, title):
         score += 1
 
     return score
@@ -369,6 +369,122 @@ def build_developer_security_sheet(segment_frames: dict[str, pd.DataFrame]) -> p
         combined = combined.sort_values(by="_score", ascending=False).drop(columns="_score")
 
     return combined.reset_index(drop=True)
+
+
+LAST_72_HOURS_COLUMNS = [
+    "title", "company", "location", "posted_at", "date_precision",
+    "experience_fit", "job_url", "job_url_direct", "sources", "site",
+]
+
+
+def _parse_fresh_timestamp(value) -> tuple[datetime | None, str]:
+    if value is None or pd.isna(value) or not str(value).strip():
+        return None, "missing"
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None, "invalid"
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc), "timestamp (timezone unknown)"
+    return parsed.astimezone(timezone.utc), "timestamp"
+
+
+def _canonical_job_url(value) -> str:
+    text = "" if pd.isna(value) else str(value).strip()
+    if not text:
+        return ""
+    parts = urlsplit(text)
+    query = [(key, val) for key, val in parse_qsl(parts.query, keep_blank_values=True)
+             if not key.lower().startswith("utm_") and key.lower() not in {"source", "ref", "gh_src"}]
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), urlencode(query), ""))
+
+
+def build_last_72_hours_sheet(
+    segment_frames: dict[str, pd.DataFrame], *, reference_now: datetime | None = None
+) -> pd.DataFrame:
+    """Build an entry-level view of supportably fresh postings from all sources."""
+    now = reference_now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    cutoff = now - timedelta(hours=72)
+
+    pieces = []
+    for segment_name, frame in segment_frames.items():
+        if frame.empty or "title" not in frame.columns:
+            continue
+        df = frame.copy()
+        descriptions = df.get("description", pd.Series("", index=df.index)).fillna("").astype(str)
+        titles = df["title"].fillna("").astype(str)
+        eligible = [
+            (matches_fresher_track(title) or matches_developer_security_track(title))
+            and not is_senior_or_high_yoe(title, description)
+            for title, description in zip(titles, descriptions)
+        ]
+        df = df[eligible].copy()
+        if df.empty:
+            continue
+
+        posted_values = df.get("posted_at", pd.Series("", index=df.index))
+        date_values = df.get("date_posted", pd.Series("", index=df.index))
+        parsed_values = []
+        precision_values = []
+        keep = []
+        for posted_at, posted_date in zip(posted_values, date_values):
+            parsed, precision = _parse_fresh_timestamp(posted_at)
+            if parsed is None and precision == "missing":
+                calendar_date = parse_posted_date(posted_date)
+                if calendar_date:
+                    parsed = datetime.combine(calendar_date, datetime.min.time(), tzinfo=timezone.utc)
+                    precision = "date only (UTC; full-day conservative)"
+            parsed_values.append(parsed)
+            precision_values.append(precision)
+            if not parsed:
+                keep.append(False)
+            elif precision == "timestamp (timezone unknown)":
+                keep.append(cutoff <= parsed - timedelta(hours=14) and parsed + timedelta(hours=14) <= now)
+            elif precision.startswith("date only"):
+                keep.append(cutoff <= parsed - timedelta(hours=14) and parsed + timedelta(hours=38) <= now)
+            else:
+                keep.append(cutoff <= parsed <= now)
+        df = df[keep].copy()
+        if df.empty:
+            continue
+        kept_positions = [position for position, is_kept in enumerate(keep) if is_kept]
+        df["posted_at"] = [parsed_values[i].isoformat() for i in kept_positions]
+        df["date_precision"] = [precision_values[i] for i in kept_positions]
+        experience_labels = []
+        for desc in df.get("description", pd.Series("", index=df.index)).fillna("").astype(str):
+            if re.search(r"\b(?:[3-9]|1[0-9])\s*(?:\+|to|-|–)\s*(?:[3-9]|1[0-9])?\s*(?:years|yrs)\b", desc, re.I):
+                experience_labels.append("Stretch (3+ years stated)")
+            elif re.search(r"\b(?:\d+\+?\s*(?:to|-|–)\s*)?\d+\+?\s*(?:years|yrs)\b", desc, re.I):
+                experience_labels.append("Experience stated; review requirements")
+            else:
+                experience_labels.append("Experience not stated")
+        df["experience_fit"] = experience_labels
+        df["sources"] = df.get("site", pd.Series(segment_name, index=df.index)).fillna("").astype(str)
+        pieces.append(df)
+
+    if not pieces:
+        return pd.DataFrame(columns=LAST_72_HOURS_COLUMNS)
+
+    combined = pd.concat(pieces, ignore_index=True, sort=False)
+    combined["_dedup_key"] = combined.apply(
+        lambda row: _canonical_job_url(row.get("job_url_direct"))
+        or _canonical_job_url(row.get("job_url")), axis=1
+    )
+    combined = combined[combined["_dedup_key"] != ""].copy()
+    rows = []
+    for _, group in combined.groupby("_dedup_key", sort=False):
+        row = group.sort_values("posted_at", ascending=False).iloc[0].copy()
+        sources = sorted({source for value in group["sources"] for source in str(value).split(", ") if source})
+        row["sources"] = ", ".join(sources)
+        rows.append(row)
+    result = pd.DataFrame(rows)
+    result = result.sort_values("posted_at", ascending=False)
+    columns = [col for col in LAST_72_HOURS_COLUMNS if col in result.columns]
+    return result[columns].reset_index(drop=True)
 
 
 def apply_row_highlights(ws, df: pd.DataFrame) -> None:

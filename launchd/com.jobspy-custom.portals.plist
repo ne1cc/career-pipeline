@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jobspy-custom.portals</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd REPLACE_WITH_REPO_PATH &amp;&amp; poetry run python jobspy/search_jobs_portals.py --watch --poll-interval 600</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_REPO_PATH</string>
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_REPO_PATH/portals_watch.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_REPO_PATH/portals_watch.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

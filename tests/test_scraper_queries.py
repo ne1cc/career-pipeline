@@ -31,6 +31,12 @@ def test_ats_queries_include_early_career_tags():
     assert any("new grad" in t.lower() or "early career" in t.lower() or "junior" in t.lower() for t in terms)
     assert any("analytics engineer" in t.lower() for t in terms)
     assert any("security" in t.lower() or "cyber" in t.lower() for t in terms)
+    assert search_jobs_ats.ROLE_PATTERN.search("Software Engineer")
+    assert search_jobs_ats.ROLE_PATTERN.search("Backend Platform Engineer")
+    assert search_jobs_ats.ROLE_PATTERN.search("Security Analyst")
+    assert "Data Engineer" in terms
+    assert "Junior Backend Engineer" in terms
+    assert "Platform Engineer" in terms
 
 def test_portals_queries_include_early_career_tags():
     terms = search_jobs_portals.DEFAULT_SEARCH_TERMS

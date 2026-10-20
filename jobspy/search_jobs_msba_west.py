@@ -16,6 +16,7 @@ locations = [
     "Seattle, WA",
     "San Francisco, CA",
     "Los Angeles, CA",
+    "Portland, OR",
 ]
 
 # Broad set of search terms that align with roles business analytics/MSBA graduates typically target.
@@ -123,7 +124,7 @@ def recruits_msba_graduates(title: str, description: str) -> bool:
 if __name__ == "__main__":
     all_jobs_list = []
 
-    print(f"Starting West Coast MSBA Job Scrape for last 72 hours...")
+    print(f"Starting West Coast MSBA Job Scrape for last 14 days...")
     print(f"Locations: {locations}")
     print(f"Search Terms: {len(search_terms)} terms\n")
 
@@ -132,7 +133,7 @@ if __name__ == "__main__":
         for term in search_terms:
             print(f"  > Scraping: '{term}' in '{loc}'")
             try:
-                # We fetch jobs posted within the last 72 hours
+                # Fetch jobs posted within the last 14 days.
                 jobs = scrape_jobs(
                     site_name=[
                         "indeed",
@@ -145,7 +146,7 @@ if __name__ == "__main__":
                     location=loc,
                     country_indeed="USA",
                     results_wanted=9999,
-                    hours_old=72,
+                    hours_old=336,
                     linkedin_fetch_description=True, 
                 )
                 
@@ -169,14 +170,14 @@ if __name__ == "__main__":
         # Apply entry-to-mid level and MSBA recruitment filters
         filtered_rows = []
         today = date.today()
-        three_days_ago = today - timedelta(days=3)
+        fourteen_days_ago = today - timedelta(days=14)
         
         for idx, row in combined_jobs.iterrows():
             title = str(row.get("title")) if pd.notna(row.get("title")) else ""
             description = str(row.get("description")) if pd.notna(row.get("description")) else ""
             date_posted = row.get("date_posted")
             
-            # 1. Double check date if present (must be within last 72 hours / 3 days)
+            # 1. Double check date if present (must be within the last 14 days).
             is_recent = True
             if pd.notna(date_posted):
                 if isinstance(date_posted, str):
@@ -189,7 +190,7 @@ if __name__ == "__main__":
                 else:
                     job_date = None
                     
-                if job_date and job_date < three_days_ago:
+                if job_date and (job_date < fourteen_days_ago or job_date > today):
                     is_recent = False
                     
             if not is_recent:

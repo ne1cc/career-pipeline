@@ -60,6 +60,12 @@ DEFAULT_SEARCH_TERMS = [
     "Business Operations Associate",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
+    "Data Engineer",
+    "Junior Backend Engineer",
+    "Backend Engineer",
+    "Platform Engineer",
+    "Product Engineer",
+    "Associate Product Engineer",
     "Junior Data Analyst",
     "Early Career Analyst",
     "Junior Software Engineer",
@@ -114,7 +120,9 @@ COMPANY_ALIASES = {
 
 # Regex filter for analytics/data/bi job titles in target company boards
 ROLE_PATTERN = re.compile(
-    r"\b(?:analyst|analytics|data|scientist|statistician|quantitative|bi)\b",
+    r"\b(?:analyst|analytics|data|scientist|statistician|quantitative|bi|"
+    r"software|developer|backend|back-end|platform|product engineer|security|cybersecurity|"
+    r"infosec|soc|devops|sre)\b",
     re.IGNORECASE,
 )
 
@@ -127,6 +135,7 @@ STANDARD_COLUMNS = [
     "company",
     "location",
     "date_posted",
+    "posted_at",
     "is_remote",
     "search_keyword",
 ]
@@ -156,7 +165,8 @@ def normalize_job_object(job: Any, search_keyword: str) -> Dict[str, Any]:
         "title": str(job.title or "").strip(),
         "company": str(job.company or "").strip(),
         "location": str(job.location or "").strip(),
-        "date_posted": posted_at,
+        "date_posted": posted_at[:10] if posted_at else None,
+        "posted_at": posted_at,
         "is_remote": bool(is_remote),
         "search_keyword": search_keyword,
     }
@@ -196,7 +206,8 @@ def normalize_dataset_row(row: pd.Series, search_keyword: str) -> Dict[str, Any]
         "title": title.strip(),
         "company": company.strip(),
         "location": location.strip(),
-        "date_posted": posted_at,
+        "date_posted": posted_at[:10] if posted_at else None,
+        "posted_at": posted_at,
         "is_remote": is_remote,
         "search_keyword": search_keyword,
     }

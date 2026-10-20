@@ -184,6 +184,22 @@ You can specify the following countries when searching on Indeed (use the exact 
 
 Bayt only uses the search_term parameter currently and searches internationally
 
+## Custom job collection
+
+The daily report gathers jobs posted within the last 14 days across the existing JobSpy searches and ATS boards. West Coast searches include Seattle, San Francisco, Los Angeles, and Portland, plus eligible US remote roles.
+
+The portal scraper adds Dice, We Work Remotely, Hacker News Jobs, and Python.org Jobs alongside Built In, Himalayas, Remotive, Jobicy, RemoteOK, and Arbeitnow. The separate **Last 72 Hours** workbook tab prioritizes verified publication timestamps across both software/security and data/business roles. Results without reliable dates are omitted from that tab. Original post dates are kept separate from when the scraper first discovered a listing.
+
+To monitor the faster sources without rebuilding or emailing the workbook, run:
+
+```sh
+poetry run python jobspy/search_jobs_portals.py --watch --poll-interval 600
+```
+
+Watch mode updates `jobspy/scraped jobs/results/YYYY_MM/tech_portals_jobs.csv` and `.pipeline_state/portal_first_seen.json`. It starts a pass immediately, then waits ten minutes between passes. Remotive's API has a 24-hour delay; Jobicy documents a three-hour delay and asks integrations not to poll more than hourly; Himalayas refreshes data daily. Those providers remain in the regular collection pass and are not polled in watch mode. Board caching and feed publication cadence still control detection time.
+
+The entry-level priority views exclude explicit senior/lead/management titles. Roles requiring three or more years are labeled as stretch matches where they appear; missing experience requirements remain unknown. Analytics and software/security receive equal base priority.
+
 
 
 ## Notes

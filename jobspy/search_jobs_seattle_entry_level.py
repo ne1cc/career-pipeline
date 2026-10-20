@@ -87,7 +87,7 @@ for loc in locations:
                 google_search_term=f"{term} jobs near {loc} since yesterday",
                 country_indeed="USA",
                 results_wanted=9999,
-                hours_old=256,
+                hours_old=336,
             )
             if not jobs.empty:
                 jobs["search_keyword"] = term

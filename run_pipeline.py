@@ -18,6 +18,7 @@ from pipeline_enrichment import (
     apply_row_highlights,
     build_action_items_sheet,
     build_developer_security_sheet,
+    build_last_72_hours_sheet,
     enrich_dataframe,
     format_email_summary,
     load_previous_urls,
@@ -214,10 +215,17 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
         action_items = build_action_items_sheet(segment_frames)
         action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
 
+        fresh_jobs = build_last_72_hours_sheet(segment_frames)
+        fresh_jobs_prepared = prepare_dataframe(fresh_jobs) if not fresh_jobs.empty else fresh_jobs
+
         dev_sec_items = build_developer_security_sheet(segment_frames)
         dev_sec_prepared = prepare_dataframe(dev_sec_items) if not dev_sec_items.empty else dev_sec_items
 
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            print(" - Adding tab 'Last 72 Hours'...")
+            fresh_jobs_prepared.to_excel(writer, sheet_name="Last 72 Hours", index=False)
+            format_worksheet(writer.sheets["Last 72 Hours"], fresh_jobs_prepared)
+
             # Tab 1: Front-load Action Items
             print(f" - Adding tab 'Action Items' (Fresher Spotlight)...")
             action_items_prepared.to_excel(writer, sheet_name="Action Items", index=False)
@@ -246,7 +254,7 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
                 print(f"   -> {new_count} new, {fresh_count} fresh posts, apply types added")
 
             # Reorder safety check using openpyxl
-            desired_front_tabs = ["Action Items", "Developer & Security"]
+            desired_front_tabs = ["Last 72 Hours", "Action Items", "Developer & Security"]
             for target_idx, tab_name in enumerate(desired_front_tabs):
                 if tab_name in writer.book.sheetnames:
                     current_idx = writer.book.sheetnames.index(tab_name)

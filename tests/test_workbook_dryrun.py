@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 import pandas as pd
 import openpyxl
 from run_pipeline import build_excel_workbook, EXPECTED_OUTPUTS
@@ -10,6 +11,8 @@ def test_build_excel_workbook_end_to_end(tmp_path):
     results_dir.mkdir()
 
     # Create sample CSVs for all 8 expected outputs
+    posted_at = datetime.now(timezone.utc).isoformat()
+    posted_date = posted_at[:10]
     sample_jobs = [
         {"title": "Junior Data Analyst", "company": "Co A", "job_url": "https://a.com/job1", "date_posted": "2026-09-10", "site": "linkedin"},
         {"title": "Senior Data Scientist", "company": "Co B", "job_url": "https://b.com/job2", "date_posted": "2026-09-08", "site": "indeed"},
@@ -19,6 +22,10 @@ def test_build_excel_workbook_end_to_end(tmp_path):
         {"title": "Senior Security Engineer", "company": "Co F", "job_url": "https://f.com/job6", "date_posted": "2026-09-11", "site": "indeed"},
     ]
     df = pd.DataFrame(sample_jobs)
+    df["posted_at"] = posted_at
+    df.loc[df["title"].str.startswith("Senior"), "posted_at"] = "2026-01-01T00:00:00+00:00"
+    df.loc[df["title"].str.startswith("Senior"), "date_posted"] = "2026-01-01"
+    df.loc[~df["title"].str.startswith("Senior"), "date_posted"] = posted_date
     for csv_name in EXPECTED_OUTPUTS.keys():
         df.to_csv(results_dir / csv_name, index=False)
 
@@ -35,9 +42,14 @@ def test_build_excel_workbook_end_to_end(tmp_path):
     wb = openpyxl.load_workbook(excel_path)
     sheet_names = wb.sheetnames
 
-    # Verify Tab 1 is Action Items, Tab 2 is Developer & Security
-    assert sheet_names[0] == "Action Items"
-    assert sheet_names[1] == "Developer & Security"
+    # Verify the fresh sheet leads, followed by the existing priority views.
+    assert sheet_names[:3] == ["Last 72 Hours", "Action Items", "Developer & Security"]
+    ws_fresh = wb["Last 72 Hours"]
+    fresh_header = [cell.value for cell in ws_fresh[1]]
+    fresh_title_idx = fresh_header.index("title")
+    fresh_titles = [row[fresh_title_idx] for row in ws_fresh.iter_rows(min_row=2, values_only=True)]
+    assert "Junior Data Analyst" in fresh_titles
+    assert "Senior Data Scientist" not in fresh_titles
 
     # Verify all raw tabs exist
     for target_tab in EXPECTED_OUTPUTS.values():
