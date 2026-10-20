@@ -659,3 +659,101 @@ def test_column_sorting_by_click(db_path, tmp_path, calls):
             assert app._job()["company"] == "Beta Systems"
 
     asyncio.run(drive())
+
+
+def test_resolve_db_path(tmp_path, monkeypatch):
+    p = tmp_path / "custom.duckdb"
+    assert db.resolve_db_path(p) == p.resolve()
+
+    monkeypatch.setenv("COCKPIT_DB_PATH", str(tmp_path / "env.duckdb"))
+    assert db.resolve_db_path() == (tmp_path / "env.duckdb").resolve()
+    monkeypatch.delenv("COCKPIT_DB_PATH")
+
+    wt_dir = tmp_path / "wt"
+    wt_dir.mkdir()
+    main_repo = tmp_path / "main"
+    main_db = main_repo / "data" / "job_funnel.duckdb"
+    main_db.parent.mkdir(parents=True)
+    main_db.touch()
+    git_file = wt_dir / ".git"
+    git_file.write_text(f"gitdir: {main_repo}/.git/worktrees/wt\n")
+    monkeypatch.setattr(db, "REPO_ROOT", wt_dir)
+    assert db.resolve_db_path() == main_db.resolve()
+
+
+def test_fetch_jobs_saved_view_bypasses_segment_and_location(db_path):
+    df = pd.DataFrame([
+        {"id": "1", "site": "linkedin", "title": "Data Analyst", "company": "RevenueCat",
+         "location": "Americas", "job_url": "https://1", "job_url_direct": None,
+         "description": "SQL and Python", "date_posted": "2026-10-19", "segment": "ats_direct"},
+        {"id": "2", "site": "indeed", "title": "Software Engineer", "company": "Seattle Co",
+         "location": "Seattle, WA", "job_url": "https://2", "job_url_direct": None,
+         "description": "Go and Docker", "date_posted": "2026-10-19", "segment": "seattle"},
+    ])
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, df)
+        rc_key = con.execute("SELECT dedup_key FROM jobs_master WHERE company = 'RevenueCat'").fetchone()[0]
+        db.toggle_saved(con, rc_key)
+
+        assert len(db.fetch_jobs(con, status="QUEUED", segment="seattle")) == 1
+        assert len(db.fetch_jobs(con, status="QUEUED", location="americas")) == 1
+
+        saved_with_seattle_seg = db.fetch_jobs(con, status="SAVED", segment="seattle")
+        assert len(saved_with_seattle_seg) == 1
+        assert saved_with_seattle_seg[0]["company"] == "RevenueCat"
+
+        saved_with_wa_loc = db.fetch_jobs(con, status="SAVED", location="wa")
+        assert len(saved_with_wa_loc) == 1
+        assert saved_with_wa_loc[0]["company"] == "RevenueCat"
+
+        assert len(db.fetch_jobs(con, status="SAVED", query="revenue")) == 1
+        assert len(db.fetch_jobs(con, status="SAVED", query="nonexistent")) == 0
+
+
+def test_reconcile_saved_jobs_from_dossiers(db_path, tmp_path):
+    export_dir = tmp_path / "dossiers"
+    export_dir.mkdir()
+
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({"company": "Vola Dynamics", "title": "Legal Assoc"}))
+        key = con.execute("SELECT dedup_key FROM jobs_master WHERE company = 'Vola Dynamics'").fetchone()[0]
+        assert con.execute("SELECT is_saved, fit_score FROM jobs_master WHERE dedup_key = ?", [key]).fetchone() == (False, None)
+
+    dossier_file = export_dir / "Legal Assoc - Remote - 2026-10-19.md"
+    dossier_file.write_text(f"""---
+dedup_key: {key}
+company: "Vola Dynamics"
+title: "Legal Assoc"
+date_evaluated: 2026-10-19
+fit_score: 3.4
+legitimacy: High Confidence
+status: QUEUED
+---
+# Evaluation content
+""", "utf-8")
+
+    with db.session(db_path) as con:
+        reconciled = intel.reconcile_saved_jobs(con, export_dir)
+        assert reconciled == 1
+        row = con.execute("SELECT is_saved, fit_score, intel_status, intel_path FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()
+        assert row[0] is True
+        assert row[1] == 3.4
+        assert row[2] == "done"
+        assert row[3] == str(dossier_file)
+
+        index_text = (export_dir / "index.md").read_text("utf-8")
+        assert "Vola Dynamics" in index_text
+        assert "3.4" in index_text
+
+        assert intel.reconcile_saved_jobs(con, export_dir) == 0
+
+
+def test_toggle_saved_records_intel_path_immediately(db_path, tmp_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        key = con.execute("SELECT dedup_key FROM jobs_master").fetchone()[0]
+        dossier_path = str(tmp_path / "stripe.md")
+        now_saved = db.toggle_saved(con, key, intel_path=dossier_path)
+        assert now_saved is True
+        path_in_db = con.execute("SELECT intel_path FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()[0]
+        assert path_in_db == dossier_path

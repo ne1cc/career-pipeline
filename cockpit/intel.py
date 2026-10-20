@@ -345,8 +345,7 @@ status: {job.get('status')}
 - **Fit Score (career-ops):** {fit_score_str} / 5.0
 - **Archetype:** {archetype_str}
 - **Legitimacy:** {legitimacy_str}
-- **Notes:** {job.get('notes') or 'None'}
-
+- **Notes:** {job.get('notes') or 'None'}\n
 ---
 """
 
@@ -364,6 +363,91 @@ status: {job.get('status')}
 {job.get('description') or 'No description provided.'}
 """
     return header + body + "\n" + jd
+
+
+def parse_dossier_frontmatter(text: str) -> dict[str, str]:
+    """Extract frontmatter key-values from a Markdown dossier."""
+    m = re.match(r"^---\s*\n([\s\S]*?)\n---", text)
+    if not m:
+        return {}
+    meta: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        meta[k.strip()] = v.strip().strip('"').strip("'")
+    return meta
+
+
+def reconcile_saved_jobs(
+    con: Any,
+    export_dir: Path | None = None,
+) -> int:
+    """Scans export_dir for existing dossiers, ensuring all are marked is_saved=TRUE in DuckDB.
+
+    Self-heals any discrepancies caused by worktree database fragmentation, manual edits,
+    or schema migrations.
+    """
+    target_dir = resolve_export_dir(export_dir)
+    if not target_dir.exists():
+        return 0
+
+    reconciled = 0
+    for md_file in target_dir.glob("*.md"):
+        if md_file.name == "index.md":
+            continue
+        try:
+            content = md_file.read_text("utf-8")
+        except OSError:
+            continue
+
+        meta = parse_dossier_frontmatter(content)
+        dedup_key = meta.get("dedup_key")
+        if not dedup_key:
+            continue
+
+        fit_score: float | None = None
+        if fit_str := meta.get("fit_score"):
+            try:
+                fit_score = float(fit_str)
+            except ValueError:
+                pass
+
+        saved_date_str = meta.get("date_evaluated")
+
+        row = con.execute(
+            "SELECT is_saved, fit_score, intel_status, intel_path FROM jobs_master WHERE dedup_key = ?",
+            [dedup_key],
+        ).fetchone()
+        if row is None:
+            continue
+
+        is_saved, cur_fit, cur_status, cur_path = row
+        needs_update = (
+            not is_saved
+            or cur_path != str(md_file)
+            or (fit_score is not None and cur_fit is None)
+            or cur_status != "done"
+        )
+        if needs_update:
+            intel_status = "done" if fit_score is not None else (cur_status or "pending")
+            con.execute(
+                """UPDATE jobs_master SET
+                       is_saved = TRUE,
+                       saved_at = COALESCE(saved_at, CASE WHEN ? IS NOT NULL THEN CAST(? AS TIMESTAMPTZ) ELSE CURRENT_TIMESTAMP END),
+                       fit_score = COALESCE(fit_score, ?),
+                       intel_status = ?,
+                       intel_path = ?,
+                       last_updated_at = CURRENT_TIMESTAMP
+                   WHERE dedup_key = ?""",
+                [saved_date_str, saved_date_str, fit_score, intel_status, str(md_file), dedup_key],
+            )
+            reconciled += 1
+
+    if reconciled > 0:
+        rebuild_index(con, target_dir)
+    return reconciled
 
 
 def rebuild_index(con: Any, export_dir: Path = DEFAULT_EXPORT_DIR) -> None:

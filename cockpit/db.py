@@ -17,7 +17,44 @@ if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
 
-DB_PATH = REPO_ROOT / "data" / "job_funnel.duckdb"
+def resolve_db_path(given: Path | str | None = None) -> Path:
+    """Resolve the canonical DuckDB database path.
+
+    Order of precedence:
+    1. Explicit argument `given`
+    2. COCKPIT_DB_PATH or JOBSPY_DB_PATH environment variable
+    3. If running inside a git worktree, the shared main repository's data/job_funnel.duckdb
+    4. REPO_ROOT / "data" / "job_funnel.duckdb"
+    """
+    if given:
+        return Path(given).expanduser().resolve()
+    env = os.environ.get("COCKPIT_DB_PATH") or os.environ.get("JOBSPY_DB_PATH")
+    if env:
+        return Path(env).expanduser().resolve()
+
+    git_file = REPO_ROOT / ".git"
+    if git_file.is_file():
+        try:
+            content = git_file.read_text("utf-8").strip()
+            if content.startswith("gitdir:"):
+                gitdir_raw = content.split("gitdir:", 1)[1].strip()
+                gitdir_path = Path(gitdir_raw)
+                if not gitdir_path.is_absolute():
+                    gitdir_path = (REPO_ROOT / gitdir_path).resolve()
+                if "worktrees" in gitdir_path.parts:
+                    wt_idx = gitdir_path.parts.index("worktrees")
+                    common_git = Path(*gitdir_path.parts[:wt_idx])
+                    main_repo = common_git.parent
+                    main_db = main_repo / "data" / "job_funnel.duckdb"
+                    if main_db.exists() or not (REPO_ROOT / "data" / "job_funnel.duckdb").exists():
+                        return main_db.resolve()
+        except Exception:
+            pass
+
+    return (REPO_ROOT / "data" / "job_funnel.duckdb").resolve()
+
+
+DB_PATH = resolve_db_path()
 TMUX_CACHE = Path("/tmp/jobcockpit_tmux.cache")
 DAILY_GOAL = 15
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -248,7 +285,7 @@ def restore_job_state(
     write_tmux_cache(con)
 
 
-def toggle_saved(con: duckdb.DuckDBPyConnection, dedup_key: str) -> bool:
+def toggle_saved(con: duckdb.DuckDBPyConnection, dedup_key: str, intel_path: str | None = None) -> bool:
     """Toggle is_saved. When true, sets saved_at and marks intel_status='pending' if not already done."""
     con.begin()
     try:
@@ -261,9 +298,10 @@ def toggle_saved(con: duckdb.DuckDBPyConnection, dedup_key: str) -> bool:
             new_intel = "pending" if intel_status != "done" else "done"
             con.execute(
                 """UPDATE jobs_master SET is_saved = TRUE, saved_at = CURRENT_TIMESTAMP,
-                       last_updated_at = CURRENT_TIMESTAMP, intel_status = ?
+                       last_updated_at = CURRENT_TIMESTAMP, intel_status = ?,
+                       intel_path = COALESCE(?, intel_path)
                    WHERE dedup_key = ?""",
-                [new_intel, dedup_key],
+                [new_intel, intel_path, dedup_key],
             )
         else:
             con.execute(
@@ -398,10 +436,10 @@ def fetch_jobs(
     if floor is not None and status != "SAVED":
         clauses.append("(status <> 'QUEUED' OR is_saved OR priority_score >= ?)")
         params.append(floor)
-    if segment:
+    if segment and status != "SAVED":
         clauses.append("dedup_key IN (SELECT dedup_key FROM job_segments WHERE segment = ?)")
         params.append(segment)
-    if location:
+    if location and status != "SAVED":
         clauses.append("(lower(COALESCE(location, '')) LIKE ? OR (is_remote AND ? = 'remote'))")
         params += [f"%{location.lower()}%", location.lower()]
     if query:

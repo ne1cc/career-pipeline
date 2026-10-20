@@ -81,6 +81,7 @@ def ingest(
 ) -> None:
     """Dedupe, score and upsert scraped jobs into DuckDB."""
     import pandas as pd
+    from cockpit import intel as intel_module
 
     paths = inputs or _find_default_inputs()
     if not paths:
@@ -89,6 +90,7 @@ def ingest(
     with db.session() as con:
         stats = db.upsert_jobspy_frame(con, frame)
         expired = db.expire_stale_referral_holds(con)
+        intel_module.reconcile_saved_jobs(con)
     console.print(f"[green]{len(paths)} file(s)[/green] ({', '.join(p.name for p in paths)}) {stats} | stale holds flagged: {expired}")
 
 
@@ -114,6 +116,9 @@ def sprint(
     location: Annotated[Optional[str], typer.Option(help="Location text, e.g. 'wa' or 'remote'")] = None,
 ) -> None:
     """Blocking loop: stage resume + open URL, then record the outcome."""
+    from cockpit import intel as intel_module
+
+    export_dir = intel_module.resolve_export_dir()
     with db.session() as con:
         jobs = db.fetch_jobs(con, "QUEUED", db.min_score(), segment, location)[:limit]
     outcomes = {"a": FunnelState.APPLIED, "s": FunnelState.SKIPPED, "h": FunnelState.REFERRAL_HOLD}
@@ -131,13 +136,37 @@ def sprint(
         if choice == "q":
             break
         if choice == "b":
+            out_file = intel_module.dossier_path(job, export_dir)
             with db.session() as con:
-                is_saved = db.toggle_saved(con, job["dedup_key"])
+                is_saved = db.toggle_saved(con, job["dedup_key"], intel_path=str(out_file))
+                if is_saved:
+                    export_dir.mkdir(parents=True, exist_ok=True)
+                    if not out_file.exists():
+                        out_file.write_text(intel_module.render_dossier(job), "utf-8")
+                    intel_module.rebuild_index(con, export_dir)
             console.print(f"[bold {'green' if is_saved else 'yellow'}]{'Saved' if is_saved else 'Unsaved'}[/bold {'green' if is_saved else 'yellow'}] {job['title']} @ {job['company']}")
             continue
         note = typer.prompt("contact/note", default="") if choice == "h" else None
         with db.session() as con:
             db.transition_job_state(con, job["dedup_key"], outcomes[choice], "sprint", note or None)
+
+
+@app.command("sync-saved")
+def sync_saved(
+    export_dir: Annotated[Optional[Path], typer.Option(help="Path to export directory (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Reconcile saved jobs and dossiers between DuckDB and export folder."""
+    from cockpit import intel as intel_module
+
+    out_dir = export_dir or intel_module.resolve_export_dir()
+    with db.session() as con:
+        reconciled = intel_module.reconcile_saved_jobs(con, out_dir)
+        intel_module.rebuild_index(con, out_dir)
+        b = db.scoreboard(con)
+    console.print(
+        f"[green]Synced saved jobs.[/green] Total saved in database: [bold]{b['saved']}[/bold] "
+        f"(reconciled {reconciled} from {out_dir})"
+    )
 
 
 @app.command("sync-mail")
@@ -209,6 +238,11 @@ def intel(
             requeued = db.requeue_stale_intel(con, minutes=stale_hours * 60)
             if requeued:
                 console.print(f"[yellow]Requeued {requeued} stale intel job(s)[/yellow]")
+
+    with db.session() as con:
+        reconciled = intel_module.reconcile_saved_jobs(con, out_dir)
+        if reconciled:
+            console.print(f"[cyan]Reconciled {reconciled} saved job(s) from dossiers on disk[/cyan]")
 
     console.print(f"Running intel pipeline with model [cyan]{ctx.model}[/cyan]...")
     processed = intel_module.process_batch(

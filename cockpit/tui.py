@@ -161,6 +161,7 @@ class JobCockpitApp(App[None]):
             table.add_column(label, width=width, key=key)
         with session(self.db_path) as con:
             expire_stale_referral_holds(con)
+            intel.reconcile_saved_jobs(con, self.export_dir)
         self._reload()
         self._kick_intel()
 
@@ -378,19 +379,21 @@ class JobCockpitApp(App[None]):
         if job := self._job():
             row = self.query_one(DataTable).cursor_row
             key = job["dedup_key"]
+            out_file = intel.dossier_path(job, self.export_dir)
             with session(self.db_path) as con:
-                now_saved = toggle_saved(con, key)
+                now_saved = toggle_saved(con, key, intel_path=str(out_file))
             if now_saved:
                 # Write initial stub dossier immediately
-                out_file = intel.dossier_path(job, self.export_dir)
                 self.export_dir.mkdir(parents=True, exist_ok=True)
                 if not out_file.exists():
                     out_file.write_text(intel.render_dossier(job), "utf-8")
+                with session(self.db_path) as con:
+                    intel.rebuild_index(con, self.export_dir)
                 self.notify(f"Saved job to {out_file.name}")
                 self._kick_intel()
             else:
                 self.notify(f"Unsaved {job['company']}")
-            self._reload(row)
+            self._reload(row, preserve_key=key)
 
     def action_rerun_intel(self) -> None:
         if job := self._job():
@@ -398,7 +401,7 @@ class JobCockpitApp(App[None]):
             with session(self.db_path) as con:
                 con.execute("UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL WHERE dedup_key = ?", [key])
             self.notify(f"Re-queued intel for {job['company']}")
-            self._reload(self.query_one(DataTable).cursor_row)
+            self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
             self._kick_intel()
 
     def action_edit_note(self) -> None:
