@@ -312,7 +312,7 @@ class ScraperInput(BaseModel):
     job_type: JobType | None = None
     easy_apply: bool | None = None
     offset: int = 0
-    linkedin_fetch_description: bool = False
+    linkedin_fetch_description: bool = True
     linkedin_company_ids: list[int] | None = None
     description_format: DescriptionFormat | None = DescriptionFormat.MARKDOWN
 

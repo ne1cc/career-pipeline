@@ -1,4 +1,5 @@
 venv/
+.venv
 /.idea
 **/.~lock.*
 **/__pycache__/
@@ -21,3 +22,7 @@ docs/superpowers/
 superpowers/
 jobspy/results/
 results/
+
+# job cockpit
+data/*.duckdb
+data/*.duckdb.wal
