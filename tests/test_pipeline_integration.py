@@ -1,4 +1,7 @@
+import subprocess
 from pathlib import Path
+
+import pytest
 import run_parallel
 import run_pipeline
 
@@ -30,3 +33,66 @@ def test_pipeline_expected_outputs_mapping():
     assert "west_coast_msba_jobs.csv" in outputs
     assert outputs["west_coast_msba_jobs.csv"] == "West Coast MSBA Jobs"
     assert len(outputs) == 8
+
+
+def test_run_cockpit_ingest_with_csvs(monkeypatch, tmp_path):
+    recorded_commands = []
+
+    def fake_run(cmd, cwd=None, **kwargs):
+        recorded_commands.append({"cmd": cmd, "cwd": cwd})
+        return subprocess.CompletedProcess(cmd, 0, stdout="success", stderr="")
+
+    monkeypatch.setattr(run_pipeline.subprocess, "run", fake_run)
+
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    f1 = results_dir / "seattle_jobs.csv"
+    f2 = results_dir / "west_coast_jobs.csv"
+    f1.write_text("dummy")
+    f2.write_text("dummy")
+
+    ok = run_pipeline.run_cockpit_ingest(results_dir)
+    assert ok is True
+    assert len(recorded_commands) == 1
+    cmd = recorded_commands[0]["cmd"]
+    assert "cockpit.cli" in cmd
+    assert "ingest" in cmd
+    assert str(f1) in cmd
+    assert str(f2) in cmd
+
+
+def test_run_cockpit_ingest_handles_failure(monkeypatch):
+    def fake_run(cmd, cwd=None, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error")
+
+    monkeypatch.setattr(run_pipeline.subprocess, "run", fake_run)
+    assert run_pipeline.run_cockpit_ingest() is False
+
+
+def test_main_runs_cockpit_ingest_even_if_email_fails(monkeypatch, tmp_path):
+    called = []
+
+    monkeypatch.setattr(run_pipeline, "load_config", lambda: {})
+    monkeypatch.setattr(run_pipeline, "validate_config", lambda cfg: None)
+    monkeypatch.setattr(run_pipeline, "run_scrapers", lambda: called.append("scrapers"))
+    monkeypatch.setattr(
+        run_pipeline,
+        "build_excel_workbook",
+        lambda results_dir, expected_outputs: (tmp_path / "report.xlsx", {}, False),
+    )
+
+    def fake_send_email(*args, **kwargs):
+        called.append("email_failed")
+        raise SystemExit(1)
+
+    def fake_ingest(results_dir=None):
+        called.append("cockpit_ingest")
+        return True
+
+    monkeypatch.setattr(run_pipeline, "send_email_with_attachment", fake_send_email)
+    monkeypatch.setattr(run_pipeline, "run_cockpit_ingest", fake_ingest)
+
+    with pytest.raises(SystemExit):
+        run_pipeline.main()
+
+    assert called == ["scrapers", "email_failed", "cockpit_ingest"]
