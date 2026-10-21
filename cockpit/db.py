@@ -181,19 +181,30 @@ def upsert_jobspy_frame(
     con: duckdb.DuckDBPyConnection,
     df: pl.DataFrame | pd.DataFrame,
     rules: dict[str, Any] | None = None,
+    progress_callback: Any = None,
 ) -> dict[str, int]:
     import polars as pl
 
     rules = rules or load_rules()
-    frame = df if isinstance(df, pl.DataFrame) else pl.from_pandas(df)
+    if isinstance(df, pl.DataFrame):
+        records = df.iter_rows(named=True)
+        total = df.height
+    else:
+        records = df.to_dict(orient="records")
+        total = len(df)
+
     rows, pairs = [], set()  # pairs: one job can sit in several scraper sheets
-    for r in frame.iter_rows(named=True):
+    for idx, r in enumerate(records):
+        if progress_callback and idx % 250 == 0:
+            progress_callback(idx, total)
         if (j := normalize_row(r, rules)) is None:
             continue
         rows.append(j.model_dump(mode="json"))
         if r.get("segment"):
             pairs.add((j.dedup_key, r["segment"]))
-    stats = {"seen": frame.height, "invalid": frame.height - len(rows), "inserted": 0, "duplicates": 0}
+    if progress_callback:
+        progress_callback(total, total)
+    stats = {"seen": total, "invalid": total - len(rows), "inserted": 0, "duplicates": 0}
     if rows:
         # Best-scored copy wins when one batch holds the same job from several boards.
         batch = (

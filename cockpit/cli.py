@@ -82,17 +82,59 @@ def ingest(
 ) -> None:
     """Dedupe, score and upsert scraped jobs into DuckDB."""
     import pandas as pd
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
     from cockpit import intel as intel_module
 
     paths = inputs or _find_default_inputs()
     if not paths:
         raise typer.BadParameter(f"No CSVs found in {_default_results_dir()} and no Job_Report_*.xlsx found in ~/Downloads; pass paths explicitly.")
-    frame = pd.concat([_load_input_frame(p, sheet=sheet) for p in paths], ignore_index=True)
-    with db.session() as con:
-        stats = db.upsert_jobspy_frame(con, frame)
-        expired = db.expire_stale_referral_holds(con)
-        intel_module.reconcile_saved_jobs(con)
-    console.print(f"[green]{len(paths)} file(s)[/green] ({', '.join(p.name for p in paths)}) {stats} | stale holds flagged: {expired}")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        load_task = progress.add_task("[cyan]Loading input files...", total=len(paths))
+        loaded_frames = []
+        for p in paths:
+            progress.update(load_task, description=f"[cyan]Loading {p.name}...")
+            loaded_frames.append(_load_input_frame(p, sheet=sheet))
+            progress.advance(load_task)
+        frame = pd.concat(loaded_frames, ignore_index=True)
+        progress.update(load_task, description=f"[green]✔ Loaded {len(paths)} file(s) ({len(frame):,} rows)")
+
+        score_task = progress.add_task("[yellow]Scoring and deduping postings...", total=len(frame))
+
+        def on_score_progress(current: int, total: int) -> None:
+            progress.update(score_task, completed=current)
+
+        with db.session() as con:
+            stats = db.upsert_jobspy_frame(con, frame, progress_callback=on_score_progress)
+            progress.update(score_task, completed=len(frame), description="[green]✔ Scored and deduped postings")
+
+            db_task = progress.add_task("[magenta]Reconciling holds & saved jobs...", total=None)
+            expired = db.expire_stale_referral_holds(con)
+            intel_module.reconcile_saved_jobs(con)
+            progress.update(db_task, description="[green]✔ Reconciled holds and saved jobs", completed=1, total=1)
+
+    console.print(
+        f"[bold green]✔ Ingest complete:[/bold green] [cyan]{len(paths)} file(s)[/cyan] "
+        f"({', '.join(p.name for p in paths)}) {stats} | stale holds flagged: {expired}"
+    )
 
 
 @app.command()

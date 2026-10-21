@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 import tomllib
@@ -36,9 +37,16 @@ def dedup_key(company_norm: str, title_norm: str) -> str:
     return hashlib.sha256(f"{company_norm}|{title_norm}".encode()).hexdigest()[:16]
 
 
+@functools.lru_cache(maxsize=2048)
+def _compile_boundary_pattern(keyword: str) -> re.Pattern:
+    return re.compile(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])")
+
+
 def _has(text: str, keyword: str) -> bool:
     # Token-boundary match so "i" or "go" don't fire inside other words.
-    return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
+    if keyword not in text:
+        return False
+    return _compile_boundary_pattern(keyword).search(text) is not None
 
 
 def resolve_resume(path_str: str) -> str:
