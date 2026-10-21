@@ -16,7 +16,8 @@
 |---|---|
 | `j` / `↓` | Next job |
 | `k` / `↑` | Previous job |
-| `f` | Cycle view: Queued → Referral Hold → Applied → All |
+| `t` | Toggle 72h recent filter (toggle between 72H and QUEUED) |
+| `f` | Cycle view: Queued → 72H → Saved → Referral Hold → Applied → All |
 | `g` | Cycle scraper sheet: all → each sheet (seattle, west_coast, remote, …) |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`); blank clears |
 
@@ -70,7 +71,7 @@ Run these with the `cockpit` alias.
 | `cockpit tui` | Open the cockpit (same as `Alt+Shift+j`) |
 | `cockpit ingest` | Import this month's scraped CSVs, dedupe and score |
 | `cockpit rescore` | Re-apply `scoring_rules.toml` to queued jobs |
-| `cockpit sprint --limit 15 [--segment seattle] [--location wa]` | Plain prompt loop: `a` apply, `s` skip, `h` hold, `q` quit |
+| `cockpit sprint [--recent] [--limit 15] [--segment seattle] [--location wa]` | Plain prompt loop: `a` apply, `s` skip, `h` hold, `q` quit |
 | `cockpit sync-mail` | Reconcile applied jobs against ATS emails |
 | `cockpit stats` | Conversion by resume archetype and job board |
 | `cockpit tmux-status` | Print the status-bar line |

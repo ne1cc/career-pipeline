@@ -118,8 +118,9 @@ _TS_AS_TEXT = f"* EXCLUDE ({', '.join(_TS_COLS)}), " + ", ".join(f"{c}::VARCHAR 
 LOCK_RETRIES, LOCK_WAIT_S = 10, 0.2
 
 
-def connect(path: Path = DB_PATH) -> duckdb.DuckDBPyConnection:
+def connect(path: Path | None = None) -> duckdb.DuckDBPyConnection:
     """Waits up to LOCK_RETRIES x LOCK_WAIT_S for another process's short session to finish."""
+    path = path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(LOCK_RETRIES + 1):
         try:
@@ -134,7 +135,7 @@ def connect(path: Path = DB_PATH) -> duckdb.DuckDBPyConnection:
 
 
 @contextmanager
-def session(path: Path = DB_PATH) -> Iterator[duckdb.DuckDBPyConnection]:
+def session(path: Path | None = None) -> Iterator[duckdb.DuckDBPyConnection]:
     """Short-lived connection: open, use, close. Never hold one across an idle wait."""
     con = connect(path)
     try:
@@ -156,6 +157,12 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
         ),
         "queued": one(
             "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND priority_score >= ?", [min_score()]
+        ),
+        "queued_72h": one(
+            "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND priority_score >= ? "
+            "AND (epoch(discovered_at) >= epoch(now()) - 72 * 3600 "
+            "OR (date_posted IS NOT NULL AND try_cast(date_posted as DATE) >= CURRENT_DATE - INTERVAL 3 DAY))",
+            [min_score()],
         ),
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
         "saved": one("SELECT count(*) FROM jobs_master WHERE is_saved"),
@@ -434,6 +441,7 @@ def fetch_jobs(
     segment: str | None = None,
     location: str | None = None,
     query: str | None = None,
+    hours: int | None = None,
 ) -> list[dict[str, Any]]:
     """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
     clauses, params = [], []
@@ -441,9 +449,19 @@ def fetch_jobs(
     if status == "SAVED":
         clauses.append("is_saved = TRUE")
         order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
+    elif status in ("72H", "QUEUED_72H"):
+        clauses.append("status = 'QUEUED'")
+        hours = hours or 72
     elif status:
         clauses.append("status = ?")
         params.append(status)
+    if hours is not None:
+        d = max(1, (hours + 23) // 24)
+        clauses.append(
+            "(epoch(discovered_at) >= epoch(now()) - ? * 3600 "
+            "OR (date_posted IS NOT NULL AND try_cast(date_posted as DATE) >= CURRENT_DATE - (? * INTERVAL 1 DAY)))"
+        )
+        params.extend([hours, d])
     if floor is not None and status != "SAVED":
         clauses.append("(status <> 'QUEUED' OR is_saved OR priority_score >= ?)")
         params.append(floor)
