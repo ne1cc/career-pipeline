@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any, Callable
 
 from rich.markup import escape
 from rich.style import Style
 from rich.text import Text
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -100,6 +103,8 @@ class JobCockpitApp(App[None]):
         Binding("ctrl+u", "page_jd(-0.5)", "JD ½PgUp", show=False),
         Binding("b", "toggle_save", "Save/MD"),
         Binding("i", "open_dossier", "Dossier"),
+        Binding("e", "edit_dossier", "Edit (nvim)"),
+        Binding("v", "edit_dossier", "Nvim", show=False),
         Binding("I", "rerun_intel", "Re-eval"),
         Binding("F", "open_folder", "Folder"),
         Binding("c", "copy_cover_letter", "Cover"),
@@ -436,6 +441,25 @@ class JobCockpitApp(App[None]):
             p = Path(path_str) if path_str else intel.dossier_path(job, self.export_dir)
             if p.exists():
                 macos.open_file(p)
+            else:
+                self.notify("Dossier not found on disk yet.", severity="warning")
+
+    def action_edit_dossier(self) -> None:
+        if job := self._job():
+            path_str = job.get("intel_path")
+            p = Path(path_str) if path_str else intel.dossier_path(job, self.export_dir)
+            if not p.exists():
+                folder_str = job.get("folder_path")
+                folder = Path(folder_str) if folder_str else intel.job_folder_path(job, self.export_dir)
+                p = folder if folder.exists() else None
+
+            if p and p.exists():
+                editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
+                try:
+                    with self.suspend():
+                        subprocess.run([editor, str(p)])
+                except SuspendNotSupported:
+                    subprocess.run([editor, str(p)])
             else:
                 self.notify("Dossier not found on disk yet.", severity="warning")
 
