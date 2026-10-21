@@ -106,6 +106,10 @@ ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_path VARCHAR;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_error VARCHAR;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_hash VARCHAR;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS intel_updated_at TIMESTAMPTZ;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS folder_path VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS fit_category VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS tailored_resume_path VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS cover_letter_path VARCHAR;
 """
 
 _INSERT_COLS = (
@@ -305,7 +309,12 @@ def restore_job_state(
     write_tmux_cache(con)
 
 
-def toggle_saved(con: duckdb.DuckDBPyConnection, dedup_key: str, intel_path: str | None = None) -> bool:
+def toggle_saved(
+    con: duckdb.DuckDBPyConnection,
+    dedup_key: str,
+    intel_path: str | None = None,
+    folder_path: str | None = None,
+) -> bool:
     """Toggle is_saved. When true, sets saved_at and marks intel_status='pending' if not already done."""
     con.begin()
     try:
@@ -319,9 +328,10 @@ def toggle_saved(con: duckdb.DuckDBPyConnection, dedup_key: str, intel_path: str
             con.execute(
                 """UPDATE jobs_master SET is_saved = TRUE, saved_at = CURRENT_TIMESTAMP,
                        last_updated_at = CURRENT_TIMESTAMP, intel_status = ?,
-                       intel_path = COALESCE(?, intel_path)
+                       intel_path = COALESCE(?, intel_path),
+                       folder_path = COALESCE(?, folder_path)
                    WHERE dedup_key = ?""",
-                [new_intel, intel_path, dedup_key],
+                [new_intel, intel_path, folder_path, dedup_key],
             )
         else:
             con.execute(
@@ -387,12 +397,36 @@ def finish_intel(
     path: str | None = None,
     error: str | None = None,
     intel_hash: str | None = None,
+    folder_path: str | None = None,
+    fit_category: str | None = None,
+    tailored_resume_path: str | None = None,
+    cover_letter_path: str | None = None,
 ) -> None:
     con.execute(
-        """UPDATE jobs_master SET intel_status = ?, fit_score = ?, intel_path = ?,
-               intel_error = ?, intel_hash = ?, intel_updated_at = CURRENT_TIMESTAMP
+        """UPDATE jobs_master SET
+               intel_status = ?,
+               fit_score = ?,
+               intel_path = ?,
+               intel_error = ?,
+               intel_hash = ?,
+               folder_path = COALESCE(?, folder_path),
+               fit_category = COALESCE(?, fit_category),
+               tailored_resume_path = COALESCE(?, tailored_resume_path),
+               cover_letter_path = COALESCE(?, cover_letter_path),
+               intel_updated_at = CURRENT_TIMESTAMP
            WHERE dedup_key = ?""",
-        [status, fit_score, path, error, intel_hash, dedup_key],
+        [
+            status,
+            fit_score,
+            path,
+            error,
+            intel_hash,
+            folder_path,
+            fit_category,
+            tailored_resume_path,
+            cover_letter_path,
+            dedup_key,
+        ],
     )
 
 

@@ -101,6 +101,8 @@ class JobCockpitApp(App[None]):
         Binding("b", "toggle_save", "Save/MD"),
         Binding("i", "open_dossier", "Dossier"),
         Binding("I", "rerun_intel", "Re-eval"),
+        Binding("F", "open_folder", "Folder"),
+        Binding("c", "copy_cover_letter", "Cover"),
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
         Binding("question_mark", "search", "Search"),
@@ -360,18 +362,69 @@ class JobCockpitApp(App[None]):
 
     def action_stage(self, background: bool) -> None:
         if job := self._job():
-            macos.copy_resume_path(job["resume_path"])
+            tailored = job.get("tailored_resume_path")
+            resume_to_copy = job["resume_path"]
+            label = "Resume"
+            if tailored and Path(tailored).is_file():
+                resume_to_copy = tailored
+                label = "Tailored resume"
+            else:
+                folder_p = job.get("folder_path") or (intel.job_folder_path(job, self.export_dir) if job.get("is_saved") else None)
+                if folder_p and Path(folder_p).exists():
+                    res_pdfs = list((Path(folder_p) / "exports").glob("*Resume*.pdf"))
+                    if res_pdfs and res_pdfs[0].is_file():
+                        resume_to_copy = str(res_pdfs[0])
+                        label = "Tailored resume"
+
+            macos.copy_resume_path(resume_to_copy)
             macos.open_url(job["apply_url"], background=background)
-            self.notify("Resume path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
+            self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
 
     def action_preview(self) -> None:
         if job := self._job():
-            macos.quicklook(job["resume_path"])
+            tailored = job.get("tailored_resume_path")
+            if tailored and Path(tailored).is_file():
+                macos.quicklook(tailored)
+            else:
+                macos.quicklook(job["resume_path"])
+
+    def action_copy_cover_letter(self) -> None:
+        if job := self._job():
+            cl_path = job.get("cover_letter_path")
+            if not (cl_path and Path(cl_path).is_file()):
+                folder_p = job.get("folder_path") or intel.job_folder_path(job, self.export_dir)
+                if Path(folder_p).exists():
+                    cl_pdfs = list((Path(folder_p) / "exports").glob("*Cover_Letter*.pdf"))
+                    if cl_pdfs and cl_pdfs[0].is_file():
+                        cl_path = str(cl_pdfs[0])
+                    else:
+                        cl_md = Path(folder_p) / "03_cover_letter.md"
+                        if cl_md.is_file():
+                            cl_path = str(cl_md)
+            if cl_path and Path(cl_path).exists():
+                macos.copy_resume_path(cl_path)
+                self.notify("Cover letter path on clipboard!")
+            else:
+                self.notify("No cover letter generated yet.", severity="warning")
+
+    def action_open_folder(self) -> None:
+        if job := self._job():
+            folder_p = Path(job.get("folder_path") or intel.job_folder_path(job, self.export_dir))
+            if folder_p.exists():
+                macos.open_file(folder_p)
+            else:
+                self.notify("Job folder not created on disk yet.", severity="warning")
 
     def action_yank(self) -> None:
         if job := self._job():
-            macos.copy_to_clipboard(render_outreach(job, self.rules))
-            self.notify(f"Outreach copied for {job['company']}")
+            folder_p = Path(job.get("folder_path") or intel.job_folder_path(job, self.export_dir))
+            outreach_md = folder_p / "06_outreach_and_pitch.md"
+            if outreach_md.is_file():
+                macos.copy_to_clipboard(outreach_md.read_text("utf-8"))
+                self.notify(f"Tailored outreach copied for {job['company']}")
+            else:
+                macos.copy_to_clipboard(render_outreach(job, self.rules))
+                self.notify(f"Outreach copied for {job['company']}")
 
     def action_referrals(self) -> None:
         if job := self._job():
@@ -390,17 +443,27 @@ class JobCockpitApp(App[None]):
         if job := self._job():
             row = self.query_one(DataTable).cursor_row
             key = job["dedup_key"]
-            out_file = intel.dossier_path(job, self.export_dir)
+            job_folder = intel.job_folder_path(job, self.export_dir)
+            out_file = job_folder / "05_interview_dossier.md"
             with session(self.db_path) as con:
-                now_saved = toggle_saved(con, key, intel_path=str(out_file))
+                now_saved = toggle_saved(con, key, intel_path=str(out_file), folder_path=str(job_folder))
             if now_saved:
-                # Write initial stub dossier immediately
-                self.export_dir.mkdir(parents=True, exist_ok=True)
+                # Write initial stub posting and dossier immediately
+                job_folder.mkdir(parents=True, exist_ok=True)
+                posting_file = job_folder / "00_job_posting.md"
+                if not posting_file.exists():
+                    posting_file.write_text(
+                        f"---\ndedup_key: {key}\ncompany: \"{job.get('company')}\"\ntitle: \"{job.get('title')}\"\n"
+                        f"location: \"{job.get('location') or ''}\"\napply_url: \"{job.get('apply_url')}\"\n"
+                        f"priority_score: {job.get('priority_score', 0):.0f}\nfit_score: pending\n---\n\n"
+                        f"# {job.get('company')} — {job.get('title')}\n\n## Original Job Description\n\n{job.get('description') or 'No description provided.'}\n",
+                        "utf-8",
+                    )
                 if not out_file.exists():
                     out_file.write_text(intel.render_dossier(job), "utf-8")
                 with session(self.db_path) as con:
                     intel.rebuild_index(con, self.export_dir)
-                self.notify(f"Saved job to {out_file.name}")
+                self.notify(f"Saved job to {job_folder.name}")
                 self._kick_intel()
             else:
                 self.notify(f"Unsaved {job['company']}")
@@ -530,7 +593,7 @@ class JobCockpitApp(App[None]):
         generator = self.generate
         if generator is None:
             try:
-                generator = intel.create_gemini_client(model_name=ctx.model)
+                generator = intel.create_llm_client(provider=ctx.provider, model_name=ctx.model)
             except intel.IntelUnavailable:
                 return
 

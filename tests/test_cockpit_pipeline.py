@@ -307,7 +307,8 @@ def test_parse_summary():
 
 def test_load_context_reads_career_ops_in_place(career_ops):
     ctx = intel.load_context(career_ops)
-    assert ctx.model == "gemini-3.5-flash-lite"
+    assert ctx.model in ("sonnet", "gemini-3.5-flash-lite")
+    assert intel.load_context(career_ops, provider="gemini").model == "gemini-3.5-flash-lite"
     assert intel.load_context(career_ops, model="gemini-2.5-pro").model == "gemini-2.5-pro"
     (career_ops / "cv.md").write_text("# Alex Sun\nPython, DuckDB, Rust")
     assert intel.load_context(career_ops).hash != ctx.hash  # CV edits invalidate the cache
@@ -358,7 +359,9 @@ def test_process_batch_writes_dossier_and_caches(db_path, career_ops, tmp_path):
     with db.session(db_path) as con:
         fit, status, path = con.execute("SELECT fit_score, intel_status, intel_path FROM jobs_master").fetchone()
     text = Path(path).read_text()
-    assert (fit, status) == (4.2, "done") and Path(path).parent == out
+    assert (fit, status) == (4.2, "done") and Path(path).parent.parent == out
+    assert Path(path).name == "05_interview_dossier.md"
+    assert (Path(path).parent / "00_job_posting.md").exists()
     assert "fit_score: 4.2" in text and "Block A — Role Summary" in text and "We use FastAPI" in text
     assert "SCORE_SUMMARY" not in text
     assert "Stripe" in (out / "index.md").read_text()
@@ -457,7 +460,7 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
             assert "grey23" not in str(table._get_row_style(0, Style()).bgcolor)
 
     asyncio.run(drive())
-    assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - * - Seattle, WA - *.md"))
+    assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - * - Seattle, WA - */05_interview_dossier.md"))
 
 
 def test_dossier_path_format(tmp_path):
@@ -468,7 +471,8 @@ def test_dossier_path_format(tmp_path):
         "saved_at": "2026-10-19 14:30:00",
     }
     p = intel.dossier_path(job, tmp_path)
-    assert p.name == "Senior Data Platform Engineer - Acme Corp - Seattle, WA - 2026-10-19.md"
+    assert p.parent.name == "Senior Data Platform Engineer - Acme Corp - Seattle, WA - 2026-10-19"
+    assert p.name == "05_interview_dossier.md"
 
 
 def test_jd_pane_scrolls_with_keys(db_path, tmp_path, calls):
@@ -556,6 +560,8 @@ def test_cli_intel(db_path, career_ops, tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", db_path)
     fake = FakeGemini()
     monkeypatch.setattr(intel, "create_gemini_client", lambda model_name: fake)
+    monkeypatch.setattr(intel, "create_claude_cli_client", lambda *a, **kw: fake)
+    monkeypatch.setattr(intel, "create_llm_client", lambda *a, **kw: fake)
 
     runner = CliRunner()
     res = runner.invoke(cli_app, ["intel", "--career-ops-root", str(career_ops), "--export-dir", str(tmp_path / "dossiers")])
@@ -755,7 +761,10 @@ status: QUEUED
         assert row[0] is True
         assert row[1] == 3.4
         assert row[2] == "done"
-        assert row[3] == str(dossier_file)
+        expected_dossier = export_dir / "Legal Assoc - Remote - 2026-10-19" / "05_interview_dossier.md"
+        assert row[3] == str(expected_dossier)
+        assert expected_dossier.exists()
+        assert not dossier_file.exists()
 
         index_text = (export_dir / "index.md").read_text("utf-8")
         assert "Vola Dynamics" in index_text
@@ -915,6 +924,184 @@ def test_relevance_gate_and_disqualifiers():
 
     high_yoe = score_job("Data Analyst", "Requires minimum of 5 years of experience", rules, location="Seattle, WA")
     assert high_yoe.score < 10.0
+
+
+def test_create_claude_cli_client_calls_subprocess(monkeypatch):
+    recorded_cmds = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        recorded_cmds.append({"cmd": cmd, "input": kwargs.get("input")})
+        return subprocess.CompletedProcess(cmd, 0, stdout="Claude output", stderr="")
+
+    monkeypatch.setattr(intel.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(intel.Path, "exists", lambda self: True)
+
+    client = intel.create_claude_cli_client(model_name="sonnet", binary_path="/opt/homebrew/bin/claude")
+    out = client("System prompt here", "User prompt here")
+    assert out == "Claude output"
+    assert len(recorded_cmds) == 1
+    assert recorded_cmds[0]["cmd"] == [
+        "/opt/homebrew/bin/claude",
+        "-p",
+        "--model",
+        "sonnet",
+        "--system-prompt",
+        "System prompt here",
+        "--tools",
+        "",
+        "--no-session-persistence",
+    ]
+    assert recorded_cmds[0]["input"] == "User prompt here"
+
+
+FULL_PACKAGE_OUTPUT = """---SECTION:FIT_ASSESSMENT---
+## Requirement-to-Evidence Matrix
+| Requirement | Evidence | Verdict |
+| --- | --- | :---: |
+| Python & SQL | local-lakehouse-engine (51 tests) | FULL |
+| DuckDB / dbt | clinical-trial-intelligence (cti-dashboard.fly.dev) | FULL |
+
+## Project Selection Rationale
+Selected clinical-trial-intelligence, local-lakehouse-engine, and olist-lakehouse as strongest matches.
+
+## Strategic Verdict
+PRIORITIZE: Exceptional technical alignment with candidate portfolio.
+
+---SECTION:TAILORED_RESUME---
+# Alex Sun
+Seattle, WA | suna16@uw.edu | https://github.com/ne1cc
+
+## Technical Skills
+- Python, SQL, DuckDB, dbt, Polars
+
+## Selected Projects
+### Clinical Trial Feasibility & Site Congestion Intelligence
+- Built DuckDB and dbt Medallion marts processing 400,000+ studies (cti-dashboard.fly.dev).
+
+---SECTION:COVER_LETTER---
+Dear Hiring Team,
+
+I am writing to express my enthusiastic interest in the Software Engineer role at Stripe.
+My background in building contract-first lakehouses (github.com/ne1cc/local-lakehouse-engine)
+and clinical analytics platforms (cti-dashboard.fly.dev) directly maps to your requirements.
+
+I welcome the opportunity to discuss how my hands-on systems experience can contribute to Stripe.
+
+---SECTION:CHANGELOG_AUDIT---
+- Promoted clinical-trial-intelligence to top project.
+- Verified 100% adherence to verified facts; zero hallucinations.
+
+---SECTION:INTERVIEW_DOSSIER---
+## Block A — Role Summary
+Stripe payments backend role.
+
+---SECTION:OUTREACH_PITCH---
+### LinkedIn Connection Note
+Hi Alex — noticed your team's work on Stripe payments infrastructure. Built a contract-first lakehouse with 51 tests: github.com/ne1cc/local-lakehouse-engine. Would love to connect.
+
+---SECTION:INTERVIEW_DRILLS---
+### 1. STAR+T Story: Data Ingestion Resilience
+- Situation: External API payloads corrupted downstream tables.
+- Task: Enforce schema contracts.
+- Action: Implemented Polars dead-letter quarantine.
+- Result: 100% bad payload isolation.
+- Tradeoff (+T): Slight latency overhead for contract validation.
+
+---SCORE_SUMMARY---
+COMPANY: Stripe
+ROLE: Software Engineer I
+SCORE: 4.8
+ARCHETYPE: swe_backend
+LEGITIMACY: High Confidence
+FIT_CATEGORY: PRIORITIZE
+---END_SUMMARY---
+"""
+
+
+def test_full_package_generation_and_exports(db_path, career_ops, tmp_path):
+    out_dir = tmp_path / "dossiers"
+    ctx = intel.load_context(career_ops)
+
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        key = _key(con)
+        db.toggle_saved(con, key)
+
+    fake = FakeGemini(output=FULL_PACKAGE_OUTPUT)
+    processed = intel.process_batch(db_path, ctx, fake, export_dir=out_dir)
+    assert processed == [key]
+
+    job_folders = [d for d in out_dir.iterdir() if d.is_dir()]
+    assert len(job_folders) == 1
+    folder = job_folders[0]
+
+    # Verify all 8 markdown files exist
+    assert (folder / "00_job_posting.md").exists()
+    assert (folder / "01_fit_assessment.md").exists()
+    assert (folder / "02_tailored_resume.md").exists()
+    assert (folder / "03_cover_letter.md").exists()
+    assert (folder / "04_changelog_and_audit.md").exists()
+    assert (folder / "05_interview_dossier.md").exists()
+    assert (folder / "06_outreach_and_pitch.md").exists()
+    assert (folder / "07_interview_drills_and_star.md").exists()
+
+    # Verify exports folder
+    exports = folder / "exports"
+    assert exports.exists()
+    assert list(exports.glob("Alex_Sun_Resume_*.docx"))
+    assert list(exports.glob("Alex_Sun_Resume_*.pdf"))
+    assert list(exports.glob("Alex_Sun_Cover_Letter_*.docx"))
+    assert list(exports.glob("Alex_Sun_Cover_Letter_*.pdf"))
+
+    # Verify DuckDB records
+    with db.session(db_path) as con:
+        row = con.execute(
+            "SELECT fit_score, fit_category, folder_path, tailored_resume_path, cover_letter_path FROM jobs_master WHERE dedup_key = ?",
+            [key],
+        ).fetchone()
+        fit_score, fit_cat, f_path, res_path, cl_path = row
+        assert fit_score == 4.8
+        assert fit_cat == "PRIORITIZE"
+        assert f_path == str(folder)
+        assert res_path and Path(res_path).exists()
+        assert cl_path and Path(cl_path).exists()
+
+
+def test_tui_cover_letter_and_tailored_staging(db_path, career_ops, tmp_path, calls):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+
+    fake = FakeGemini(output=FULL_PACKAGE_OUTPUT)
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path, career_ops, fake)
+        async with app.run_test() as pilot:
+            # Press 'b' to save and kick intel worker
+            await pilot.press("b")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Press 'c' to copy cover letter
+            await pilot.press("c")
+            await pilot.pause()
+
+            # Press 'o' to stage tailored resume
+            await pilot.press("o")
+            await pilot.pause()
+
+            # Press 'y' to copy tailored outreach note
+            await pilot.press("y")
+            await pilot.pause()
+
+    asyncio.run(drive())
+
+    pb_inputs = [c["input"].decode() for c in calls if c["cmd"] == ["/usr/bin/pbcopy"] and c.get("input")]
+    # Verify tailored cover letter pdf or md path was copied
+    assert any("Cover_Letter" in inp for inp in pb_inputs)
+    # Verify tailored resume pdf path was copied
+    assert any("Resume" in inp and inp.endswith(".pdf") for inp in pb_inputs)
+    # Verify tailored outreach was copied
+    assert any("Stripe payments infrastructure" in inp for inp in pb_inputs)
 
 
 

@@ -256,11 +256,21 @@ def sprint(
         if choice == "q":
             break
         if choice == "b":
-            out_file = intel_module.dossier_path(job, export_dir)
+            job_folder = intel_module.job_folder_path(job, export_dir)
+            out_file = job_folder / "05_interview_dossier.md"
             with db.session() as con:
-                is_saved = db.toggle_saved(con, job["dedup_key"], intel_path=str(out_file))
+                is_saved = db.toggle_saved(con, job["dedup_key"], intel_path=str(out_file), folder_path=str(job_folder))
                 if is_saved:
-                    export_dir.mkdir(parents=True, exist_ok=True)
+                    job_folder.mkdir(parents=True, exist_ok=True)
+                    posting_file = job_folder / "00_job_posting.md"
+                    if not posting_file.exists():
+                        posting_file.write_text(
+                            f"---\ndedup_key: {job['dedup_key']}\ncompany: \"{job.get('company')}\"\ntitle: \"{job.get('title')}\"\n"
+                            f"location: \"{job.get('location') or ''}\"\napply_url: \"{job.get('apply_url')}\"\n"
+                            f"priority_score: {job.get('priority_score', 0):.0f}\nfit_score: pending\n---\n\n"
+                            f"# {job.get('company')} — {job.get('title')}\n\n## Original Job Description\n\n{job.get('description') or 'No description provided.'}\n",
+                            "utf-8",
+                        )
                     if not out_file.exists():
                         out_file.write_text(intel_module.render_dossier(job), "utf-8")
                     intel_module.rebuild_index(con, export_dir)
@@ -333,23 +343,26 @@ def keychain_setup(
 def intel(
     limit: Annotated[int, typer.Option(help="Maximum jobs to process in this run")] = 20,
     stale_hours: Annotated[int, typer.Option(help="Requeue jobs whose intel is running/pending for longer than N hours")] = 0,
-    model: Annotated[Optional[str], typer.Option(help="Gemini model name (default: gemini-3.5-flash-lite)")] = None,
+    retry_failed: Annotated[bool, typer.Option("--retry-failed", "-r", help="Requeue previously failed intel jobs")] = False,
+    provider: Annotated[Optional[str], typer.Option(help="LLM provider: 'claude-cli' (default) or 'gemini'")] = None,
+    model: Annotated[Optional[str], typer.Option(help="Model name: 'sonnet' (default for claude-cli) or Gemini model")] = None,
     career_ops_root: Annotated[Optional[Path], typer.Option(help="Path to career-ops repository")] = None,
+    evidence_dir: Annotated[Optional[Path], typer.Option(help="Path to evidence bank directory")] = None,
     export_dir: Annotated[Optional[Path], typer.Option(help="Path to export directory")] = None,
 ) -> None:
-    """Run batch fit-scoring and Markdown dossier generation for saved jobs."""
+    """Run batch fit-scoring, application packaging, and interview prep for saved jobs."""
     from cockpit import intel as intel_module
 
     try:
-        ctx = intel_module.load_context(career_ops_root, model=model)
+        ctx = intel_module.load_context(career_ops_root, model=model, evidence_dir=evidence_dir, provider=provider)
     except intel_module.IntelUnavailable as e:
         console.print(f"[bold red]Career-ops error:[/bold red] {e}")
         raise typer.Exit(1)
 
     try:
-        generator = intel_module.create_gemini_client(model_name=ctx.model)
+        generator = intel_module.create_llm_client(provider=ctx.provider, model_name=ctx.model)
     except intel_module.IntelUnavailable as e:
-        console.print(f"[bold red]Gemini API error:[/bold red] {e}")
+        console.print(f"[bold red]LLM provider error:[/bold red] {e}")
         raise typer.Exit(1)
 
     out_dir = export_dir or intel_module.resolve_export_dir()
@@ -358,6 +371,11 @@ def intel(
             requeued = db.requeue_stale_intel(con, minutes=stale_hours * 60)
             if requeued:
                 console.print(f"[yellow]Requeued {requeued} stale intel job(s)[/yellow]")
+
+    if retry_failed:
+        with db.session() as con:
+            con.execute("UPDATE jobs_master SET intel_status = 'pending', intel_error = NULL WHERE is_saved = TRUE AND intel_status = 'failed'")
+            console.print("[yellow]Requeued failed intel jobs for retry[/yellow]")
 
     with db.session() as con:
         reconciled = intel_module.reconcile_saved_jobs(con, out_dir)
