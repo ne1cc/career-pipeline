@@ -20,7 +20,7 @@ from cockpit import db, intel, macos
 from cockpit.cli import render_plist
 from cockpit.models import FunnelState
 from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, norm_company, render_outreach, score_job
-from cockpit.tui import JobCockpitApp
+from cockpit.tui import FILTERS, JobCockpitApp
 
 
 @pytest.fixture
@@ -436,7 +436,8 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
             for seg in row_0_segs:
                 assert "grey23" in str(seg.style.bgcolor) or "58" in str(seg.style.bgcolor)
 
-            # In SAVED view, saved jobs must NOT be highlighted
+            # In SAVED view, saved jobs must NOT be highlighted (cycle QUEUED -> 72H -> SAVED)
+            await pilot.press("f")
             await pilot.press("f")
             await pilot.pause()
             assert "grey23" not in str(table._get_row_style(0, Style()).bgcolor)
@@ -758,3 +759,87 @@ def test_toggle_saved_records_intel_path_immediately(db_path, tmp_path):
         assert now_saved is True
         path_in_db = con.execute("SELECT intel_path FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()[0]
         assert path_in_db == dossier_path
+
+
+def test_fetch_jobs_recent_72h_filter(db_path):
+    with db.session(db_path) as con:
+        # One recent job (today) and one older job (5 days ago)
+        db.upsert_jobspy_frame(con, frame(
+            {"company": "RecentCo", "title": "Data Engineer", "date_posted": "2026-10-21"},
+            {"company": "OldCo", "title": "Data Engineer", "date_posted": "2026-10-01"},
+        ))
+        # Backdate OldCo's discovered_at to 5 days ago
+        con.execute(
+            "UPDATE jobs_master SET discovered_at = CURRENT_TIMESTAMP - INTERVAL 5 DAY WHERE company = 'OldCo'"
+        )
+
+        board = db.scoreboard(con)
+        assert board["queued"] == 2
+        assert board["queued_72h"] == 1
+
+        all_queued = db.fetch_jobs(con, status="QUEUED")
+        assert len(all_queued) == 2
+
+        recent_72h = db.fetch_jobs(con, status="72H")
+        assert len(recent_72h) == 1
+        assert recent_72h[0]["company"] == "RecentCo"
+
+        recent_hours = db.fetch_jobs(con, status="QUEUED", hours=72)
+        assert len(recent_hours) == 1
+        assert recent_hours[0]["company"] == "RecentCo"
+
+
+def test_tui_72h_filter_toggle_and_cycle(db_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame(
+            {"company": "RecentCo", "title": "Data Engineer", "date_posted": "2026-10-21"},
+        ))
+
+    async def drive() -> None:
+        app = JobCockpitApp(db_path)
+        async with app.run_test() as pilot:
+            assert app.filter_idx == 0
+            assert FILTERS[app.filter_idx] == "QUEUED"
+
+            # 't' toggles to 72H
+            await pilot.press("t")
+            assert FILTERS[app.filter_idx] == "72H"
+
+            # 't' toggles back to QUEUED
+            await pilot.press("t")
+            assert FILTERS[app.filter_idx] == "QUEUED"
+
+            # 'f' cycles to 72H -> SAVED -> REFERRAL_HOLD -> APPLIED -> None -> QUEUED
+            await pilot.press("f")
+            assert FILTERS[app.filter_idx] == "72H"
+            await pilot.press("f")
+            assert FILTERS[app.filter_idx] == "SAVED"
+
+    asyncio.run(drive())
+
+
+def test_cli_sprint_recent_flag(db_path, monkeypatch):
+    from typer.testing import CliRunner
+    from cockpit.cli import app as cli_app
+
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame(
+            {"company": "RecentCo", "title": "Data Engineer", "date_posted": "2026-10-21"},
+            {"company": "OldCo", "title": "Data Engineer", "date_posted": "2026-10-01"},
+        ))
+        con.execute(
+            "UPDATE jobs_master SET discovered_at = CURRENT_TIMESTAMP - INTERVAL 5 DAY WHERE company = 'OldCo'"
+        )
+
+    runner = CliRunner()
+    monkeypatch.setattr("typer.prompt", lambda *a, **kw: "q")
+    monkeypatch.setattr(macos, "copy_resume_path", lambda *a, **kw: None)
+    monkeypatch.setattr(macos, "open_url", lambda *a, **kw: None)
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+
+    res = runner.invoke(cli_app, ["sprint", "--recent"])
+    assert res.exit_code == 0
+    assert "RecentCo" in res.stdout
+    assert "OldCo" not in res.stdout
+
+

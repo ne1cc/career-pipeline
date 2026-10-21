@@ -157,13 +157,15 @@ def sprint(
     limit: int = 15,
     segment: Annotated[Optional[str], typer.Option(help="Only this scraper sheet, e.g. seattle")] = None,
     location: Annotated[Optional[str], typer.Option(help="Location text, e.g. 'wa' or 'remote'")] = None,
+    recent: Annotated[bool, typer.Option("--recent", "-r", help="Only jobs from the last 72 hours")] = False,
 ) -> None:
     """Blocking loop: stage resume + open URL, then record the outcome."""
     from cockpit import intel as intel_module
 
     export_dir = intel_module.resolve_export_dir()
+    status = "72H" if recent else "QUEUED"
     with db.session() as con:
-        jobs = db.fetch_jobs(con, "QUEUED", db.min_score(), segment, location)[:limit]
+        jobs = db.fetch_jobs(con, status, db.min_score(), segment, location)[:limit]
     outcomes = {"a": FunnelState.APPLIED, "s": FunnelState.SKIPPED, "h": FunnelState.REFERRAL_HOLD}
     for i, job in enumerate(jobs, 1):
         console.print(Panel(

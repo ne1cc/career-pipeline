@@ -33,7 +33,7 @@ from cockpit.imap_sync import sync_gmail_statuses
 from cockpit.models import FunnelState
 from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
 
-FILTERS: list[str | None] = ["QUEUED", "SAVED", "REFERRAL_HOLD", "APPLIED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "REFERRAL_HOLD", "APPLIED", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -115,6 +115,7 @@ class JobCockpitApp(App[None]):
         Binding("2", "archetype('data_eng')", "data"),
         Binding("3", "archetype('analytics_msba')", "analytics"),
         Binding("y", "yank", "Outreach"),
+        Binding("t", "toggle_72h", "72h"),
         Binding("f", "cycle_filter", "Filter"),
         Binding("g", "segment", "Sheet"),
         Binding("slash", "location", "Location"),
@@ -294,7 +295,7 @@ class JobCockpitApp(App[None]):
         label = FILTERS[self.filter_idx] or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         self.query_one("#score", Static).update(
-            f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} | "
+            f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
             f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}{sort_indicator}]"
         )
@@ -457,6 +458,13 @@ class JobCockpitApp(App[None]):
                 set_resume_archetype(con, job["dedup_key"], name, path)
             macos.copy_resume_path(path)
             self._reload(self.query_one(DataTable).cursor_row)
+
+    def action_toggle_72h(self) -> None:
+        if FILTERS[self.filter_idx] == "72H":
+            self.filter_idx = FILTERS.index("QUEUED")
+        else:
+            self.filter_idx = FILTERS.index("72H")
+        self._reload(0)
 
     def action_cycle_filter(self) -> None:
         self.filter_idx = (self.filter_idx + 1) % len(FILTERS)
