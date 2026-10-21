@@ -1105,4 +1105,53 @@ def test_tui_cover_letter_and_tailored_staging(db_path, career_ops, tmp_path, ca
     assert any("Stripe payments infrastructure" in inp for inp in pb_inputs)
 
 
+def test_cli_dossier_and_folder_commands(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from cockpit.cli import app as cli_app
+
+    export_dir = tmp_path / "artifacts"
+    export_dir.mkdir()
+    job_dir = export_dir / "Stripe - Software Engineer I"
+    job_dir.mkdir()
+    dossier_md = job_dir / "05_interview_dossier.md"
+    dossier_md.write_text("# Stripe Dossier\nFit: 4.8", encoding="utf-8")
+    (job_dir / "00_job_posting.md").write_text("# Posting", encoding="utf-8")
+
+    opened = []
+    monkeypatch.setattr(macos, "open_file", lambda p: opened.append(Path(p)))
+
+    runner = CliRunner()
+
+    # 1. List dossiers table
+    res_list = runner.invoke(cli_app, ["dossier", "--export-dir", str(export_dir)])
+    assert res_list.exit_code == 0
+    assert "Saved Job Dossiers" in res_list.stdout
+    assert "Stripe - Software Engineer I" in res_list.stdout
+
+    # 2. Cat dossier
+    res_cat = runner.invoke(cli_app, ["dossier", "stripe", "--cat", "--export-dir", str(export_dir)])
+    assert res_cat.exit_code == 0
+    assert "Stripe Dossier" in res_cat.stdout
+
+    # 3. Open dossier
+    res_open = runner.invoke(cli_app, ["dossier", "stripe", "--export-dir", str(export_dir)])
+    assert res_open.exit_code == 0
+    assert opened[-1] == dossier_md
+
+    # 4. Open folder root
+    res_folder_root = runner.invoke(cli_app, ["folder", "--export-dir", str(export_dir)])
+    assert res_folder_root.exit_code == 0
+    assert opened[-1] == export_dir
+
+    # 5. Open specific job folder
+    res_folder_job = runner.invoke(cli_app, ["folder", "stripe", "--export-dir", str(export_dir)])
+    assert res_folder_job.exit_code == 0
+    assert opened[-1] == job_dir
+
+    # 6. Artifacts alias
+    res_artifacts = runner.invoke(cli_app, ["artifacts", "stripe", "--export-dir", str(export_dir)])
+    assert res_artifacts.exit_code == 0
+    assert opened[-1] == job_dir
+
+
 

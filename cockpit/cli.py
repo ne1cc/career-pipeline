@@ -299,6 +299,127 @@ def sync_saved(
     )
 
 
+@app.command("dossier")
+def dossier_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
+    cat: Annotated[bool, typer.Option("--cat", "-c", help="Render dossier in terminal with rich markdown formatting")] = False,
+    open_in_editor: Annotated[bool, typer.Option("--open", "-o", help="Open dossier in default macOS editor/app")] = False,
+    latest: Annotated[bool, typer.Option("--latest", "-l", help="Open/view the most recently modified dossier")] = False,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """View an interview dossier in terminal or open it in default editor."""
+    from cockpit import intel as intel_module
+    from rich.markdown import Markdown
+
+    root = (export_dir or intel_module.resolve_export_dir()).expanduser()
+    if not root.exists():
+        console.print(f"[yellow]Artifacts directory does not exist yet: {root}[/yellow]")
+        raise typer.Exit(1)
+
+    subdirs = [d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")]
+
+    def get_dossier_file(folder: Path) -> Path | None:
+        p = folder / "05_interview_dossier.md"
+        if p.is_file():
+            return p
+        mds = sorted(folder.glob("*dossier*.md"))
+        if mds and mds[0].is_file():
+            return mds[0]
+        other_mds = sorted(folder.glob("*.md"))
+        return other_mds[0] if other_mds else None
+
+    target_dossier: Path | None = None
+    target_folder: Path | None = None
+
+    if latest:
+        valid_folders = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
+        if not valid_folders:
+            console.print(f"[yellow]No dossiers found in {root}[/yellow]")
+            raise typer.Exit(1)
+        valid_folders.sort(key=lambda x: x[1].stat().st_mtime, reverse=True)
+        target_folder, target_dossier = valid_folders[0]
+    elif query:
+        q = query.lower().strip()
+        matched = [(d, get_dossier_file(d)) for d in subdirs if q in d.name.lower() and get_dossier_file(d)]
+        if not matched:
+            console.print(f"[red]No dossier found matching query '{query}' in {root}[/red]")
+            console.print("Available dossiers:")
+            for d in subdirs:
+                if get_dossier_file(d):
+                    console.print(f"  • {d.name}")
+            raise typer.Exit(1)
+        target_folder, target_dossier = matched[0]
+    else:
+        valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
+        if not valid:
+            console.print(f"[yellow]No dossiers found in {root}. Save jobs with 'b' in Cockpit TUI to generate dossiers.[/yellow]")
+            return
+
+        table = Table(title="[bold cyan]Saved Job Dossiers[/bold cyan]", box=None, header_style="bold bright_white")
+        table.add_column("Folder / Role", style="cyan")
+        table.add_column("Last Updated", style="bright_cyan", justify="right")
+        table.add_column("Artifacts", justify="right", style="green")
+
+        valid.sort(key=lambda x: x[1].stat().st_mtime, reverse=True)
+        for folder, d_file in valid:
+            mtime = datetime.fromtimestamp(d_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            md_count = len(list(folder.glob("*.md")))
+            pdf_count = len(list((folder / "exports").glob("*.pdf"))) if (folder / "exports").exists() else 0
+            artifacts_str = f"{md_count} MD" + (f", {pdf_count} PDF" if pdf_count else "")
+            table.add_row(folder.name, mtime, artifacts_str)
+
+        console.print(table)
+        console.print("\n[dim]Usage: 'cockpit dossier <query>' (e.g. cockpit dossier nintendo), add '--cat' to read in terminal, or use 'cjd'[/dim]")
+        return
+
+    if target_dossier:
+        if cat:
+            console.print(f"[bold cyan]─── Dossier: {target_dossier.parent.name} ───[/bold cyan]\n")
+            console.print(Markdown(target_dossier.read_text(encoding="utf-8", errors="replace")))
+        else:
+            macos.open_file(target_dossier)
+            console.print(f"Opened dossier: [cyan]{target_dossier}[/cyan]")
+
+
+@app.command("folder")
+def folder_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company name or role to open a specific job's folder")] = None,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Open the artifacts / dossiers folder in macOS Finder."""
+    from cockpit import intel as intel_module
+
+    root = (export_dir or intel_module.resolve_export_dir()).expanduser()
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=True)
+
+    if query:
+        q = query.lower().strip()
+        subdirs = [d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        matched = [d for d in subdirs if q in d.name.lower()]
+        if not matched:
+            console.print(f"[red]No folder found matching '{query}' in {root}[/red]")
+            console.print("Available folders:")
+            for d in subdirs:
+                console.print(f"  • {d.name}")
+            raise typer.Exit(1)
+        target = matched[0]
+        macos.open_file(target)
+        console.print(f"Opened job folder in Finder: [cyan]{target}[/cyan]")
+    else:
+        macos.open_file(root)
+        console.print(f"Opened artifacts directory in Finder: [cyan]{root}[/cyan]")
+
+
+@app.command("artifacts")
+def artifacts_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company name or role to open a specific job's folder")] = None,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Alias for 'cockpit folder' — open artifacts folder in macOS Finder."""
+    folder_cmd(query=query, export_dir=export_dir)
+
+
 @app.command("sync-mail")
 def sync_mail(user: Annotated[Optional[str], typer.Option(help="Gmail address (default $GMAIL_USER)")] = None) -> None:
     """Reconcile APPLIED jobs against ATS emails."""
