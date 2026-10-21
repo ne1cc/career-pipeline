@@ -48,11 +48,14 @@ def main():
             
     # 2. Setup logs directory
     timestamp_month = datetime.now().strftime("%Y_%m")
-    logs_dir = jobspy_dir / "scraped jobs" / "logs" / timestamp_month
+    timestamp_day = datetime.now().strftime("%Y_%m_%d")
+    env_logs = os.environ.get("JOBSPY_LOGS_DIR")
+    logs_dir = Path(env_logs) if env_logs else (jobspy_dir / "scraped jobs" / "logs" / timestamp_month / timestamp_day)
     logs_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup results directory (so we can check output files later)
-    results_dir = jobspy_dir / "scraped jobs" / "results" / timestamp_month
+    env_results = os.environ.get("JOBSPY_RESULTS_DIR")
+    results_dir = Path(env_results) if env_results else (jobspy_dir / "scraped jobs" / "results" / timestamp_month / timestamp_day)
     results_dir.mkdir(parents=True, exist_ok=True)
     
     print("=" * 80)
@@ -99,6 +102,35 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
+    # Resolve Python executable for scrapers
+    py_bin = os.environ.get("JOBSPY_PYTHON")
+    if not py_bin:
+        candidates = [
+            base_dir / ".venv" / "bin" / "python",
+            Path.home() / ".local" / "venvs" / "jobspy-custom-3.12" / "bin" / "python",
+            Path(sys.executable),
+        ]
+        for cand in candidates:
+            if cand.is_file() and os.access(cand, os.X_OK):
+                try:
+                    res = subprocess.run([str(cand), "-c", "import bs4, ats_scrapers"], capture_output=True, timeout=3)
+                    if res.returncode == 0:
+                        py_bin = str(cand)
+                        break
+                except Exception:
+                    pass
+        if not py_bin:
+            py_bin = sys.executable
+
+    # Preflight check on scraper dependencies
+    try:
+        chk = subprocess.run([py_bin, "-c", "import bs4, ats_scrapers"], capture_output=True, text=True, timeout=5)
+        if chk.returncode != 0:
+            print(f"[!] Warning: Python interpreter '{py_bin}' failed scraper dependency check:")
+            print(f"    {chk.stderr.strip() or chk.stdout.strip()}")
+    except Exception as exc:
+        print(f"[!] Preflight check warning: {exc}")
+
     # 4. Start all scripts in parallel
     for script in scripts:
         script_name = script.name
@@ -110,17 +142,19 @@ def main():
         lf = open(log_file_path, "w", encoding="utf-8")
         log_files[script_name] = lf
         
-        # Start process using the current python executable (sys.executable)
-        # to ensure it uses the active virtualenv/poetry environment.
+        # Start process using resolved python executable
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["JOBSPY_PYTHON"] = str(py_bin)
+        env["JOBSPY_RESULTS_DIR"] = str(results_dir)
+        env["JOBSPY_LOGS_DIR"] = str(logs_dir)
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{base_dir}:{existing_pythonpath}" if existing_pythonpath else str(base_dir)
         if "/home/linuxbrew/.linuxbrew/opt/openblas/lib" not in env.get("LD_LIBRARY_PATH", ""):
             existing_ld = env.get("LD_LIBRARY_PATH", "")
             env["LD_LIBRARY_PATH"] = f"/home/linuxbrew/.linuxbrew/opt/openblas/lib:{existing_ld}" if existing_ld else "/home/linuxbrew/.linuxbrew/opt/openblas/lib"
         p = subprocess.Popen(
-            [sys.executable, str(script)],
+            [py_bin, str(script)],
             stdout=lf,
             stderr=subprocess.STDOUT,
             text=True,
@@ -206,6 +240,11 @@ def main():
         else:
             print(f" - {csv_name}: NOT FOUND (Likely failed or no jobs found)")
             
+    failed_count = sum(1 for p_info in processes if task_states[p_info["name"]].get("exit_code") != 0)
+    if failed_count == len(processes):
+        print(f"\n[!] All {failed_count} scraping tasks failed! Aborting pipeline.")
+        sys.exit(1)
+
     print("\nDone!")
 
 if __name__ == "__main__":

@@ -96,3 +96,29 @@ def test_main_runs_cockpit_ingest_even_if_email_fails(monkeypatch, tmp_path):
         run_pipeline.main()
 
     assert called == ["scrapers", "email_failed", "cockpit_ingest"]
+
+
+def test_main_creates_date_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_pipeline, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(run_pipeline, "load_config", lambda: {})
+    monkeypatch.setattr(run_pipeline, "validate_config", lambda cfg: None)
+    monkeypatch.setattr(run_pipeline, "run_scrapers", lambda: None)
+    
+    passed_results_dir = []
+    def fake_build(results_dir, expected_outputs):
+        passed_results_dir.append(results_dir)
+        return tmp_path / "report.xlsx", {}, False
+
+    monkeypatch.setattr(run_pipeline, "build_excel_workbook", fake_build)
+    monkeypatch.setattr(run_pipeline, "send_email_with_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(run_pipeline, "run_cockpit_ingest", lambda d=None: True)
+
+    run_pipeline.main()
+    assert len(passed_results_dir) == 1
+    # Check that results_dir contains year_month/year_month_day
+    r_dir = passed_results_dir[0]
+    assert r_dir.exists()
+    assert len(r_dir.parts) >= 2
+    # The parent part is YYYY_MM, and the leaf part is YYYY_MM_DD
+    assert len(r_dir.name.split("_")) == 3
+    assert len(r_dir.parent.name.split("_")) == 2

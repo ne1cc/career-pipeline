@@ -137,8 +137,9 @@ def run_scrapers():
         print(f"ERROR: Scraper parallel runner not found at: {runner_script}")
         sys.exit(1)
         
+    py_bin = os.environ.get("JOBSPY_PYTHON") or sys.executable
     # Execute the scraper parallel runner using the current Python environment
-    result = subprocess.run([sys.executable, str(runner_script)], cwd=str(BASE_DIR))
+    result = subprocess.run([py_bin, str(runner_script)], cwd=str(BASE_DIR), env=os.environ.copy())
     if result.returncode != 0:
         print(f"ERROR: Scraper parallel runner failed with return code {result.returncode}!")
         sys.exit(result.returncode)
@@ -377,12 +378,18 @@ def main():
     # List of expected CSV outputs mapping to target Excel tabs
     expected_outputs = EXPECTED_OUTPUTS
     
-    # Locate scraped jobs results directory
+    # Locate scraped jobs results directory organized by date within month
     timestamp_month = datetime.now().strftime("%Y_%m")
-    results_dir = BASE_DIR / "jobspy" / "scraped jobs" / "results" / timestamp_month
+    timestamp_day = datetime.now().strftime("%Y_%m_%d")
+    results_dir = BASE_DIR / "jobspy" / "scraped jobs" / "results" / timestamp_month / timestamp_day
     
     # Check if results folder exists or create it
     results_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["JOBSPY_RESULTS_DIR"] = str(results_dir)
+
+    logs_dir = BASE_DIR / "jobspy" / "scraped jobs" / "logs" / timestamp_month / timestamp_day
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["JOBSPY_LOGS_DIR"] = str(logs_dir)
     
     update_pipeline_state(
         BASE_DIR,

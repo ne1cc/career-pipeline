@@ -122,8 +122,14 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
             state = {}
 
     month_str = datetime.now().strftime("%Y_%m")
-    results_dir = repo_root / "jobspy" / "scraped jobs" / "results" / month_str
-    logs_dir = repo_root / "jobspy" / "scraped jobs" / "logs" / month_str
+    day_str = datetime.now().strftime("%Y_%m_%d")
+    date_results_dir = repo_root / "jobspy" / "scraped jobs" / "results" / month_str / day_str
+    month_results_dir = repo_root / "jobspy" / "scraped jobs" / "results" / month_str
+    results_dir = date_results_dir if date_results_dir.exists() else month_results_dir
+
+    date_logs_dir = repo_root / "jobspy" / "scraped jobs" / "logs" / month_str / day_str
+    month_logs_dir = repo_root / "jobspy" / "scraped jobs" / "logs" / month_str
+    logs_dir = date_logs_dir if date_logs_dir.exists() else month_logs_dir
 
     master_pid = state.get("pid")
     is_master_running = is_pid_alive(master_pid)
@@ -138,7 +144,9 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
         task_status = t_data.get("status", "pending")
 
         log_path = Path(t_data.get("log_path") or (logs_dir / f"{Path(name).stem}.log"))
-        csv_path = results_dir / EXPECTED_OUTPUTS[name]
+        csv_path = Path(t_data.get("output_csv") or (results_dir / EXPECTED_OUTPUTS[name]))
+        if not csv_path.exists() and (month_results_dir / EXPECTED_OUTPUTS[name]).exists():
+            csv_path = month_results_dir / EXPECTED_OUTPUTS[name]
 
         # Check PID liveness
         if task_status == "running":
@@ -351,6 +359,38 @@ def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True):
     return layout_table
 
 
+def resolve_pipeline_python(repo_root: Path) -> str:
+    """Resolve the Python executable that has scraper dependencies installed."""
+    env_override = os.environ.get("JOBSPY_PYTHON")
+    if env_override and Path(env_override).is_file() and os.access(env_override, os.X_OK):
+        return env_override
+
+    candidates = [
+        repo_root / ".venv" / "bin" / "python",
+        Path.home() / ".local" / "venvs" / "jobspy-custom-3.12" / "bin" / "python",
+        Path(sys.executable),
+    ]
+
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            try:
+                res = subprocess.run(
+                    [str(candidate), "-c", "import bs4, ats_scrapers"],
+                    capture_output=True,
+                    timeout=3,
+                )
+                if res.returncode == 0:
+                    return str(candidate)
+            except Exception:
+                pass
+
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return sys.executable
+
+
 def launch_pipeline(repo_root: Path) -> subprocess.Popen:
     """Launch run_pipeline.py as a detached background process with output logged."""
     runner = repo_root / "run_pipeline.py"
@@ -362,8 +402,11 @@ def launch_pipeline(repo_root: Path) -> subprocess.Popen:
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{repo_root}:{existing_pythonpath}" if existing_pythonpath else str(repo_root)
 
+    py_bin = resolve_pipeline_python(repo_root)
+    env["JOBSPY_PYTHON"] = py_bin
+
     p = subprocess.Popen(
-        [sys.executable, str(runner)],
+        [py_bin, str(runner)],
         stdout=out,
         stderr=subprocess.STDOUT,
         cwd=str(repo_root),

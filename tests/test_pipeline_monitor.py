@@ -152,3 +152,18 @@ def test_cli_pipeline_run_launches_process(tmp_path, monkeypatch):
     assert res.exit_code == 0
     assert "Master pipeline process spawned (PID: 4321)" in res.stdout
     assert called_monitor == [False]
+
+
+def test_resolve_pipeline_python(tmp_path, monkeypatch):
+    # 1. Tests env var override
+    fake_py = tmp_path / "fake_python"
+    fake_py.write_text("#!/bin/sh\nexit 0\n")
+    fake_py.chmod(0o755)
+    monkeypatch.setenv("JOBSPY_PYTHON", str(fake_py))
+    assert pipeline_monitor.resolve_pipeline_python(tmp_path) == str(fake_py)
+
+    # 2. Tests fallback when env var not set
+    monkeypatch.delenv("JOBSPY_PYTHON", raising=False)
+    resolved = pipeline_monitor.resolve_pipeline_python(tmp_path)
+    assert resolved is not None
+    assert Path(resolved).exists()
