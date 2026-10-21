@@ -13,6 +13,16 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from cockpit import db, macos
@@ -154,10 +164,59 @@ def ingest(
 
 
 @app.command()
-def rescore() -> None:
+def rescore(
+    audit: Annotated[bool, typer.Option("--audit", "-a", help="Show breakdown of disqualification reasons")] = False,
+) -> None:
     """Re-apply scoring_rules.toml to QUEUED jobs (applied/skipped/held are untouched)."""
     with db.session() as con:
-        console.print(f"Rescored {db.rescore_queued(con)} queued job(s)")
+        before = db.scoreboard(con)
+        queued_before = before.get("queued", 0)
+        recent_before = before.get("queued_72h", 0)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            total_rows = con.execute("SELECT count(*) FROM jobs_master WHERE status = 'QUEUED'").fetchone()[0]
+            task = progress.add_task("[yellow]Rescoring queued jobs...", total=total_rows)
+
+            def on_progress(cur: int, tot: int) -> None:
+                progress.update(task, completed=cur)
+
+            total_rescored, audit_counts = db.rescore_queued(
+                con, progress_callback=on_progress, with_audit=True
+            )
+            progress.update(task, completed=total_rows, description="[green]✔ Rescoring complete")
+
+        after = db.scoreboard(con)
+        queued_after = after.get("queued", 0)
+        recent_after = after.get("queued_72h", 0)
+
+    console.print(
+        f"[bold green]✔ Rescore complete:[/bold green] rescored [cyan]{total_rescored:,}[/cyan] total queued row(s)"
+    )
+    console.print(
+        f"  Queue >= min_score ({db.min_score():.0f}): [bold red]{queued_before:,}[/bold red] ➔ [bold green]{queued_after:,}[/bold green] "
+        f"([yellow]{queued_before - queued_after:+,} noise filtered[/yellow])"
+    )
+    console.print(
+        f"  72h Fresh Queue:           [bold red]{recent_before:,}[/bold red] ➔ [bold green]{recent_after:,}[/bold green] "
+        f"([yellow]{recent_before - recent_after:+,} noise filtered[/yellow])"
+    )
+
+    if audit and audit_counts:
+        table = Table(title="Disqualification Audit Breakdown", show_header=True, header_style="bold magenta")
+        table.add_column("Disqualification Reason", style="cyan")
+        table.add_column("Count", justify="right", style="green")
+        for reason, count in sorted(audit_counts.items(), key=lambda x: x[1], reverse=True):
+            table.add_row(reason, f"{count:,}")
+        console.print(table)
 
 
 @app.command()

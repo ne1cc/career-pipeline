@@ -15,13 +15,13 @@
   BEFORE INSTALLING, replace every REPLACE_WITH_* placeholder below:
     - REPLACE_WITH_HOME_DIR       e.g. /Users/yourname
     - REPLACE_WITH_REPO_PATH      absolute path to this cloned repo,
-                                   e.g. /Users/yourname/Github/Jobspy-Custom
+                                   e.g. /Users/yourname/Github/ne1cc/career-pipeline
     - REPLACE_WITH_PYTHON_PATH    absolute path to the project's Python,
                                    e.g. /Users/yourname/.local/venvs/jobspy/bin/python
 
   Then install with (copy first — do not sed this template in git):
     cp launchd/com.jobspy-custom.pipeline.plist ~/Library/LaunchAgents/
-    sed -i '' "s|REPLACE_WITH_REPO_PATH|/Users/yourname/Github/Jobspy-Custom|g; s|REPLACE_WITH_HOME_DIR|/Users/yourname|g; s|REPLACE_WITH_PYTHON_PATH|/Users/yourname/.local/venvs/jobspy-custom-3.12/bin/python|g" \
+    sed -i '' "s|REPLACE_WITH_REPO_PATH|/Users/yourname/Github/ne1cc/career-pipeline|g; s|REPLACE_WITH_HOME_DIR|/Users/yourname|g; s|REPLACE_WITH_PYTHON_PATH|/Users/yourname/.local/venvs/jobspy-custom-3.12/bin/python|g" \
       ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
 

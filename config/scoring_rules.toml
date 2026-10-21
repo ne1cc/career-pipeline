@@ -8,8 +8,46 @@ data_eng = "~/resumes/data_eng_lakehouse_v1.pdf"
 analytics_msba = "~/resumes/analytics_msba_v1.pdf"
 
 [penalties]
-points = 45.0
-title_contains = ["staff", "principal", "director", "vp", "senior", "sr.", "lead", "manager", "8+ years", "10+ years"]
+points = 100.0
+title_contains = [
+  "staff", "principal", "director", "vp", "vice president",
+  "senior", "sr", "sr.", "lead", "head of", "chief",
+  "fellow", "distinguished", "supervisor", "supervisory",
+  "iii", "iv", "v", "level 3", "level 4", "level 5",
+  "l5", "l6", "l7", "ic4", "ic5", "ic6",
+  "phd intern", "phd residency", "(phd)", "postdoc", "postdoctoral"
+]
+# Contextual title disqualifiers: penalized unless exempted by an early-career or recognized modifier
+architect_exempt = ["associate", "junior", "intern", "new grad", "entry", "i", "1"]
+manager_exempt = ["product manager", "program manager", "project manager", "account manager", "client manager"]
+
+[disqualifiers]
+penalty = 100.0
+max_yoe = 4
+
+# Non-target titles that should never be boosted into the queue
+title_exclude = [
+  "sales development", "business development", "sdr", "bdr",
+  "account executive", "sales representative", "store associate",
+  "retail associate", "warehouse associate", "warehouse", "delivery associate",
+  "material handler", "forklift", "driver", "janitor", "custodian",
+  "mechanic", "electrician", "hvac", "plumber", "carpenter",
+  "nurse", "rn", "lpn", "physician", "therapist", "pharmacist",
+  "dental", "veterinary", "security guard", "security officer",
+  "cashier", "barista", "cook", "chef", "recruiter", "talent acquisition",
+  "paralegal", "attorney", "counsel", "caregiver", "social worker"
+]
+
+# JD body phrases that trigger the -100.0 penalty
+description_contains = [
+  "ts/sci", "top secret", "polygraph", "ci poly", "full scope poly",
+  "active secret clearance", "active dod secret", "security clearance required",
+  "must hold an active", "q clearance", "l clearance",
+  "phd required", "ph.d. required", "doctorate required", "must have a phd",
+  "m.d. required", "j.d. required", "active rn license",
+  "unpaid internship", "commission only", "100% commission",
+  "corp-to-corp only", "c2c only"
+]
 
 [boosts]
 points = 15.0
@@ -17,9 +55,25 @@ title_contains = ["intern", "new grad", "early career", "junior", "associate", "
 
 # The job title picks the archetype first (checked in this order); keyword weights decide otherwise.
 [title_archetype]
-data_eng = ["data engineer", "analytics engineer", "etl", "data platform", "data infrastructure", "big data", "lakehouse"]
-analytics_msba = ["analyst", "analytics", "data scientist", "business intelligence", "decision science", "business analyst"]
-swe_backend = ["software", "backend", "back end", "full stack", "fullstack", "developer", "devops", "platform", "site reliability"]
+data_eng = [
+  "data engineer", "analytics engineer", "etl", "data platform", "data infrastructure",
+  "big data", "lakehouse", "dataops", "mlops", "database engineer", "data pipeline",
+  "ai engineer", "ml engineer", "machine learning engineer", "data integration", "forward deployed"
+]
+analytics_msba = [
+  "analyst", "analytics", "data scientist", "business intelligence", "bi engineer",
+  "bi developer", "decision science", "business analyst", "quantitative", "quant",
+  "product manager", "product analyst", "operations analyst", "bizops", "business operations", "financial analyst",
+  "marketing analyst", "pricing analyst", "risk analyst", "research analyst", "economist",
+  "statistician", "insights"
+]
+swe_backend = [
+  "software", "sde", "swe", "backend", "back end", "full stack", "fullstack",
+  "developer", "devops", "platform engineer", "site reliability", "sre",
+  "systems engineer", "cloud engineer", "security engineer", "cybersecurity",
+  "appsec", "solutions engineer", "solutions architect", "architect", "integration engineer", "automation engineer",
+  "qa engineer", "test engineer", "application engineer"
+]
 
 [location]
 primary_points = 10.0
