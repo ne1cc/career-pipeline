@@ -316,6 +316,7 @@ def install_agent() -> None:
 
 pipeline_app = typer.Typer(no_args_is_help=False, add_completion=False, help="Inspect, monitor, and run the JobSpy scraping pipeline.")
 app.add_typer(pipeline_app, name="pipeline")
+app.add_typer(pipeline_app, name="pipelines")
 
 
 @pipeline_app.callback(invoke_without_command=True)
