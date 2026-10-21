@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 
+from cockpit.pipeline_monitor import update_pipeline_state
+
 BASE_DIR = Path(__file__).parent.resolve()
 JOBSPY_DIR = BASE_DIR / "jobspy"
 
@@ -62,6 +64,7 @@ def main():
     processes = []
     start_times = {}
     log_files = {}
+    task_states = {}
     
     # 3. Handle termination signal to clean up subprocesses nicely
     def signal_handler(sig, frame):
@@ -72,6 +75,9 @@ def main():
             if p.poll() is None:
                 print(f" -> Terminating {name} (PID: {p.pid})...")
                 p.terminate()
+                if name in task_states:
+                    task_states[name]["status"] = "failed"
+                    task_states[name]["exit_code"] = -15
         # Wait a bit for processes to terminate
         time.sleep(1)
         for p_info in processes:
@@ -80,9 +86,13 @@ def main():
             if p.poll() is None:
                 print(f" -> Killing {name} (PID: {p.pid})...")
                 p.kill()
+                if name in task_states:
+                    task_states[name]["status"] = "failed"
+                    task_states[name]["exit_code"] = -9
         # Close log files
         for lf in log_files.values():
             lf.close()
+        update_pipeline_state(base_dir, phase="FAILED", error="Interrupted by signal", tasks=task_states)
         print("[!] Cleanup complete. Exiting.")
         sys.exit(1)
 
@@ -125,6 +135,15 @@ def main():
             "log_path": log_file_path,
         })
         start_times[script_name] = time.time()
+        task_states[script_name] = {
+            "status": "running",
+            "pid": p.pid,
+            "started_at": datetime.now().isoformat(),
+            "log_path": str(log_file_path),
+            "output_csv": str(results_dir / EXPECTED_OUTPUTS.get(script_name, "")),
+        }
+
+    update_pipeline_state(base_dir, phase="SCRAPING", tasks=task_states)
         
     print("\nAll processes launched in parallel. Monitoring status (polling every 5 seconds)...\n")
     print("-" * 80)
@@ -156,6 +175,14 @@ def main():
                 duration_str = f"{int(minutes)}m {seconds:.1f}s"
                 
                 status_str = "SUCCESS" if exit_code == 0 else f"FAILED (Exit Code: {exit_code})"
+                task_states[name].update({
+                    "status": "success" if exit_code == 0 else "failed",
+                    "exit_code": exit_code,
+                    "finished_at": datetime.now().isoformat(),
+                    "duration_sec": duration,
+                })
+                update_pipeline_state(base_dir, tasks=task_states)
+
                 print(f"[FINISHED] {name}")
                 print(f"           Status:   {status_str}")
                 print(f"           Duration: {duration_str}")

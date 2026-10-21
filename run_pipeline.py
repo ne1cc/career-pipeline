@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import shutil
 import smtplib
@@ -14,6 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl.utils import get_column_letter
+
+from cockpit.pipeline_monitor import update_pipeline_state
 
 from pipeline_enrichment import (
     apply_row_highlights,
@@ -381,16 +384,42 @@ def main():
     # Check if results folder exists or create it
     results_dir.mkdir(parents=True, exist_ok=True)
     
-    run_scrapers()
-    
-    excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
+    update_pipeline_state(
+        BASE_DIR,
+        pid=os.getpid(),
+        started_at=datetime.now().isoformat(),
+        phase="SCRAPING",
+        error=None,
+    )
     
     try:
-        send_email_with_attachment(config, excel_path, stats, has_previous_run)
-    finally:
-        run_cockpit_ingest(results_dir)
-    
-    print(f"\n[{datetime.now()}] --- PIPELINE RUN COMPLETE ---")
+        run_scrapers()
+        
+        update_pipeline_state(BASE_DIR, phase="EXCEL_BUILD")
+        excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
+        update_pipeline_state(BASE_DIR, excel_path=str(excel_path))
+        
+        try:
+            update_pipeline_state(BASE_DIR, phase="EMAIL")
+            send_email_with_attachment(config, excel_path, stats, has_previous_run)
+        finally:
+            update_pipeline_state(BASE_DIR, phase="INGEST")
+            run_cockpit_ingest(results_dir)
+            
+        update_pipeline_state(
+            BASE_DIR,
+            phase="COMPLETED",
+            finished_at=datetime.now().isoformat(),
+        )
+        print(f"\n[{datetime.now()}] --- PIPELINE RUN COMPLETE ---")
+    except Exception as exc:
+        update_pipeline_state(
+            BASE_DIR,
+            phase="FAILED",
+            error=str(exc),
+            finished_at=datetime.now().isoformat(),
+        )
+        raise
 
 if __name__ == "__main__":
     main()
