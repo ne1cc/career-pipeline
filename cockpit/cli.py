@@ -4,6 +4,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional
@@ -311,6 +312,95 @@ def install_agent() -> None:
     subprocess.run(["launchctl", "bootout", domain, str(AGENT_PLIST)], check=False)  # fine if not loaded yet
     subprocess.run(["launchctl", "bootstrap", domain, str(AGENT_PLIST)], check=True)
     console.print(f"Installed {AGENT_PLIST}")
+
+
+pipeline_app = typer.Typer(no_args_is_help=False, add_completion=False, help="Inspect, monitor, and run the JobSpy scraping pipeline.")
+app.add_typer(pipeline_app, name="pipeline")
+app.add_typer(pipeline_app, name="pipelines")
+
+
+@pipeline_app.callback(invoke_without_command=True)
+def pipeline_default(
+    ctx: typer.Context,
+    run: Annotated[bool, typer.Option("--run", "-r", help="Launch run_pipeline.py and attach monitor")] = False,
+    watch: Annotated[bool, typer.Option("--watch", "-w", help="Keep monitor active in terminal")] = False,
+    once: Annotated[bool, typer.Option("--once", "-1", help="Print a single snapshot without live refresh")] = False,
+) -> None:
+    """Monitor, inspect, or run the JobSpy scraping pipeline."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    from cockpit import pipeline_monitor
+
+    if run:
+        pipeline_run()
+        return
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if (state.get("is_active") and not once) or watch:
+        pipeline_monitor.monitor_loop(REPO_ROOT, once=False)
+    else:
+        pipeline_monitor.monitor_loop(REPO_ROOT, once=True)
+
+
+@pipeline_app.command("run")
+def pipeline_run() -> None:
+    """Launch run_pipeline.py in background and attach live visual monitor."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if state.get("is_active"):
+        console.print("[yellow]Pipeline is already running! Attaching to active run...[/yellow]")
+    else:
+        console.print("[cyan]Launching JobSpy pipeline in background...[/cyan]")
+        p = pipeline_monitor.launch_pipeline(REPO_ROOT)
+        console.print(f"[dim]Master pipeline process spawned (PID: {p.pid})[/dim]")
+        time.sleep(0.5)
+
+    pipeline_monitor.monitor_loop(REPO_ROOT, once=False)
+
+
+@pipeline_app.command("status")
+def pipeline_status(
+    watch: Annotated[bool, typer.Option("--watch", "-w", help="Keep monitor active in terminal")] = False,
+) -> None:
+    """Print current pipeline status table (or stream with --watch)."""
+    from cockpit import pipeline_monitor
+
+    pipeline_monitor.monitor_loop(REPO_ROOT, once=not watch)
+
+
+@pipeline_app.command("logs")
+def pipeline_logs(
+    target: Annotated[Optional[str], typer.Argument(help="Scraper name (e.g. seattle, ats, remote) or 'pipeline'")] = None,
+    lines: Annotated[int, typer.Option("--lines", "-n", help="Number of lines to show")] = 25,
+) -> None:
+    """View recent log entries for a scraper or the master pipeline."""
+    month_str = datetime.now().strftime("%Y_%m")
+    logs_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "logs" / month_str
+
+    if not target or target.lower() in ("pipeline", "cron", "all"):
+        target_file = REPO_ROOT / "pipeline_cron.log"
+    else:
+        clean = target.lower().removesuffix(".py").removesuffix(".log")
+        candidates = list(logs_dir.glob(f"*{clean}*.log"))
+        if not candidates:
+            console.print(f"[red]No logs found matching '{target}' in {logs_dir}[/red]")
+            raise typer.Exit(1)
+        target_file = candidates[0]
+
+    if not target_file.is_file():
+        console.print(f"[yellow]Log file does not exist yet: {target_file}[/yellow]")
+        return
+
+    console.print(f"[bold cyan]─── Log: {target_file.name} (last {lines} lines) ───[/bold cyan]")
+    try:
+        content = target_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        recent = content[-lines:] if len(content) > lines else content
+        for l in recent:
+            console.print(l)
+    except Exception as e:
+        console.print(f"[red]Error reading log: {e}[/red]")
 
 
 if __name__ == "__main__":
