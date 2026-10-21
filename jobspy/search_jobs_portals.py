@@ -671,8 +671,11 @@ def main():
     base_dir = Path(__file__).resolve().parent
     now = datetime.now()
     month_str = now.strftime("%Y_%m")
-    log_dir = base_dir / "scraped jobs" / "logs" / month_str
-    results_dir = base_dir / "scraped jobs" / "results" / month_str
+    day_str = now.strftime("%Y_%m_%d")
+    env_results = os.environ.get("JOBSPY_RESULTS_DIR")
+    results_dir = Path(env_results) if env_results else (base_dir / "scraped jobs" / "results" / month_str / day_str)
+    env_logs = os.environ.get("JOBSPY_LOGS_DIR")
+    log_dir = Path(env_logs) if env_logs else (base_dir / "scraped jobs" / "logs" / month_str / day_str)
     log_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import time
@@ -34,13 +35,28 @@ AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
 
 
 def _default_results_dir() -> Path:
-    return REPO_ROOT / "jobspy" / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")
+    now = datetime.now()
+    month_str = now.strftime("%Y_%m")
+    day_str = now.strftime("%Y_%m_%d")
+    today_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "results" / month_str / day_str
+    if today_dir.exists() and any(today_dir.glob("*_jobs.csv")):
+        return today_dir
+    month_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "results" / month_str
+    if month_dir.exists():
+        subdirs = sorted([d for d in month_dir.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", d.name)], reverse=True)
+        for sd in subdirs:
+            if any(sd.glob("*_jobs.csv")):
+                return sd
+    return today_dir if today_dir.exists() else month_dir
 
 
 def _find_default_inputs() -> list[Path]:
     csvs = sorted(_default_results_dir().glob("*_jobs.csv"))
     if csvs:
         return csvs
+    month_csvs = sorted((REPO_ROOT / "jobspy" / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")).glob("*_jobs.csv"))
+    if month_csvs:
+        return month_csvs
     downloads = Path.home() / "Downloads"
     if downloads.exists():
         excel_reports = sorted(downloads.glob("Job_Report_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -421,13 +437,18 @@ def pipeline_logs(
 ) -> None:
     """View recent log entries for a scraper or the master pipeline."""
     month_str = datetime.now().strftime("%Y_%m")
-    logs_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "logs" / month_str
+    day_str = datetime.now().strftime("%Y_%m_%d")
+    date_logs_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "logs" / month_str / day_str
+    month_logs_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "logs" / month_str
+    logs_dir = date_logs_dir if date_logs_dir.exists() else month_logs_dir
 
     if not target or target.lower() in ("pipeline", "cron", "all"):
         target_file = REPO_ROOT / "pipeline_cron.log"
     else:
         clean = target.lower().removesuffix(".py").removesuffix(".log")
-        candidates = list(logs_dir.glob(f"*{clean}*.log"))
+        candidates = list(date_logs_dir.glob(f"*{clean}*.log")) if date_logs_dir.exists() else []
+        if not candidates and month_logs_dir.exists():
+            candidates = list(month_logs_dir.glob(f"*{clean}*.log"))
         if not candidates:
             console.print(f"[red]No logs found matching '{target}' in {logs_dir}[/red]")
             raise typer.Exit(1)

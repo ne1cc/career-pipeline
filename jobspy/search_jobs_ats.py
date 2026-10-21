@@ -17,8 +17,9 @@ from ats_scrapers.scrapers import (
     get_scraper,
 )
 
-# Output directory: jobspy/scraped jobs/results/YYYY_MM/
-OUTPUT_DIR = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m")
+# Output directory: jobspy/scraped jobs/results/YYYY_MM/YYYY_MM_DD/
+default_out = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m") / datetime.now().strftime("%Y_%m_%d")
+OUTPUT_DIR = Path(os.environ.get("JOBSPY_RESULTS_DIR", default_out))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Expanded Search Keywords
