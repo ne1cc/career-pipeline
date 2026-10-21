@@ -15,6 +15,8 @@ Run directly from any terminal session (configured in `~/.zshrc`):
 | `cjd -r` or `cjd --root` | `cd` into the artifacts root directory (`~/Documents/jobspy-cockpit`) |
 | `cjd -o [query]` | Open matching dossier in default macOS viewer instead of `$EDITOR` |
 | `cjd -f [query]` | Open matching job's artifacts folder in macOS Finder |
+| `cjn` or `cjv` | Open the artifacts root directory directly in Neovim |
+| `cjn <query>` | Open matching company's dossier directly in Neovim (e.g. `cjn stripe` or `cjn nintendo`) |
 | `cjf` or `artifacts` | Open the artifacts root (`~/Documents/jobspy-cockpit`) in macOS Finder |
 | `cjf <query>` | Open a specific company's artifacts folder in macOS Finder (e.g. `cjf nintendo`) |
 | `cockpit` | Launch Cockpit TUI (or run subcommands below) |
@@ -32,6 +34,8 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 |---|---|
 | `cockpit dossier` | List all saved job dossiers in a table with file & PDF counts |
 | `cockpit dossier <query>` | Open matching dossier in default editor/viewer (e.g. `cockpit dossier nintendo`) |
+| `cockpit dossier <query> -v` | Open matching dossier directly in Neovim |
+| `cockpit edit [query]` / `cockpit nvim` | Open dossier (or root) directly in Neovim (`cockpit edit stripe`) |
 | `cockpit dossier <query> --cat` | Print full syntax-highlighted Markdown dossier in terminal |
 | `cockpit dossier --latest` | Open the most recently updated dossier |
 | `cockpit folder` / `cockpit artifacts` | Open `~/Documents/jobspy-cockpit` in macOS Finder |
@@ -82,7 +86,8 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | Key | Does |
 |---|---|
 | `b` | Bookmark / save job and generate full AI packaging & dossier |
-| `i` | Open the generated interview dossier (`05_interview_dossier.md`) |
+| `i` | Open the generated interview dossier in default viewer (`05_interview_dossier.md`) |
+| `e` | Edit dossier in Neovim / `$EDITOR` (cleanly suspends TUI, restores on `:q`) |
 | `I` | Re-queue and re-run AI intel evaluation |
 | `F` | Open the job's artifact folder in Finder (contains all 8 MD files & exports PDF/DOCX) |
 | `c` | Copy tailored cover letter path to clipboard |

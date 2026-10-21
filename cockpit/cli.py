@@ -303,11 +303,13 @@ def sync_saved(
 def dossier_cmd(
     query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
     cat: Annotated[bool, typer.Option("--cat", "-c", help="Render dossier in terminal with rich markdown formatting")] = False,
+    nvim: Annotated[bool, typer.Option("--nvim", "-v", help="Open dossier directly in Neovim")] = False,
+    edit: Annotated[bool, typer.Option("--edit", "-e", help="Open dossier in Neovim / $EDITOR")] = False,
     open_in_editor: Annotated[bool, typer.Option("--open", "-o", help="Open dossier in default macOS editor/app")] = False,
     latest: Annotated[bool, typer.Option("--latest", "-l", help="Open/view the most recently modified dossier")] = False,
     export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
 ) -> None:
-    """View an interview dossier in terminal or open it in default editor."""
+    """View an interview dossier in terminal or open it in default editor / Neovim."""
     from cockpit import intel as intel_module
     from rich.markdown import Markdown
 
@@ -328,6 +330,7 @@ def dossier_cmd(
         other_mds = sorted(folder.glob("*.md"))
         return other_mds[0] if other_mds else None
 
+    use_nvim = nvim or edit
     target_dossier: Path | None = None
     target_folder: Path | None = None
 
@@ -349,6 +352,11 @@ def dossier_cmd(
                     console.print(f"  • {d.name}")
             raise typer.Exit(1)
         target_folder, target_dossier = matched[0]
+    elif use_nvim:
+        # No query + nvim -> open the artifacts root folder in Neovim
+        editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
+        subprocess.run([editor, str(root)])
+        return
     else:
         valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
         if not valid:
@@ -369,16 +377,30 @@ def dossier_cmd(
             table.add_row(folder.name, mtime, artifacts_str)
 
         console.print(table)
-        console.print("\n[dim]Usage: 'cockpit dossier <query>' (e.g. cockpit dossier nintendo), add '--cat' to read in terminal, or use 'cjd'[/dim]")
+        console.print("\n[dim]Usage: 'cockpit dossier <query>' (or 'cockpit edit <query>' / 'cjn' for Neovim), add '--cat' to read in terminal[/dim]")
         return
 
     if target_dossier:
         if cat:
             console.print(f"[bold cyan]─── Dossier: {target_dossier.parent.name} ───[/bold cyan]\n")
             console.print(Markdown(target_dossier.read_text(encoding="utf-8", errors="replace")))
+        elif use_nvim:
+            editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
+            subprocess.run([editor, str(target_dossier)])
         else:
             macos.open_file(target_dossier)
             console.print(f"Opened dossier: [cyan]{target_dossier}[/cyan]")
+
+
+@app.command("edit")
+@app.command("nvim")
+def edit_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
+    latest: Annotated[bool, typer.Option("--latest", "-l", help="Open the most recently modified dossier in Neovim")] = False,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Open an interview dossier (or artifacts root) directly in Neovim."""
+    dossier_cmd(query=query, nvim=True, latest=latest, export_dir=export_dir)
 
 
 @app.command("folder")

@@ -1153,5 +1153,48 @@ def test_cli_dossier_and_folder_commands(tmp_path, monkeypatch):
     assert res_artifacts.exit_code == 0
     assert opened[-1] == job_dir
 
+    # 7. Edit in nvim via cockpit edit
+    subp_runs = []
+    monkeypatch.setattr("subprocess.run", lambda args, **kw: subp_runs.append(args))
+    res_edit = runner.invoke(cli_app, ["edit", "stripe", "--export-dir", str(export_dir)])
+    assert res_edit.exit_code == 0
+    assert len(subp_runs) == 1
+    assert str(dossier_md) in subp_runs[-1]
+
+    # 8. Dossier with --nvim / -v
+    res_dossier_v = runner.invoke(cli_app, ["dossier", "stripe", "-v", "--export-dir", str(export_dir)])
+    assert res_dossier_v.exit_code == 0
+    assert len(subp_runs) == 2
+    assert str(dossier_md) in subp_runs[-1]
+
+    # 9. Edit root when no query given
+    res_edit_root = runner.invoke(cli_app, ["edit", "--export-dir", str(export_dir)])
+    assert res_edit_root.exit_code == 0
+    assert len(subp_runs) == 3
+    assert str(export_dir) in subp_runs[-1]
+
+
+def test_tui_e_edits_dossier_in_editor(db_path, tmp_path, monkeypatch):
+    dossier = tmp_path / "acme.md"
+    dossier.write_text("# Acme Dossier")
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}, {"company": "Acme", "title": "Data Engineer I"}))
+        acme = con.execute("SELECT dedup_key FROM jobs_master WHERE company = 'Acme'").fetchone()[0]
+        con.execute("UPDATE jobs_master SET intel_path = ? WHERE dedup_key = ?", [str(dossier), acme])
+
+    editor_runs = []
+    monkeypatch.setattr("subprocess.run", lambda args, **kw: editor_runs.append(args))
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("question_mark", *"acme", "enter")
+            assert [r["company"] for r in app.rows] == ["Acme"]
+            await pilot.press("e")
+
+    asyncio.run(drive())
+    assert len(editor_runs) == 1
+    assert str(dossier) in editor_runs[0]
+
 
 
