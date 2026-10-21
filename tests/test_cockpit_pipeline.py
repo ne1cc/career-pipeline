@@ -1078,6 +1078,7 @@ def test_tui_cover_letter_and_tailored_staging(db_path, career_ops, tmp_path, ca
         async with app.run_test() as pilot:
             # Press 'b' to save and kick intel worker
             await pilot.press("b")
+            await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
 
