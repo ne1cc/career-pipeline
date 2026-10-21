@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import collections
+import csv
 import json
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -48,6 +51,157 @@ def update_pipeline_state(repo_root: Path, **updates: Any) -> dict:
     tmp_file.write_text(json.dumps(current, indent=2), encoding="utf-8")
     tmp_file.replace(state_file)
     return current
+
+
+def get_yield_history_file(repo_root: Path) -> Path:
+    return repo_root / ".pipeline_state" / "yield_history.json"
+
+
+def load_yield_history(repo_root: Path) -> dict[str, Any]:
+    f = get_yield_history_file(repo_root)
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return {"runs": []}
+    return {"runs": []}
+
+
+def save_yield_history(repo_root: Path, history: dict[str, Any]) -> None:
+    f = get_yield_history_file(repo_root)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    tmp.replace(f)
+
+
+def extract_site_counts(results_dir: Path) -> dict[str, int]:
+    site_counts: dict[str, int] = collections.defaultdict(int)
+    if not results_dir.is_dir():
+        return dict(site_counts)
+
+    for csv_file in results_dir.glob("*.csv"):
+        try:
+            with open(csv_file, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames or "site" not in reader.fieldnames:
+                    continue
+                for row in reader:
+                    site = (row.get("site") or "").strip().lower()
+                    if site:
+                        site_counts[site] += 1
+        except Exception:
+            continue
+    return dict(site_counts)
+
+
+def audit_pipeline_health(
+    repo_root: Path,
+    results_dir: Path,
+    task_states: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Audit pipeline yield against 14-day history, flagging CRITICAL and WARNING anomalies."""
+    if task_states is None:
+        state = get_pipeline_state(repo_root)
+        task_states = state.get("tasks", {})
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    task_yields = {
+        name: int(task_states.get(name, {}).get("row_count", 0) or 0)
+        for name in SCRAPER_NAMES
+    }
+    site_counts = extract_site_counts(results_dir)
+
+    history = load_yield_history(repo_root)
+    runs: list[dict[str, Any]] = history.get("runs", [])
+
+    # Evaluate against prior historical runs before merging today's run
+    prior_runs = [r for r in runs if r.get("date") != today_str]
+    recent_prior_runs = prior_runs[-7:]
+
+    anomalies: list[dict[str, Any]] = []
+
+    # 1. Task-level anomaly checks
+    for name in SCRAPER_NAMES:
+        current_rows = task_yields.get(name, 0)
+        task_status = task_states.get(name, {}).get("status", "unknown")
+
+        if task_status == "failed" or current_rows == 0:
+            anomalies.append({
+                "severity": "CRITICAL",
+                "task": name,
+                "message": f"Task '{name}' failed or yielded 0 rows ({current_rows} rows)",
+            })
+        elif recent_prior_runs:
+            prior_task_counts = [
+                int(r.get("tasks", {}).get(name, 0) or 0)
+                for r in recent_prior_runs
+            ]
+            if prior_task_counts:
+                med = statistics.median(prior_task_counts)
+                if med >= 20 and current_rows < 0.25 * med:
+                    anomalies.append({
+                        "severity": "WARNING",
+                        "task": name,
+                        "message": f"Task '{name}' yield ({current_rows} rows) is <25% of 7-day median ({med:.0f} rows)",
+                    })
+
+    # 2. Site-level anomaly checks
+    KEY_SITES = ("linkedin", "indeed", "glassdoor", "ats")
+    if recent_prior_runs:
+        for site in KEY_SITES:
+            site_today = site_counts.get(site, 0)
+            prior_site_counts = [
+                int(r.get("sites", {}).get(site, 0) or 0)
+                for r in recent_prior_runs
+            ]
+            if prior_site_counts:
+                med_site = statistics.median(prior_site_counts)
+                if med_site >= 20 and site_today == 0:
+                    anomalies.append({
+                        "severity": "WARNING",
+                        "site": site,
+                        "message": f"Source '{site}' returned 0 jobs across all segments (possible block/DOM change)",
+                    })
+
+    # 3. Update 14-day history (deduplicate same date by highest total yield)
+    new_entry = {
+        "date": today_str,
+        "timestamp": datetime.now().isoformat(),
+        "tasks": task_yields,
+        "sites": site_counts,
+    }
+    today_total = sum(task_yields.values())
+
+    existing_idx = next((i for i, r in enumerate(runs) if r.get("date") == today_str), None)
+    if existing_idx is not None:
+        existing_total = sum(runs[existing_idx].get("tasks", {}).values())
+        if today_total >= existing_total:
+            runs[existing_idx] = new_entry
+    else:
+        runs.append(new_entry)
+
+    runs.sort(key=lambda r: r.get("date", ""))
+    runs = runs[-14:]
+    history["runs"] = runs
+    save_yield_history(repo_root, history)
+
+    # 4. Overall health status
+    if any(a["severity"] == "CRITICAL" for a in anomalies):
+        health = "CRITICAL"
+    elif anomalies:
+        health = "WARNING"
+    else:
+        health = "HEALTHY"
+
+    update_pipeline_state(repo_root, health=health, anomalies=anomalies)
+
+    return {
+        "health": health,
+        "anomalies": anomalies,
+        "today_run": new_entry,
+        "history_count": len(runs),
+    }
 
 
 def is_pid_alive(pid: int | None) -> bool:
@@ -175,6 +329,10 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
         csv_size = csv_path.stat().st_size if csv_path.is_file() else None
         last_log = tail_file(log_path, max_lines=1)
 
+        row_count = t_data.get("row_count")
+        retried = bool(t_data.get("retried", False))
+        retry_exit_code = t_data.get("retry_exit_code")
+
         normalized_tasks[name] = {
             "status": task_status,
             "pid": task_pid,
@@ -185,6 +343,9 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
             "csv_path": str(csv_path),
             "csv_size": csv_size,
             "latest_log": last_log,
+            "row_count": row_count,
+            "retried": retried,
+            "retry_exit_code": retry_exit_code,
         }
 
     # Determine overall status
@@ -220,6 +381,8 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
         "tasks": normalized_tasks,
         "excel_path": state.get("excel_path"),
         "error": state.get("error"),
+        "health": state.get("health", "HEALTHY"),
+        "anomalies": state.get("anomalies", []),
     }
 
 
@@ -312,10 +475,13 @@ def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True):
     table.add_column("Status", justify="center", no_wrap=True)
     table.add_column("PID", justify="right", style="magenta", no_wrap=True)
     table.add_column("Elapsed", justify="right", style="bright_cyan", no_wrap=True)
+    table.add_column("Rows", justify="right", style="bright_green", no_wrap=True)
     table.add_column("Output Size", justify="right", no_wrap=True)
+    table.add_column("Health", justify="center", no_wrap=True)
     table.add_column("Latest Log Activity", style="dim", ratio=1)
 
     tasks = state.get("tasks", {})
+    anomalies = state.get("anomalies", [])
     for name in SCRAPER_NAMES:
         t = tasks.get(name, {})
         status = t.get("status", "pending")
@@ -323,22 +489,42 @@ def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True):
         task_duration = format_duration(t.get("duration_sec"))
         csv_size = format_bytes(t.get("csv_size"))
         latest_log = t.get("latest_log") or "—"
+        row_count = t.get("row_count")
+        rows_str = str(row_count) if row_count is not None else "—"
+        retried = bool(t.get("retried", False))
+
+        task_anomalies = [a for a in anomalies if a.get("task") == name]
+        is_critical = any(a.get("severity") == "CRITICAL" for a in task_anomalies)
+        is_warning = any(a.get("severity") == "WARNING" for a in task_anomalies)
 
         if status == "running":
             status_cell = Text("⟳ Running", style="bold yellow")
+            health_cell = Text("⟳ RUNNING", style="bold yellow")
         elif status == "success":
             status_cell = Text("✔ Done", style="bold green")
+            if is_critical or row_count == 0:
+                health_cell = Text("✗ ZERO/FAIL", style="bold red")
+            elif is_warning:
+                health_cell = Text("⚠ LOW YIELD", style="bold yellow")
+            elif retried:
+                health_cell = Text("↻ RETRIED", style="bold cyan")
+            else:
+                health_cell = Text("✓ OK", style="bold green")
         elif status == "failed":
             status_cell = Text("✖ Failed", style="bold red")
+            health_cell = Text("✗ ZERO/FAIL", style="bold red")
         else:
             status_cell = Text("○ Pending", style="dim")
+            health_cell = Text("○ PENDING", style="dim")
 
         table.add_row(
             name,
             status_cell,
             pid_str,
             task_duration,
+            rows_str,
             csv_size,
+            health_cell,
             latest_log,
         )
 
@@ -351,7 +537,19 @@ def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True):
         footer = Text("Run 'cockpit pipeline run' to launch a new pipeline run.", style="dim")
 
     layout_table = Table.grid(padding=1, expand=True)
-    layout_table.add_row(Panel(header_table, title="[bold cyan]🚀 JobSpy Pipeline Monitor[/bold cyan]", border_style="cyan"))
+    if anomalies:
+        alert_text = Text()
+        for idx, anom in enumerate(anomalies):
+            sev = anom.get("severity", "WARNING")
+            badge = "[CRITICAL] " if sev == "CRITICAL" else "[WARNING] "
+            badge_style = "bold red" if sev == "CRITICAL" else "bold yellow"
+            alert_text.append(badge, style=badge_style)
+            alert_text.append(anom.get("message", ""), style="bright_white")
+            if idx < len(anomalies) - 1:
+                alert_text.append("\n")
+        layout_table.add_row(Panel(alert_text, title="[bold red]⚠ Pipeline Health Alerts[/bold red]", border_style="red"))
+
+    layout_table.add_row(Panel(header_table, title="[bold cyan]🚀 Career Pipeline Monitor[/bold cyan]", border_style="cyan"))
     layout_table.add_row(Panel(pipeline_badges, title="[bold]Pipeline Phase Tracker[/bold]", border_style="bright_black"))
     layout_table.add_row(Panel(table, title="[bold]Parallel Scraper Tasks (8)[/bold]", border_style="bright_black"))
     layout_table.add_row(footer)

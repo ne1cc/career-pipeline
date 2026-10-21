@@ -175,9 +175,11 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
 
 
 def tmux_line(board: dict[str, int]) -> str:
+    recent = f" (72h:{board.get('queued_72h', 0)})" if "queued_72h" in board else ""
     return (
         f"#[fg=green]Jobs: {board['applied_today']}/{DAILY_GOAL}#[default]"
-        f" | Q:{board['queued']} | H:{board['hold']}"
+        f" | Q:{board['queued']}{recent}"
+        f" | H:{board['hold']}"
     )
 
 
@@ -521,23 +523,39 @@ def list_segments(con: duckdb.DuckDBPyConnection) -> list[str]:
     return [r[0] for r in con.execute("SELECT DISTINCT segment FROM job_segments ORDER BY 1").fetchall()]
 
 
-def rescore_queued(con: duckdb.DuckDBPyConnection, rules: dict[str, Any] | None = None) -> int:
+def rescore_queued(
+    con: duckdb.DuckDBPyConnection,
+    rules: dict[str, Any] | None = None,
+    progress_callback: Any = None,
+    with_audit: bool = False,
+) -> int | tuple[int, dict[str, int]]:
     """Recompute score, archetype and resume for QUEUED jobs only. Resets manual 1/2/3 overrides."""
     import polars as pl
 
-    from cockpit.normalizer import score_job
+    from cockpit.normalizer import load_rules, score_job
 
     rules = rules or load_rules()
     rows = con.execute(
         "SELECT dedup_key, title, description, location, is_remote FROM jobs_master WHERE status = 'QUEUED'"
     ).fetchall()
     if not rows:
-        return 0
-    scored = [
-        (key, s.score, s.archetype.value, s.resume_path)
-        for key, title, desc, loc, remote in rows
-        for s in [score_job(title, desc or "", rules, loc or "", bool(remote))]
-    ]
+        return (0, {}) if with_audit else 0
+
+    total_rows = len(rows)
+    scored = []
+    audit_counts: dict[str, int] = {}
+
+    for idx, (key, title, desc, loc, remote) in enumerate(rows):
+        if progress_callback and idx % 250 == 0:
+            progress_callback(idx, total_rows)
+        s = score_job(title, desc or "", rules, loc or "", bool(remote))
+        scored.append((key, s.score, s.archetype.value, s.resume_path))
+        if s.disqualified_reason:
+            audit_counts[s.disqualified_reason] = audit_counts.get(s.disqualified_reason, 0) + 1
+
+    if progress_callback:
+        progress_callback(total_rows, total_rows)
+
     batch = pl.DataFrame(scored, schema=["dedup_key", "score", "arch", "path"], orient="row")
     con.register("rescored", batch.to_arrow())
     try:
@@ -548,7 +566,7 @@ def rescore_queued(con: duckdb.DuckDBPyConnection, rules: dict[str, Any] | None 
     finally:
         con.unregister("rescored")
     write_tmux_cache(con)
-    return len(scored)
+    return (len(scored), audit_counts) if with_audit else len(scored)
 
 
 def _positive_keys_sql() -> str:

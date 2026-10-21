@@ -91,7 +91,7 @@ def test_scoring_penalty_and_boost():
     junior = score_job("Data Engineer I", "dbt and polars", rules)
     senior = score_job("Senior Data Engineer", "dbt and polars", rules)
     assert junior.archetype.value == "data_eng"
-    assert junior.score - senior.score == 15.0 + 45.0
+    assert junior.score - senior.score == rules["boosts"]["points"] + rules["penalties"]["points"]
     assert "i" not in score_job("Rustacean Developer", "", rules).matched  # no substring matches
 
 
@@ -109,13 +109,23 @@ def test_open_background_flag(calls):
     assert [c["cmd"] for c in calls] == [["/usr/bin/open", "https://x"], ["/usr/bin/open", "-g", "https://x"]]
 
 
+def test_notify_macos(calls, monkeypatch):
+    monkeypatch.setattr(macos.sys, "platform", "darwin")
+    macos.notify_macos(title="Test Title", message='Test "Quoted" Message')
+    assert calls[-1]["cmd"] == [
+        "/usr/bin/osascript",
+        "-e",
+        'display notification "Test \\"Quoted\\" Message" with title "Test Title"',
+    ]
+
+
 def test_tmux_cache_updates_on_transition(db_path):
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame({}))
-        assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 0/15#[default] | Q:1 | H:0\n"
+        assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 0/15#[default] | Q:1 (72h:1) | H:0\n"
         key = con.execute("SELECT dedup_key FROM jobs_master").fetchone()[0]
         db.transition_job_state(con, key, FunnelState.APPLIED, "test")
-    assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 1/15#[default] | Q:0 | H:0\n"
+    assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 1/15#[default] | Q:0 (72h:0) | H:0\n"
 
 
 def test_y_copies_outreach_to_clipboard(db_path, calls):
@@ -401,6 +411,10 @@ def test_highlight_jd_escapes_then_colours():
     out = highlight_jd("Senior role [remote] using FastAPI.", ["fastapi"], rules)
     assert "[bold green]FastAPI[/bold green]" in out and "[bold red]Senior[/bold red]" in out
     assert "\\[remote]" in out  # literal brackets from the JD can't be read as markup
+
+    out_disq = highlight_jd("Requires TS/SCI clearance and 5+ years of experience.", [], rules)
+    assert "[bold red]TS/SCI[/bold red]" in out_disq
+    assert "[bold red]5+ years of experience[/bold red]" in out_disq
 
 
 def test_linkedin_referral_url():
@@ -850,6 +864,66 @@ def test_cli_sprint_recent_flag(db_path, monkeypatch):
     assert res.exit_code == 0
     assert "RecentCo" in res.stdout
     assert "OldCo" not in res.stdout
+
+
+def test_extract_required_yoe():
+    from cockpit.normalizer import extract_required_yoe
+
+    # Direct statements & ranges
+    assert extract_required_yoe("Requires 4+ years of experience in data engineering") == 4
+    assert extract_required_yoe("Minimum 5 years of relevant experience") == 5
+    assert extract_required_yoe("At least 6 yrs experience with Python") == 6
+    assert extract_required_yoe("4-6 years of experience required") == 4
+    assert extract_required_yoe("Requiring 5 to 7 years of work experience") == 5
+    assert extract_required_yoe("Four (4) years of experience with SQL") == 4
+    assert extract_required_yoe("Minimum of five years of industry experience") == 5
+
+    # False-positive exclusions: company history & age/licenses
+    assert extract_required_yoe("We have been in business for over 10 years and founded 20 years ago") is None
+    assert extract_required_yoe("Must be at least 18 years of age and hold a driver license for 5 years") is None
+
+    # Multi-tier qualification: preserves the lower required tier
+    assert extract_required_yoe("Bachelor with 4+ years of experience, or Master degree with 2+ years of experience") == 2
+    assert extract_required_yoe("Master degree with 5+ years of experience, or Bachelor with 7+ years of experience") == 5
+
+
+def test_relevance_gate_and_disqualifiers():
+    rules = load_rules()
+
+    # 1. Non-tech roles in Seattle must NOT receive early-career (+15) or location (+10) boosts
+    wh = score_job("Warehouse Associate", "", rules, location="Seattle, WA")
+    assert wh.score <= 0.0
+
+    mh = score_job("Material Handler I", "", rules, location="Seattle, WA")
+    assert mh.score <= 0.0
+
+    # 2. Legitimate tech junior roles DO receive boosts
+    junior_de = score_job("Data Engineer I", "", rules, location="Seattle, WA")
+    assert junior_de.score >= 25.0  # +15 boost + 10 location
+
+    # 3. Seniority and Roman numerals are hit with -100 penalty
+    sr_ai = score_job("Sr AI Engineer", "dbt and python", rules, location="Seattle, WA")
+    assert sr_ai.score < 10.0
+
+    swe_iii = score_job("Software Engineer III", "python and docker", rules, location="Seattle, WA")
+    assert swe_iii.score < 10.0
+
+    phd_role = score_job("AI Research Scientist (PhD)", "python", rules, location="Seattle, WA")
+    assert phd_role.score < 10.0
+
+    # 4. Contextual exemptions: Associate Solutions Architect and Product Manager Intern are exempted
+    assoc_arch = score_job("Associate Solutions Architect", "cloud", rules, location="Seattle, WA")
+    assert assoc_arch.score >= 10.0
+
+    pm_intern = score_job("Product Manager Intern", "analytics", rules, location="Seattle, WA")
+    assert pm_intern.score >= 10.0
+
+    # 5. JD clearance and high-YOE disqualifiers apply -100 penalty
+    cleared = score_job("Software Engineer I", "Active TS/SCI clearance required", rules, location="Seattle, WA")
+    assert cleared.score < 10.0
+
+    high_yoe = score_job("Data Analyst", "Requires minimum of 5 years of experience", rules, location="Seattle, WA")
+    assert high_yoe.score < 10.0
 
 
 def test_create_claude_cli_client_calls_subprocess(monkeypatch):

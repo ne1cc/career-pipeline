@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -111,7 +112,7 @@ def test_cli_pipeline_status(tmp_path, monkeypatch):
 
     res = runner.invoke(cli_app, ["pipeline", "--once"])
     assert res.exit_code == 0
-    assert "JobSpy Pipeline Monitor" in res.stdout
+    assert "Career Pipeline Monitor" in res.stdout
     assert "Parallel Scraper Tasks" in res.stdout
 
 
@@ -167,3 +168,133 @@ def test_resolve_pipeline_python(tmp_path, monkeypatch):
     resolved = pipeline_monitor.resolve_pipeline_python(tmp_path)
     assert resolved is not None
     assert Path(resolved).exists()
+
+
+def test_count_csv_rows(tmp_path):
+    from run_parallel import count_csv_rows
+
+    # Missing file
+    assert count_csv_rows(tmp_path / "nonexistent.csv") == 0
+
+    # Empty file
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    assert count_csv_rows(empty) == 0
+
+    # Header only
+    hdr = tmp_path / "hdr.csv"
+    hdr.write_text("id,title,company\n")
+    assert count_csv_rows(hdr) == 0
+
+    # Normal rows
+    normal = tmp_path / "normal.csv"
+    normal.write_text("id,title,company\n1,dev,co\n2,analyst,co\n")
+    assert count_csv_rows(normal) == 2
+
+    # Multiline quoted rows
+    multiline = tmp_path / "multiline.csv"
+    multiline.write_text('id,title,description\n1,dev,"line1\nline2\nline3"\n2,analyst,"desc\nwith\nbreaks"\n')
+    assert count_csv_rows(multiline) == 2
+
+
+def test_audit_pipeline_health_critical_and_warning(tmp_path):
+    repo_root = tmp_path
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+
+    # Pre-populate yield_history with 7 days of high yields
+    history_file = pipeline_monitor.get_yield_history_file(repo_root)
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    past_runs = [
+        {
+            "date": f"2026-10-{10+i:02d}",
+            "timestamp": f"2026-10-{10+i:02d}T08:00:00",
+            "tasks": {name: 100 for name in pipeline_monitor.SCRAPER_NAMES},
+            "sites": {"linkedin": 300, "indeed": 200, "ats": 100},
+        }
+        for i in range(7)
+    ]
+    pipeline_monitor.save_yield_history(repo_root, {"runs": past_runs})
+
+    # Test 1: Critical when task failed or 0 rows
+    task_states_critical = {
+        "search_jobs_remote.py": {"status": "failed", "row_count": 0},
+        "search_jobs_seattle.py": {"status": "success", "row_count": 100},
+    }
+    audit1 = pipeline_monitor.audit_pipeline_health(repo_root, results_dir, task_states_critical)
+    assert audit1["health"] == "CRITICAL"
+    crit_tasks = [a["task"] for a in audit1["anomalies"] if a["severity"] == "CRITICAL"]
+    assert "search_jobs_remote.py" in crit_tasks
+
+    # Test 2: Warning when yield < 25% of 7-day median
+    # Seattle yielded 10 rows (10 < 0.25 * 100 = 25)
+    csv_file = results_dir / "seattle_jobs.csv"
+    csv_file.write_text("id,site,title\n1,linkedin,eng\n2,indeed,eng\n3,ats,eng\n")
+
+    task_states_warning = {
+        name: {"status": "success", "row_count": 100} for name in pipeline_monitor.SCRAPER_NAMES
+    }
+    task_states_warning["search_jobs_seattle.py"] = {"status": "success", "row_count": 10}
+
+    audit2 = pipeline_monitor.audit_pipeline_health(repo_root, results_dir, task_states_warning)
+    assert audit2["health"] == "WARNING"
+    warn_tasks = [a["task"] for a in audit2["anomalies"] if a.get("task")]
+    assert "search_jobs_seattle.py" in warn_tasks
+
+    # Test 3: Site warning when key site drops to 0
+    csv_file.write_text("id,site,title\n1,other,eng\n2,indeed,eng\n3,ats,eng\n")
+    task_states_healthy_tasks = {
+        name: {"status": "success", "row_count": 100} for name in pipeline_monitor.SCRAPER_NAMES
+    }
+    audit3 = pipeline_monitor.audit_pipeline_health(repo_root, results_dir, task_states_healthy_tasks)
+    site_warns = [a["site"] for a in audit3["anomalies"] if a.get("site")]
+    assert "linkedin" in site_warns
+
+
+def test_yield_history_retention_and_dedup(tmp_path):
+    repo_root = tmp_path
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+
+    # Add 20 daily runs to test retention to 14 days
+    past_runs = [
+        {
+            "date": f"2026-09-{i:02d}",
+            "timestamp": f"2026-09-{i:02d}T08:00:00",
+            "tasks": {name: 50 for name in pipeline_monitor.SCRAPER_NAMES},
+            "sites": {"linkedin": 50},
+        }
+        for i in range(1, 21)
+    ]
+    pipeline_monitor.save_yield_history(repo_root, {"runs": past_runs})
+
+    task_states = {
+        name: {"status": "success", "row_count": 60} for name in pipeline_monitor.SCRAPER_NAMES
+    }
+    pipeline_monitor.audit_pipeline_health(repo_root, results_dir, task_states)
+    history = pipeline_monitor.load_yield_history(repo_root)
+    assert len(history["runs"]) == 14
+
+    # Test same-day dedup keeps higher yield
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_run = next(r for r in history["runs"] if r["date"] == today_str)
+    assert today_run["tasks"]["search_jobs_seattle.py"] == 60
+
+    # Run with higher yield for today
+    task_states_higher = {
+        name: {"status": "success", "row_count": 90} for name in pipeline_monitor.SCRAPER_NAMES
+    }
+    pipeline_monitor.audit_pipeline_health(repo_root, results_dir, task_states_higher)
+    history_after = pipeline_monitor.load_yield_history(repo_root)
+    today_run_after = next(r for r in history_after["runs"] if r["date"] == today_str)
+    assert today_run_after["tasks"]["search_jobs_seattle.py"] == 90
+
+    # Run with lower yield for today -> should NOT overwrite higher yield
+    task_states_lower = {
+        name: {"status": "success", "row_count": 20} for name in pipeline_monitor.SCRAPER_NAMES
+    }
+    pipeline_monitor.audit_pipeline_health(repo_root, results_dir, task_states_lower)
+    history_after2 = pipeline_monitor.load_yield_history(repo_root)
+    today_run_after2 = next(r for r in history_after2["runs"] if r["date"] == today_str)
+    assert today_run_after2["tasks"]["search_jobs_seattle.py"] == 90
+

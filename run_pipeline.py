@@ -16,7 +16,8 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
-from cockpit.pipeline_monitor import update_pipeline_state
+from cockpit.macos import notify_macos
+from cockpit.pipeline_monitor import audit_pipeline_health, update_pipeline_state
 
 from pipeline_enrichment import (
     apply_row_highlights,
@@ -300,7 +301,7 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
         f"{format_email_summary(stats, has_previous_run=has_previous_run)}"
         f"Start with the Action Items and Developer & Security tabs — curated early-career roles sorted by priority.\n\n"
         f"Best regards,\n"
-        f"Jobspy Custom Pipeline"
+        f"Career Pipeline"
     )
     msg.attach(MIMEText(body, 'plain'))
     
@@ -419,12 +420,32 @@ def main():
             finished_at=datetime.now().isoformat(),
         )
         print(f"\n[{datetime.now()}] --- PIPELINE RUN COMPLETE ---")
+
+        # Health audit and macOS notification
+        health_report = audit_pipeline_health(BASE_DIR, results_dir)
+        total_scraped = sum(stats.get("raw_counts", {}).values()) if "stats" in locals() and stats else 0
+        anomalies = health_report.get("anomalies", [])
+
+        if health_report.get("health") == "HEALTHY":
+            notify_macos(
+                title="Career Pipeline Complete",
+                message=f"Pipeline complete — {total_scraped} jobs scraped across 8 segments",
+            )
+        else:
+            notify_macos(
+                title="Pipeline Warning",
+                message=f"{len(anomalies)} anomalies detected (check cockpit pipeline)",
+            )
     except Exception as exc:
         update_pipeline_state(
             BASE_DIR,
             phase="FAILED",
             error=str(exc),
             finished_at=datetime.now().isoformat(),
+        )
+        notify_macos(
+            title="Pipeline Failed",
+            message=str(exc)[:120],
         )
         raise
 

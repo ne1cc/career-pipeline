@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 KEYCHAIN_SERVICE = "jobcockpit-gmail"
@@ -35,12 +36,22 @@ def quicklook(resume_path: str) -> subprocess.Popen[bytes]:
     )
 
 
-def notify(message: str, title: str = "JobCockpit") -> None:
-    def esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace('"', '\\"')
+def notify_macos(title: str, message: str) -> None:
+    """Send a native macOS notification via osascript. Safe no-op on non-macOS or failure."""
+    if sys.platform != "darwin":
+        return
+    try:
+        def esc(s: str) -> str:
+            return s.replace("\\", "\\\\").replace('"', '\\"')
 
-    script = f'display notification "{esc(message)}" with title "{esc(title)}"'
-    subprocess.run(["/usr/bin/osascript", "-e", script], check=False)
+        script = f'display notification "{esc(message)}" with title "{esc(title)}"'
+        subprocess.run(["/usr/bin/osascript", "-e", script], check=False, capture_output=True)
+    except Exception:
+        pass
+
+
+def notify(message: str, title: str = "JobCockpit") -> None:
+    notify_macos(title=title, message=message)
 
 
 KEYCHAIN_GEMINI_SERVICE = "jobcockpit-gemini"

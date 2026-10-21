@@ -313,17 +313,27 @@ class JobCockpitApp(App[None]):
             detail.update("No jobs in this view.")
             return
         r = self.rows[index]
-        matched = score_job(r["title"], r["description"] or "", self.rules, r["location"] or "", bool(r["is_remote"])).matched
+        scored = score_job(r["title"], r["description"] or "", self.rules, r["location"] or "", bool(r["is_remote"]))
+        matched = scored.matched
         highlighted_desc = highlight_jd(r["description"] or "", matched, self.rules)
 
         notes_line = f"\n[b]Notes:[/b] {escape(r['notes'])}\n" if r.get("notes") else ""
         fit_line = f" · [b]Fit:[/b] {r['fit_score']:.1f}/5.0" if r.get("fit_score") is not None else ""
+        posted_str = r.get("date_posted") or "—"
+        disc_str = (r.get("discovered_at") or "")[:16]
+        timing_line = f"[b]Posted:[/b] {escape(posted_str)}" + (f" · [b]Discovered:[/b] {escape(disc_str)}" if disc_str else "")
+        yoe_str = f" · [b]YOE:[/b] {scored.required_yoe}+ yrs" if scored.required_yoe else ""
+        disq_badge = f" [bold red]({scored.disqualified_reason})[/bold red]" if scored.disqualified_reason else ""
+        dossier_line = f"\n[b]Dossier:[/b] {escape(r['intel_path'])}" if r.get("intel_path") else ""
+
         detail.update(
-            f"[b]{escape(r['title'])}[/b]\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
-            f"{notes_line}\n"
+            f"[b]{escape(r['title'])}[/b]{disq_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
+            f"{timing_line}{yoe_str}\n"
+            f"{notes_line}"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"
             f"[b]URL:[/b] {escape(r['apply_url'])}\n"
-            f"[b]Resume:[/b] {escape(macos.posix_path(r['resume_path']))}\n\n"
+            f"[b]Resume:[/b] {escape(macos.posix_path(r['resume_path']))}"
+            f"{dossier_line}\n\n"
             f"{highlighted_desc}"
         )
 

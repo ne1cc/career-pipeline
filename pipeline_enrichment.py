@@ -187,8 +187,8 @@ DEV_EXCLUSION_PATTERN = (
     r")\b"
 )
 
-SENIOR_TITLE_PATTERN = r"\b(?:senior|sr\b|sr\.|lead|principal|staff|(?<!product\s)(?<!project\s)manager|director|vp\b|vice president|head of|chief|architect|distinguished|fellow|iii|iv|v)\b"
-HIGH_YOE_PATTERN = r"\b(?:[5-9]|1[0-9])\+\s*(?:years|yrs)\b|\b(?:[5-9]|1[0-9])\s*(?:to|-|–)\s*[0-9]+\s*(?:years|yrs)\b"
+SENIOR_TITLE_PATTERN = r"\b(?:senior|sr\b|sr\.|lead|principal|staff|(?<!product\s)(?<!project\s)(?<!program\s)manager|director|vp\b|vice president|head of|chief|architect|distinguished|fellow|iii|iv|v|l5|l6|l7|ic4|ic5|ic6|level 3|level 4|level 5|\(phd\)|phd intern|phd residency|postdoc)\b"
+HIGH_YOE_PATTERN = r"\b(?:[4-9]|1[0-9])\+\s*(?:years|yrs)\b|\b(?:[4-9]|1[0-9])\s*(?:to|-|–)\s*[0-9]+\s*(?:years|yrs)\b"
 ENTRY_TITLE_TAG_PATTERN = r"\b(?:new grad|junior|associate|entry level|early career|university|intern|internship|campus)\b"
 
 
@@ -220,8 +220,16 @@ def is_senior_or_high_yoe(title: str, description: str = "") -> bool:
     if re.search(SENIOR_TITLE_PATTERN, t):
         return True
     d = "" if pd.isna(description) else str(description or "").lower()
-    if d and re.search(HIGH_YOE_PATTERN, d):
-        return True
+    if d:
+        try:
+            from cockpit.normalizer import extract_required_yoe
+            req = extract_required_yoe(d)
+            if req is not None and req >= 4:
+                return True
+        except ImportError:
+            pass
+        if re.search(HIGH_YOE_PATTERN, d):
+            return True
     return False
 
 
