@@ -1,0 +1,384 @@
+# ==============================================================================
+# 02_project_evidence_bank.yaml — Comprehensive 22-Project Evidence Catalog
+# ==============================================================================
+# RULE: AI models MUST select the top 3-4 most relevant projects for each job.
+# Every claim, metric, and tool cited must match the verified completed work.
+# Under NO circumstance should "planned_not_completed" be claimed as done.
+
+projects:
+  - id: "ab-testing-dagster"
+    name: "Product A/B Testing & Experimentation Engine"
+    repo: "https://github.com/ne1cc/ab-testing-dagster"
+    role_tags: ["product_analyst", "data_scientist", "analytics_engineer", "decision_scientist", "growth_analyst"]
+    domain_tags: ["product_analytics", "experimentation", "statistics", "data_pipeline"]
+    primary_tools: ["Dagster", "dbt", "DuckDB", "Python", "SQL", "SciPy", "Statsmodels"]
+    summary: "Production-grade experimentation engine that automates daily partition ingestion, transforms telemetry into analytics-ready marts, and applies CUPED variance reduction and sequential testing."
+    completed_features:
+      - "Implemented automated Sample Ratio Mismatch (SRM) guardrails using chi-square goodness-of-fit to halt metric computation if randomization fails."
+      - "Built CUPED (Controlled-experiment Using Pre-Experiment Data) variance reduction algorithm cutting experiment sample size requirements and duration by ~40%."
+      - "Designed dbt transformation marts computing conversion rate, average revenue per user (ARPU), and retention across treatment/control cohorts."
+      - "Built Dagster software-defined asset graph orchestrating daily partition ingestion with automated data quality checks."
+    verified_metrics:
+      - "~40% variance reduction and experiment runtime savings via CUPED covariate adjustment."
+      - "Zero false-positive experiment reads by enforcing automated SRM guardrails."
+    interview_tradeoffs: "CUPED requires pre-experiment historical data; for brand new users without history, fallback is unadjusted Welch t-test. Chi-square SRM checks protect against silent traffic allocation skew."
+    planned_not_completed: "Multi-armed bandit dynamic traffic reallocation algorithm."
+
+  - id: "clinical-trial-intelligence"
+    name: "Clinical Trial Feasibility & Site Congestion Intelligence"
+    repo: "https://github.com/ne1cc/clinical-trial-intelligence"
+    live_demo: "https://cti-dashboard.fly.dev"
+    role_tags: ["healthcare_analyst", "clinical_data_analyst", "bi_analyst", "analytics_engineer", "data_engineer"]
+    domain_tags: ["healthcare", "clinical_trials", "life_sciences", "biotech", "feasibility"]
+    primary_tools: ["DuckDB", "dbt", "Python", "Streamlit", "Parquet", "Docker", "Fly.io"]
+    summary: "Clinical feasibility analytics platform ingesting ClinicalTrials.gov API v2 data into a 3-layer Medallion architecture with interactive site-congestion and enrollment benchmarking."
+    completed_features:
+      - "Architected Bronze-Silver-Gold pipeline: API JSON ingestion with manifest checksums, Silver Parquet deduplication, and Gold DuckDB dimensional star-schema models."
+      - "Built dbt data models calculating site competition indices, investigator workload density, and historical phase transition durations across 400,000+ studies."
+      - "Developed interactive Streamlit dashboard deployed on Fly.io allowing clinical ops teams to evaluate sponsor trial feasibility by disease, phase, and geography."
+    verified_metrics:
+      - "Processed 400,000+ clinical trial protocol records with sub-second analytical queries on DuckDB."
+      - "Deployed live public production application on Fly.io (cti-dashboard.fly.dev)."
+    interview_tradeoffs: "DuckDB columnar processing selected over PostgreSQL to allow fast analytical window functions on millions of historical protocol rows without server overhead."
+    planned_not_completed: "Automated site contract negotiation timeline prediction model."
+
+  - id: "local-lakehouse-engine"
+    name: "Contract-First Local Lakehouse Engine"
+    repo: "https://github.com/ne1cc/local-lakehouse-engine"
+    live_demo: "https://ne1cc.github.io/local-lakehouse-engine/dashboard.html"
+    role_tags: ["data_engineer", "analytics_engineer", "platform_engineer", "spatial_analyst"]
+    domain_tags: ["data_engineering", "streaming_analytics", "lakehouse", "geospatial", "mobility"]
+    primary_tools: ["DuckDB", "dbt", "Polars", "Delta Lake", "Uber H3", "Python", "GitHub Actions"]
+    summary: "Contract-first streaming and batch lakehouse ingesting NYC Citi Bike GBFS, Open-Meteo Weather, and Air Quality APIs into Medallion tables with SCD Type 2 history and spatial indexing."
+    completed_features:
+      - "Enforced strict JSON schema contracts with Polars dead-letter quarantine rejecting corrupted payloads before lakehouse landing."
+      - "Engineered SCD Type 2 tracking for station capacity changes and Uber H3 hexagonal spatial indexing for geospatial mobility joins."
+      - "Trained gradient-boosted ML classifier predicting bike dock starvation 2 hours in advance based on weather and historical demand."
+      - "Maintained comprehensive test suite with 51 automated unit/integration tests running in CI."
+    verified_metrics:
+      - "51 automated unit and integration tests passing in CI."
+      - "Sub-minute incremental ingestion cycle across 3 external APIs."
+    interview_tradeoffs: "Polars dead-letter queue ensures bad payloads never poison downstream dbt marts; Delta Lake ACID log ensures transactional consistency."
+    planned_not_completed: "Distributed Ray cluster execution."
+
+  - id: "olist-lakehouse"
+    name: "Multi-Domain E-Commerce & SLA Lakehouse"
+    repo: "https://github.com/ne1cc/olist-lakehouse"
+    live_demo: "https://ne1cc.github.io/lakehouse-engine/dashboard.html"
+    role_tags: ["data_engineer", "analytics_engineer", "bi_analyst", "supply_chain_analyst", "retail_analyst"]
+    domain_tags: ["e_commerce", "supply_chain", "customer_retention", "logistics", "environmental"]
+    primary_tools: ["DuckDB", "dbt", "Polars", "Python", "SQL", "GitHub Pages"]
+    summary: "Multi-domain contract-first lakehouse modeling 99,441 Brazilian e-commerce orders, Instacart grocery reorders, and EPA TRI toxic releases into unified analytical data marts."
+    completed_features:
+      - "Designed star-schema dimensional models with fact orders, order items, customer cohorts, and carrier delivery performance."
+      - "Constructed rolling cohort retention and fulfillment SLA latency marts identifying regional delivery bottleneck states."
+      - "Implemented cross-domain contract verification ensuring schema adherence across disparate datasets."
+    verified_metrics:
+      - "Modeled 99,441 orders with 112,000+ line items and carrier transit times."
+      - "Automated static HTML dashboard generated and deployed to GitHub Pages."
+    interview_tradeoffs: "dbt incremental models used for heavy order-item joins; surrogate keys generated via deterministic MD5 hashing."
+    planned_not_completed: "Real-time carrier GPS tracking integration."
+
+  - id: "customer-churn-clv-engine"
+    name: "SaaS Customer Lifecycle & CLV Control Center"
+    repo: "https://github.com/ne1cc/customer-churn-clv-engine"
+    role_tags: ["product_analyst", "data_scientist", "growth_analyst", "marketing_analyst", "business_analyst"]
+    domain_tags: ["customer_analytics", "churn_prediction", "lifetime_value", "machine_learning", "saas"]
+    primary_tools: ["LightGBM", "BG/NBD", "Gamma-Gamma", "DuckDB", "Python", "Streamlit", "Lifetimes"]
+    summary: "Production-grade customer lifecycle system predicting 90-day churn risk, estimating 12-month Customer Lifetime Value, and simulating retention intervention ROI."
+    completed_features:
+      - "Engineered customer behavioral feature mart using DuckDB window functions (recency, frequency, monetary value, tenure, engagement velocity)."
+      - "Trained LightGBM classifier predicting 90-day churn probability with ROC-AUC evaluation and cost-benefit threshold tuning."
+      - "Fit probabilistic BG/NBD (transaction rate) and Gamma-Gamma (monetary spend) models to forecast 12-month expected CLV per customer."
+      - "Built Streamlit simulator allowing business teams to model retention campaign ROI across risk tiers."
+    verified_metrics:
+      - "LightGBM churn model calibrated with cost-weighted threshold maximizing retention campaign ROI."
+      - "Probabilistic CLV projections across customer tenure deciles."
+    interview_tradeoffs: "Gamma-Gamma model requires independence between transaction frequency and spend value; verified via Spearman correlation."
+    planned_not_completed: "Live CRM webhook triggering automated email sequences."
+
+  - id: "Heart-Failure-Decompensation-Predictor-with-SDOH"
+    name: "Heart Failure 30-Day Readmission Risk Predictor with SDOH"
+    repo: "https://github.com/ne1cc/Heart-Failure-Decompensation-Predictor-with-SDOH"
+    role_tags: ["healthcare_data_scientist", "clinical_analyst", "biostatistician", "public_health_analyst"]
+    domain_tags: ["healthcare", "clinical_ml", "sdoh", "biostatistics", "risk_modeling"]
+    primary_tools: ["Python", "XGBoost", "LightGBM", "SHAP", "Scikit-Learn", "SQL", "Pandas"]
+    summary: "Clinical machine learning model predicting 30-day acute decompensation for geriatric heart failure patients combining EHR clinical vitals with Social Determinants of Health."
+    completed_features:
+      - "Extracted longitudinal cohort data filtering for patients 65+ with congestive heart failure (CHF) and acute exacerbation episodes."
+      - "Fused EHR features (7-day weight gain, ejection fraction, creatinine) with census-tract Area Deprivation Index (ADI) social vulnerability scores."
+      - "Trained gradient boosted risk classifier with SHAP tree explainability to provide clinicians with individualized patient risk factor breakdowns."
+    verified_metrics:
+      - "Demonstrated statistical lift of SDOH integration over clinical-only baseline models."
+      - "SHAP values mapped to explain top patient-level risk drivers (e.g. rapid weight gain + high ADI)."
+    interview_tradeoffs: "Excluded post-discharge outcomes to prevent target leakage; prioritized recall to minimize missed decompensation events."
+    planned_not_completed: "FHIR API integration with Epic/Cerner EHR."
+
+  - id: "dhs-stunting-pipeline"
+    name: "Survey-Design-Aware Childhood Stunting Prevalence Pipeline"
+    repo: "https://github.com/ne1cc/dhs-stunting-pipeline"
+    role_tags: ["biostatistician", "public_health_analyst", "econometrician", "survey_data_scientist"]
+    domain_tags: ["biostatistics", "epidemiology", "public_health", "survey_sampling", "econometrics"]
+    primary_tools: ["Python 3.12", "NumPy", "SciPy", "Pandas", "Pytest"]
+    summary: "Epidemiological pipeline estimating childhood stunting prevalence from Demographic and Health Surveys (DHS) microdata, accounting for stratified multi-stage cluster sampling."
+    completed_features:
+      - "Modeled complex survey design weights: primary sampling units (PSU/clusters), regional strata, and household sampling weights."
+      - "Computed prevalence estimates and Taylor-series linearized standard errors, contrasting with unweighted naive means to reveal sampling bias."
+      - "Packaged with automated pytest test suite ensuring mathematical precision against DHS benchmark tables."
+    verified_metrics:
+      - "Corrected point estimate bias and overconfident standard errors present in naive sample calculations."
+      - "Fully tested with synthetic DHS microdata samples in CI."
+    interview_tradeoffs: "Survey weighting prevents urban oversampling bias; jackknife replicate weights validate Taylor-series variance estimates."
+    planned_not_completed: "Small-area estimation (Fay-Herriot model) at the district level."
+
+  - id: "ticker-change"
+    name: "ticker/change — Equity Research & Risk Workbench"
+    repo: "https://github.com/ne1cc/ticker-change"
+    live_demo: "https://ticker-change.fly.dev"
+    role_tags: ["financial_analyst", "quant_analyst", "risk_analyst", "backend_engineer", "fullstack_engineer"]
+    domain_tags: ["fintech", "financial_markets", "risk_management", "quantitative_analysis", "web_application"]
+    primary_tools: ["Python", "Flask", "SQLite", "Docker", "Fly.io", "yfinance", "Finnhub", "SEC EDGAR"]
+    summary: "Production equity research terminal aggregating real-time market data, SEC filings, options sentiment, and quantitative risk metrics into 7 connected analytical views."
+    completed_features:
+      - "Engineered single-process Flask server with two-tier SQLite TTL caching to throttle external API rate limits and minimize latency."
+      - "Calculated historical volatility, max drawdown, market beta, and parametric vs historical 95%/99% Value at Risk (VaR)."
+      - "Aggregated options put/call open interest and insider trading filings from SEC EDGAR into executive risk summaries."
+      - "Packaged as a lightweight Docker container and deployed globally on Fly.io."
+    verified_metrics:
+      - "Live production deployment on Fly.io serving equity analysis across thousands of US tickers."
+      - "Sub-100ms cached response times for multi-source financial indicator views."
+    interview_tradeoffs: "SQLite TTL cache avoids external Redis dependency for single-node container; data is pre-trade context, not predictive alpha."
+    planned_not_completed: "Algorithmic trade execution through interactive broker API."
+
+  - id: "ticker-change-intelligence"
+    name: "Point-in-Time Security Master & Survivorship Bias Engine"
+    repo: "https://github.com/ne1cc/ticker-change-intelligence"
+    role_tags: ["quant_data_engineer", "financial_data_engineer", "data_governance_analyst"]
+    domain_tags: ["fintech", "data_integrity", "security_master", "corporate_actions", "point_in_time"]
+    primary_tools: ["Python", "SQL", "SEC EDGAR", "FINRA OTC", "Pytest", "GitHub Actions"]
+    summary: "Point-in-time security master tracking ticker rebrands, bankruptcies, and symbol re-use to eliminate survivorship bias in quantitative backtests."
+    completed_features:
+      - "Constructed effective-dated entity model linking transient ticker symbols to permanent SEC Central Index Keys (CIK)."
+      - "Ingested historical SEC EDGAR and FINRA corporate action filings to construct full ticker lifecycle histories."
+      - "Built temporal query API returning exact active company and symbol for any arbitrary historical date t."
+    verified_metrics:
+      - "Mitigated survivorship bias and ticker recycling corruption across historical price backtesting series."
+      - "Automated CI testing verifying temporal point-in-time query correctness."
+    interview_tradeoffs: "Temporal bitemporal modeling prevents future-lookahead bias in quantitative trading models."
+    planned_not_completed: "Real-time FINRA trade-halt RSS feed webhook."
+
+  - id: "financial-pipeline"
+    name: "Async Financial Ingestion & Regime Detection Pipeline"
+    repo: "https://github.com/ne1cc/financial-pipeline"
+    role_tags: ["backend_engineer", "data_platform_engineer", "fintech_engineer"]
+    domain_tags: ["fintech", "async_systems", "microservices", "streaming", "observability"]
+    primary_tools: ["Python 3.11", "FastAPI", "MongoDB Motor", "Redis", "Docker Compose", "Prometheus", "Grafana"]
+    summary: "Asynchronous microservice pipeline ingesting tick data, computing pure-Python indicators (SMA, RSI, MACD), detecting market regimes, and serving cached metrics."
+    completed_features:
+      - "Implemented non-blocking async ingestion pipeline using motor (MongoDB) and redis.asyncio."
+      - "Computed technical indicators and market regime classifications using pure Pandas transformations without TA-Lib C-dependencies."
+      - "Instrumented complete observability stack with Prometheus metrics scraping and pre-configured Grafana dashboards."
+    verified_metrics:
+      - "Sub-millisecond metric fetch latency from Redis cache layer."
+      - "Full Docker Compose environment with integrated health checks and monitoring."
+    interview_tradeoffs: "Pure Pandas chosen over TA-Lib to eliminate platform-dependent C compilation issues in container builds."
+    planned_not_completed: "Websocket real-time level 2 order book streaming."
+
+  - id: "retail-analytics-engine"
+    name: "Modern Data Stack Retail & Supply Chain ELT Engine"
+    repo: "https://github.com/ne1cc/retail-analytics-engine"
+    role_tags: ["analytics_engineer", "bi_engineer", "supply_chain_analyst", "retail_analyst"]
+    domain_tags: ["retail", "supply_chain", "modern_data_stack", "elt", "data_modeling"]
+    primary_tools: ["Apache Airflow", "dbt Core", "BigQuery / Snowflake", "Python", "Docker"]
+    summary: "Modern Data Stack ELT architecture for complex retail and supply chain operations with Airflow DAG orchestration, dbt staging/intermediate/mart layers, and data quality testing."
+    completed_features:
+      - "Orchestrated end-to-end data pipelines using Dockerized Apache Airflow with dependency management and SLA alerts."
+      - "Built dbt Medallion layers: Staging (cleansing), Intermediate (business logic), and Gold Marts (DIM_STORES, FACT_TRANSACTIONS, FACT_INVENTORY)."
+      - "Enforced rigorous dbt test suites (not_null, unique, relationships, accepted_values) and auto-generated documentation."
+    verified_metrics:
+      - "100% test coverage across core mart dimension and fact tables."
+      - "Automated daily partition processing with Airflow DAGs."
+    interview_tradeoffs: "Airflow for complex multi-system DAG orchestration; dbt Core handles in-warehouse transformations with version control."
+    planned_not_completed: "Machine learning demand forecasting integration in the Mart layer."
+
+  - id: "duckdb-olap-pipeline"
+    name: "Containerized DuckDB/Parquet OLAP Sidecar Pipeline"
+    repo: "https://github.com/ne1cc/duckdb-olap-pipeline"
+    role_tags: ["data_engineer", "platform_engineer", "devops_engineer"]
+    domain_tags: ["data_engineering", "olap", "docker", "sidecar_pattern", "cost_optimization"]
+    primary_tools: ["DuckDB", "Parquet", "Ofelia", "Docker", "Python 3.11", "ZSTD"]
+    summary: "Production-grade OLAP data pipeline using the DuckDB/Parquet sidecar pattern in Docker to deliver high-performance analytical processing without expensive cloud warehouses."
+    completed_features:
+      - "Configured Ofelia cron container executing ephemeral DuckDB compute tasks inside a lightweight worker container."
+      - "Built Bronze layer generating ZSTD-compressed Hive-partitioned Parquet files with automated retention policies."
+      - "Engineered Silver layer performing explicit type casting, deduplication, and partition reconciliation."
+    verified_metrics:
+      - "Zero database licensing costs using embedded DuckDB compute on local disk."
+      - "10x storage compression using ZSTD columnar Parquet partitioning."
+    interview_tradeoffs: "Sidecar pattern decouples scheduler from compute worker, ensuring container restarts do not interrupt analytical jobs."
+    planned_not_completed: "S3 object storage backend sync."
+
+  - id: "merchant-growth-ops"
+    name: "B2B Merchant Operations & Human-in-the-Loop Workflow Demo"
+    repo: "https://github.com/ne1cc/merchant-growth-ops"
+    role_tags: ["bizops_analyst", "product_operations", "technical_program_manager", "frontend_engineer"]
+    domain_tags: ["business_operations", "b2b_saas", "human_in_the_loop", "workflow_automation"]
+    primary_tools: ["React", "TypeScript", "Vite", "Tailwind CSS", "Node.js"]
+    summary: "B2B operations workflow prototype converting inbound merchant inquiries into AI-recommended operational follow-ups, human approval gates, and tracked business outcomes."
+    completed_features:
+      - "Implemented closed operating loop: Inbound lead -> context review -> AI recommendation -> human approval -> assigned task -> impact tracking."
+      - "Designed human-in-the-loop approval interface enforcing strict operator oversight before committing operational changes."
+      - "Engineered task allocation and impact metrics dashboard tracking merchant promotion conversion and operational throughput."
+    verified_metrics:
+      - "Full interactive frontend workflow with zero runtime errors and fast client-side state transitions."
+    interview_tradeoffs: "Strict human approval required before committing changes; prevents rogue AI decisions in commercial merchant agreements."
+    planned_not_completed: "Direct Meituan/UberEats API connector integration."
+
+  - id: "AI-Bookmark-Organizer"
+    name: "AI Bookmark Organizer (Chrome & Firefox Extension + Web App)"
+    repo: "https://github.com/ne1cc/AI-Bookmark-Organizer"
+    live_demo: "https://chromewebstore.google.com"
+    role_tags: ["fullstack_engineer", "frontend_engineer", "ai_product_engineer", "software_engineer"]
+    domain_tags: ["ai_application", "browser_extension", "react", "fastapi", "production_app"]
+    primary_tools: ["React 19", "TypeScript", "FastAPI", "Gemini API", "OpenRouter", "Server-Sent Events", "Tailwind CSS"]
+    summary: "Popular browser extension and web application organizing messy bookmarks into clean hierarchies using asynchronous LLM classification, used by 1,400+ active users."
+    completed_features:
+      - "Engineered high-throughput classification pipeline processing 500+ bookmarks/minute using async concurrency."
+      - "Implemented Manifest V3 Chrome side panel and Firefox sidebar running entirely client-side without tracking."
+      - "Built standalone FastAPI web companion using Server-Sent Events (SSE) for real-time progress streaming."
+    verified_metrics:
+      - "1,400+ active users across 6 production versions in the Chrome Web Store."
+      - "Processed millions of bookmark classifications with 99.8% uptime."
+    interview_tradeoffs: "Two-phase clustering (domain grouping followed by semantic categorization) reduces LLM API token consumption by ~65%."
+    planned_not_completed: "Semantic vector search across cached webpage full-text content."
+
+  - id: "phishing-guard"
+    name: "On-Device Browser Phishing & Scam Guard (MV3)"
+    repo: "https://github.com/ne1cc/phishing-guard"
+    role_tags: ["security_engineer", "frontend_engineer", "software_engineer"]
+    domain_tags: ["cybersecurity", "browser_security", "privacy", "manifest_v3", "client_side"]
+    primary_tools: ["TypeScript", "React 18", "Plasmo Framework", "WebExtension Polyfill", "Manifest V3"]
+    summary: "Client-side browser security extension providing zero-telemetry phishing and scam URL detection to complement network DNS-level filters."
+    completed_features:
+      - "Engineered local heuristic URL inspection checking homoglyph attacks, brand impersonation, and deceptive subdomain structures."
+      - "Strict zero-telemetry architecture: all analysis runs locally on-device without outbound network queries or user tracking."
+      - "Integrated with Manifest V3 declarativeNetRequest and background service worker APIs."
+    verified_metrics:
+      - "Zero network latency added to page loads via sub-millisecond local URL token parsing."
+    interview_tradeoffs: "Pure on-device heuristic matching preserves user privacy; trade-off is relying on periodic local blocklist updates."
+    planned_not_completed: "WebAssembly-compiled Bloom filter for 500,000+ malicious domains."
+
+  - id: "unified-media-processor-gui"
+    name: "Unified Media Processor & Bilingual Subtitle Engine (Desktop App)"
+    repo: "https://github.com/ne1cc/unified-media-processor-gui"
+    role_tags: ["software_engineer", "desktop_engineer", "ai_engineer", "systems_engineer"]
+    domain_tags: ["desktop_app", "multimedia", "speech_recognition", "tauri", "rust"]
+    primary_tools: ["Tauri v2", "Rust", "React", "TypeScript", "Python", "ffmpeg", "faster-whisper", "Gemini API"]
+    summary: "High-performance cross-platform desktop application organizing media directories, transcoding audio, and generating translated bilingual subtitles via local Whisper ASR and Gemini."
+    completed_features:
+      - "Built desktop GUI using Tauri v2 (Rust backend + React/TypeScript frontend) delivering a native macOS/Windows experience."
+      - "Orchestrated local faster-whisper INT8 speech recognition with GPU/Apple Silicon acceleration."
+      - "Generated synchronized bilingual subtitle files (.srt) with automated translation and line-timing alignment."
+    verified_metrics:
+      - "Transcodes and generates subtitles at 4x realtime speed using quantized INT8 models."
+      - "Lightweight binary under 25MB footprint using Tauri compared to Electron's 200MB+."
+    interview_tradeoffs: "Tauri chosen over Electron for 90% smaller binary size and native memory efficiency."
+    planned_not_completed: "Real-time live mic audio transcription overlay."
+
+  - id: "podcast-summarizer"
+    name: "Podcast RSS Ingestion, ASR & Briefing Desktop App"
+    repo: "https://github.com/ne1cc/podcast-summarizer"
+    role_tags: ["python_engineer", "data_engineer", "nlp_engineer"]
+    domain_tags: ["desktop_app", "audio_processing", "nlp", "llm_summarization", "python"]
+    primary_tools: ["Python", "PySide6", "Polars", "faster-whisper", "SQLite", "RSS Podcasting 2.0"]
+    summary: "Desktop application monitoring podcast RSS feeds, extracting native transcripts or running local faster-whisper ASR, and synthesizing structured briefings using an LLM."
+    completed_features:
+      - "Implemented dual-path ingestion: fast-path downloading native Podcasting 2.0 transcripts or fallback local INT8 ASR."
+      - "Built non-blocking PySide6 Qt GUI using QThreadPool workers ensuring responsive 60 FPS performance during heavy audio processing."
+      - "Structured transcript segments with Polars and cached episode states in SQLite."
+    verified_metrics:
+      - "Processes 1-hour podcast audio into text and executive briefing in under 3 minutes."
+    interview_tradeoffs: "Polars used to vectorize transcript timestamp window joins; PySide6 thread pools prevent UI lockups."
+    planned_not_completed: "Semantic podcast topic clustering across multiple show feeds."
+
+  - id: "polytime"
+    name: "Polytime — Keyboard-Centric Multi-Timer Desktop & Web App"
+    repo: "https://github.com/ne1cc/polytime"
+    live_demo: "https://web-nine-gules-w5womt8h3o.vercel.app"
+    role_tags: ["frontend_engineer", "mobile_engineer", "software_engineer"]
+    domain_tags: ["productivity", "cross_platform", "flutter", "ui_ux"]
+    primary_tools: ["Flutter", "Dart", "Vercel", "macOS", "Linux", "Web"]
+    summary: "Keyboard-centric multi-timer application built with Flutter allowing power users to manage multiple concurrent timers with rich gestures and keyboard shortcuts."
+    completed_features:
+      - "Developed responsive, keyboard-driven UI with fluid trackpad gestures and vim-inspired navigation keys."
+      - "Deployed live web build on Vercel and native desktop binaries for macOS and Linux."
+      - "Engineered persistent state engine managing concurrent timers and background audio alerts."
+    verified_metrics:
+      - "Zero-latency UI animations running at 60/120 FPS across web and native desktop."
+    interview_tradeoffs: "Flutter chosen for unified code sharing across web, desktop, and mobile platforms."
+    planned_not_completed: "Cloud sync across mobile and desktop devices."
+
+  - id: "data-engineering-agent"
+    name: "Google Cloud Data Engineering Agent API Client"
+    repo: "https://github.com/ne1cc/data-engineering-agent"
+    role_tags: ["data_platform_engineer", "backend_engineer", "cloud_engineer"]
+    domain_tags: ["gcp", "dataform", "bigquery", "agentic_ai", "a2a_protocol"]
+    primary_tools: ["Python 3.11", "AsyncIO", "GCP BigQuery", "Dataform", "A2A Protocol", "Pydantic"]
+    summary: "Asynchronous Python client for Google Cloud Data Engineering Agent API, enabling programmatic generation and modification of BigQuery and Dataform pipelines via AI."
+    completed_features:
+      - "Implemented full A2A (Agent-to-Agent) protocol client handling streaming conversation tasks and state tracking."
+      - "Corrected undocumented Google API schema behaviors verified through live calls against real GCP Dataform workspaces."
+      - "Built Pydantic schema models validating agent streaming task envelopes and pipeline code generation."
+    verified_metrics:
+      - "Successfully compiled and deployed BigQuery/Dataform pipelines via automated agent protocol."
+    interview_tradeoffs: "Strict Pydantic response models insulate callers against undocumented Google API schema drifts."
+    planned_not_completed: "Automated Slack bot interface for ad-hoc pipeline requests."
+
+  - id: "gridshift"
+    name: "GridShift — Constrained Battery Dispatch & Energy Arbitrage Optimizer"
+    repo: "https://github.com/ne1cc/gridshift"
+    role_tags: ["operations_research_analyst", "quant_analyst", "energy_analyst", "algorithm_engineer"]
+    domain_tags: ["energy", "optimization", "cleantech", "operations_research", "simulation"]
+    primary_tools: ["Python 3.11", "NumPy", "SciPy", "JSON Manifests", "UV"]
+    summary: "Optimization workbench testing constrained battery storage dispatch and energy arbitrage policies against synthetic electricity pricing regimes."
+    completed_features:
+      - "Modeled physical battery constraints: state of charge (SoC) bounds, round-trip efficiency losses, and max charge/discharge rates."
+      - "Compared heuristic dispatch schedules against an optimal full-episode perfect foresight benchmark using linear programming."
+      - "Generated reproducible cryptographic run manifests (manifest.json) recording input data hashes, solver state, and interval outcomes."
+    verified_metrics:
+      - "Benchmarked revenue efficiency of heuristic policies against the theoretical perfect-foresight upper bound."
+      - "Deterministic, reproducible execution verified by unit tests."
+    interview_tradeoffs: "Perfect foresight serves as a diagnostic theoretical ceiling; real-world dispatch relies on receding-horizon heuristics."
+    planned_not_completed: "Real-time CAISO/ERCOT wholesale electricity market price ingestion."
+
+  - id: "resume-intelligence"
+    name: "Resume Intelligence & Local OCR Career Database"
+    repo: "https://github.com/ne1cc/resume-intelligence"
+    role_tags: ["data_engineer", "ml_engineer", "developer_tooling"]
+    domain_tags: ["local_ai", "ocr", "vector_search", "apple_silicon", "lancedb"]
+    primary_tools: ["Python", "Apple Vision OCR", "LanceDB", "FastAPI", "Polars", "Makefile"]
+    summary: "Local zero-cloud career intelligence pipeline running on Apple Silicon, indexing resume screenshots via native Vision OCR into LanceDB for semantic search."
+    completed_features:
+      - "Leveraged native macOS Apple Silicon Vision Framework for hardware-accelerated multi-threaded OCR extraction."
+      - "Indexed thousands of extracted experience bullets and metrics into local LanceDB vector tables."
+      - "Built CLI search utility querying resumes by tool, metric type, or job level in under 50ms."
+    verified_metrics:
+      - "Processed 1,200+ resumes locally on Apple Silicon without third-party cloud OCR costs."
+    interview_tradeoffs: "Local Apple Vision OCR provides 10x speedup and zero cloud API expenses compared to Google Cloud Vision."
+    planned_not_completed: "Web-based resume diff visualizer."
+
+  - id: "housing-prices-ames"
+    name: "Housing Price Advanced Regression & Feature Engineering"
+    repo: "https://github.com/ne1cc/housing-prices-ames"
+    role_tags: ["data_analyst", "junior_data_scientist", "bi_analyst"]
+    domain_tags: ["data_science", "machine_learning", "feature_engineering", "real_estate"]
+    primary_tools: ["Python", "Pandas", "Scikit-Learn", "XGBoost", "Random Forest", "Matplotlib"]
+    summary: "Comprehensive statistical modeling and feature engineering on Ames Iowa housing dataset across 79 residential property attributes."
+    completed_features:
+      - "Executed exploratory data analysis (EDA) and imputation routines handling missingness, skewness, and high cardinality."
+      - "Engineered composite property interaction features (total square footage, age at sale, remodel indicators)."
+      - "Trained and stacked regularized Ridge/Lasso regressions, Random Forest, and XGBoost models."
+    verified_metrics:
+      - "Top-percentile Kaggle competition RMSE evaluation score via ensemble stacking."
+    interview_tradeoffs: "Log-transformation applied to skewed target variable to stabilize error variance and improve regression fit."
+    planned_not_completed: "Automated hyperparameter optimization using Optuna."
