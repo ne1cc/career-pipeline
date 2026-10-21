@@ -136,7 +136,7 @@ def test_y_copies_outreach_to_clipboard(db_path, calls):
 
 
 def test_install_agent_plist_is_valid_xml_with_absolute_paths():
-    xml = render_plist(Path("/Users/alex/Github/ne1cc/Jobspy-Custom"), "/Users/alex/.local/bin/uv")
+    xml = render_plist(Path("/Users/alex/Github/ne1cc/career-pipeline"), "/Users/alex/.local/bin/uv")
     ET.fromstring(xml)  # well-formed
     plist = plistlib.loads(xml.encode())
     cmd = plist["ProgramArguments"][-1]
