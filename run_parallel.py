@@ -229,7 +229,6 @@ def main():
             with attempt["csv"].open(encoding="utf-8", newline="") as stream:
                 if "job_url" not in next(csv.reader(stream), []):
                     rows = 0
-        valid = process.returncode == 0 and rows > 0 and not timed_out
         error = None
         if timed_out:
             error = f"Scraper timed out after {task_timeout:g}s"
@@ -238,14 +237,20 @@ def main():
         elif not rows:
             error = "Expected CSV is missing, empty, or invalid"
 
-        # 3. Only a valid attempt can replace published output; worse retries cannot.
+        # 3. Preserve partial rows without downgrading an already complete result.
         previous_rows = task.get("row_count", 0)
-        if valid and rows >= previous_rows:
+        previous_complete = previous_rows > 0 and task.get("error") is None
+        if (
+            rows > 0
+            and not timed_out
+            and rows >= previous_rows
+            and (process.returncode == 0 or not previous_complete)
+        ):
             attempt["csv"].replace(results_dir / EXPECTED_OUTPUTS[name])
-            task.update(row_count=rows, error=None)
+            task.update(row_count=rows, error=error)
         elif not previous_rows:
             task["error"] = error
-        selected_valid = task.get("row_count", 0) > 0
+        selected_valid = task.get("row_count", 0) > 0 and task.get("error") is None
         task.update(
             {
                 "status": "success" if selected_valid else "failed",
@@ -314,9 +319,9 @@ def main():
                 else:
                     finish_attempt(attempt)
 
-        if not any(t["status"] == "success" for t in task_states.values()):
+        if not any(t.get("row_count", 0) > 0 for t in task_states.values()):
             raise SystemExit(1)
-        print("All scrape tasks completed; current valid outputs published.")
+        print("All scrape tasks finished; current outputs published for health audit.")
     except BaseException as exc:
         for attempt in attempts:
             stop_process(attempt["process"])

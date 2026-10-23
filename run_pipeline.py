@@ -170,7 +170,7 @@ def run_scrapers():
         raise RuntimeError(
             f"Scraper parallel runner failed with return code {result.returncode}"
         )
-    print("Scraping completed successfully.")
+    print("Scraper runner finished; task health will be checked after ingestion.")
 
 def validate_config(config):
     if not is_email_configured(config):
@@ -449,6 +449,12 @@ def main():
         if email_error is not None:
             raise email_error
 
+        health_report = audit_pipeline_health(BASE_DIR, results_dir)
+        if health_report.get("health") == "CRITICAL":
+            raise RuntimeError(
+                "Scraping failed or yielded empty output; partial results were ingested"
+            )
+
         update_pipeline_state(
             BASE_DIR,
             phase="COMPLETED",
@@ -457,7 +463,6 @@ def main():
         print(f"\n[{datetime.now()}] --- PIPELINE RUN COMPLETE ---")
 
         # Health audit and macOS notification
-        health_report = audit_pipeline_health(BASE_DIR, results_dir)
         total_scraped = sum(stats.get("raw_counts", {}).values()) if "stats" in locals() and stats else 0
         anomalies = health_report.get("anomalies", [])
 
@@ -471,16 +476,17 @@ def main():
                 title="Pipeline Warning",
                 message=f"{len(anomalies)} anomalies detected (check cockpit pipeline)",
             )
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
+        error = f"Pipeline exited with code {exc.code}" if isinstance(exc, SystemExit) else str(exc)
         update_pipeline_state(
             BASE_DIR,
             phase="FAILED",
-            error=str(exc),
+            error=error,
             finished_at=datetime.now().isoformat(),
         )
         notify_macos(
             title="Pipeline Failed",
-            message=str(exc)[:120],
+            message=error[:120],
         )
         raise
 
