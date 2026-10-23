@@ -238,7 +238,7 @@ def load_context(
         if history_file.exists():
             evidence_parts.append(f"═══ 01_MASTER_CAREER_HISTORY.YAML ═══\n{history_file.read_text('utf-8')}")
         if projects_file.exists():
-            evidence_parts.append(f"═══ 02_PROJECT_EVIDENCE_BANK.YAML (22 PROJECTS) ═══\n{projects_file.read_text('utf-8')}")
+            evidence_parts.append(f"═══ 02_PROJECT_EVIDENCE_BANK.YAML ═══\n{projects_file.read_text('utf-8')}")
         if skills_file.exists():
             evidence_parts.append(f"═══ 03_SKILLS_INVENTORY.YAML ═══\n{skills_file.read_text('utf-8')}")
         if rules_file.exists():
@@ -294,7 +294,7 @@ OPERATING RULES & OUTPUT SPECIFICATION
 2. Generate all required sections in full, in English, delimited EXACTLY by the section tags below.
 3. Strict Factual Guardrails:
    - NEVER invent or modify candidate employers, job titles, employment dates, or degrees.
-   - Select the 3-4 best-matching projects from the 22-project catalog in 02_project_evidence_bank.yaml.
+   - Select the 3-4 best-matching projects from 02_project_evidence_bank.yaml.
    - Under NO circumstance should "planned_not_completed" features be claimed as completed.
    - Use exact verified metrics from the evidence bank.
    - Do NOT emit raw LaTeX math tags ($...$, $$...$$, \\text{{...}}).
@@ -305,7 +305,7 @@ Your output MUST contain these exact section headers:
 ---SECTION:FIT_ASSESSMENT---
 [01_fit_assessment.md content:
 - Requirement-to-Evidence Matrix (every key JD requirement mapped to candidate evidence, marked FULL, PARTIAL, or GAP)
-- Project Selection Rationale (justify why the chosen 3-4 projects were picked over the rest of the 22-project catalog)
+- Project Selection Rationale (justify why the chosen projects were picked from the evidence bank)
 - Strategic Verdict: PRIORITIZE | REASONABLE_STRETCH | SKIP with concrete justification]
 
 ---SECTION:TAILORED_RESUME---
@@ -319,7 +319,7 @@ Your output MUST contain these exact section headers:
 [03_cover_letter.md content:
 - 180-250 words across 3-4 focused paragraphs
 - Paragraph 1: Hook & Value Proposition connecting candidate background to company mission/bottleneck
-- Paragraph 2-3: Two concrete evidence proof-points deep-linking relevant projects (e.g. cti-dashboard.fly.dev, ticker-change.fly.dev, or GitHub repos) with verified metrics
+- Paragraph 2-3: Two concrete evidence proof-points deep-linking relevant projects with live URLs or GitHub repos and verified metrics
 - Paragraph 4: Clear, professional call to action]
 
 ---SECTION:CHANGELOG_AUDIT---

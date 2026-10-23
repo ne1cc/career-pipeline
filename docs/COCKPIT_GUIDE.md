@@ -25,7 +25,7 @@ To rename or relocate them, edit `[resumes]` in `config/scoring_rules.toml`. Mis
 
 ### 3. Edit the outreach template
 
-Open `config/scoring_rules.toml` and fix `[outreach] template`. It currently says "I'm Alex" and "I just applied". Keep it true to how you actually use it (see `y` below).
+Open `config/scoring_rules.toml` and review the `[outreach] template`. Customize the message to your voice and keep it true to how you actually use it (see `y` below).
 
 ### 4. Gmail status tracking (optional but worth it)
 
