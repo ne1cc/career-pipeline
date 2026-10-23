@@ -10,6 +10,9 @@
 # ==============================================================================
 set -euo pipefail
 
+# Lift shell file-size limits (avoids SIGXFSZ 25 on 40-50MB wheels like polars/playwright in restricted shells)
+ulimit -f unlimited 2>/dev/null || ulimit -f $(ulimit -H -f 2>/dev/null || echo 10000000) 2>/dev/null || true
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
@@ -55,7 +58,11 @@ fi
 
 echo "==> [2/6] Creating Python 3.12 virtual environment (.venv) & installing dependencies..."
 uv venv --python 3.12 "$REPO_ROOT/.venv" --allow-existing
-uv pip install --python "$REPO_ROOT/.venv/bin/python" -r "$REPO_ROOT/cockpit/requirements.txt" pytest
+if ! uv pip install --python "$REPO_ROOT/.venv/bin/python" -r "$REPO_ROOT/cockpit/requirements.txt" pytest; then
+    echo "[!] Full dependency install hit a resource or cache limit. Retrying with --no-cache..."
+    ulimit -f unlimited 2>/dev/null || true
+    uv pip install --no-cache --python "$REPO_ROOT/.venv/bin/python" -r "$REPO_ROOT/cockpit/requirements.txt" pytest
+fi
 
 if [[ "$INSTALL_BROWSER" -eq 1 ]]; then
     echo "==> [3/6] Installing Playwright Chromium for 1-page PDF rendering..."

@@ -123,3 +123,37 @@ def test_format_prefill_table():
     assert "Lever" in rendered
     assert "acme" in rendered
     assert "alex@test.com" in rendered
+
+
+def test_build_prefill_url():
+    from cockpit.prefill import build_prefill_url
+
+    prof = CandidateProfile(
+        first_name="Jane",
+        last_name="Developer",
+        email="jane@example.com",
+        phone="+15551234567",
+        linkedin="https://linkedin.com/in/janedev",
+        portfolio_url="https://janedev.com",
+    )
+
+    # 1. Lever: should append /apply and URL-encoded query params
+    lever_target = AtsTarget("lever", "figma", "xyz", "https://jobs.lever.co/figma/xyz")
+    lever_url = build_prefill_url(lever_target, prof)
+    assert "jobs.lever.co/figma/xyz/apply?" in lever_url
+    assert "name=Jane+Developer" in lever_url
+    assert "email=jane%40example.com" in lever_url
+    assert "urls%5BLinkedIn%5D=https%3A%2F%2Flinkedin.com%2Fin%2Fjanedev" in lever_url
+
+    # 2. Greenhouse
+    gh_target = AtsTarget("greenhouse", "stripe", "123", "https://boards.greenhouse.io/stripe/jobs/123")
+    gh_url = build_prefill_url(gh_target, prof)
+    assert "first_name=Jane" in gh_url
+    assert "last_name=Developer" in gh_url
+    assert "email=jane%40example.com" in gh_url
+
+    # 3. Ashby
+    ashby_target = AtsTarget("ashby", "linear", "456", "https://jobs.ashbyhq.com/linear/456")
+    ashby_url = build_prefill_url(ashby_target, prof)
+    assert "firstName=Jane" in ashby_url
+    assert "lastName=Developer" in ashby_url

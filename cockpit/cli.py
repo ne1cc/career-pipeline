@@ -870,6 +870,7 @@ def prefill_cmd(
 
     profile = prefill_mod.read_candidate_profile(REPO_ROOT)
     fields = prefill_mod.build_prefill_fields(ats_target, profile, resume_file=resume_file, cover_file=cover_file)
+    prefill_url = prefill_mod.build_prefill_url(ats_target, profile)
 
     if as_json:
         payload = {
@@ -877,6 +878,7 @@ def prefill_cmd(
             "company_slug": ats_target.company_slug,
             "job_id": ats_target.job_id,
             "apply_url": ats_target.original_url,
+            "prefill_url": prefill_url,
             "fields": dict(fields),
             "resume": str(resume_file) if resume_file else None,
             "cover": str(cover_file) if cover_file else None,
@@ -884,7 +886,9 @@ def prefill_cmd(
         typer.echo(json.dumps(payload, indent=2))
         return
 
-    table_text = prefill_mod.format_prefill_table(ats_target, fields, resume_file=resume_file, cover_file=cover_file)
+    table_text = prefill_mod.format_prefill_table(
+        ats_target, fields, resume_file=resume_file, cover_file=cover_file, prefill_url=prefill_url
+    )
     console.print(table_text)
 
     if copy:
@@ -895,7 +899,7 @@ def prefill_cmd(
             console.print(f"[yellow]Could not copy to clipboard:[/yellow] {e}")
 
     if open_browser:
-        macos.open_url(ats_target.original_url)
+        macos.open_url(prefill_url)
 
 
 @app.command("verify-ats")

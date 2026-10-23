@@ -384,7 +384,18 @@ class JobCockpitApp(App[None]):
                         label = "Tailored resume"
 
             macos.copy_resume_path(resume_to_copy)
-            macos.open_url(job["apply_url"], background=background)
+            url_to_open = job["apply_url"]
+            try:
+                from cockpit import prefill as prefill_mod
+
+                ats_target = prefill_mod.detect_ats(url_to_open)
+                if ats_target:
+                    prof = prefill_mod.read_candidate_profile()
+                    url_to_open = prefill_mod.build_prefill_url(ats_target, prof)
+            except Exception:
+                pass
+
+            macos.open_url(url_to_open, background=background)
             self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
 
     def action_preview(self) -> None:
@@ -452,7 +463,10 @@ class JobCockpitApp(App[None]):
                     cover_file = cov_md
 
             fields = prefill_mod.build_prefill_fields(target, prof, resume_file=resume_file, cover_file=cover_file)
-            rendered = prefill_mod.format_prefill_table(target, fields, resume_file=resume_file, cover_file=cover_file)
+            prefill_url = prefill_mod.build_prefill_url(target, prof)
+            rendered = prefill_mod.format_prefill_table(
+                target, fields, resume_file=resume_file, cover_file=cover_file, prefill_url=prefill_url
+            )
 
             try:
                 macos.copy_to_clipboard(rendered)

@@ -218,11 +218,78 @@ def build_prefill_fields(
     return [f for f in fields if f is not None]
 
 
+def build_prefill_url(target: AtsTarget, profile: CandidateProfile) -> str:
+    """Construct an apply URL with query parameters pre-populated for supported ATS platforms."""
+    parsed = urllib.parse.urlparse(target.original_url)
+    existing_params = dict(urllib.parse.parse_qsl(parsed.query))
+    query_params: dict[str, str] = {}
+
+    if target.ats == "lever":
+        # Ensure path points to /apply for Lever forms
+        path = parsed.path
+        if not path.endswith("/apply") and not path.endswith("/apply/"):
+            path = path.rstrip("/") + "/apply"
+        parsed = parsed._replace(path=path)
+
+        if profile.full_name:
+            query_params["name"] = profile.full_name
+        if profile.email:
+            query_params["email"] = profile.email
+        if profile.phone:
+            query_params["phone"] = profile.phone
+        if profile.linkedin:
+            query_params["urls[LinkedIn]"] = profile.linkedin
+        if profile.portfolio_url:
+            query_params["urls[Portfolio]"] = profile.portfolio_url
+        if profile.github:
+            query_params["urls[GitHub]"] = profile.github
+
+    elif target.ats == "greenhouse":
+        if profile.first_name:
+            query_params["first_name"] = profile.first_name
+        if profile.last_name:
+            query_params["last_name"] = profile.last_name
+        if profile.email:
+            query_params["email"] = profile.email
+        if profile.phone:
+            query_params["phone"] = profile.phone
+        if profile.linkedin:
+            query_params["linkedin_profile"] = profile.linkedin
+        if profile.portfolio_url:
+            query_params["website"] = profile.portfolio_url
+
+    elif target.ats == "ashby":
+        if profile.first_name:
+            query_params["firstName"] = profile.first_name
+        if profile.last_name:
+            query_params["lastName"] = profile.last_name
+        if profile.email:
+            query_params["email"] = profile.email
+        if profile.phone:
+            query_params["phone"] = profile.phone
+        if profile.linkedin:
+            query_params["linkedInUrl"] = profile.linkedin
+
+    else:
+        if profile.full_name:
+            query_params["name"] = profile.full_name
+        if profile.email:
+            query_params["email"] = profile.email
+        if profile.phone:
+            query_params["phone"] = profile.phone
+
+    # Merge existing and new query parameters (new params take precedence if not empty)
+    merged_params = {**existing_params, **{k: v for k, v in query_params.items() if v}}
+    new_query = urllib.parse.urlencode(merged_params)
+    return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+
 def format_prefill_table(
     target: AtsTarget,
     fields: list[tuple[str, str]],
     resume_file: Path | None = None,
     cover_file: Path | None = None,
+    prefill_url: str | None = None,
 ) -> str:
     """Render a Rich table formatted as an ATS prefill summary."""
     console = Console(file=StringIO(), width=90, color_system=None)
@@ -239,6 +306,7 @@ def format_prefill_table(
         console.print(f"  [bold]PDF File:[/bold] {resume_file.name}")
     if cover_file:
         console.print(f"  [bold]Cover File:[/bold] {cover_file.name}")
-    console.print(f"\n  [bold green]Open Apply URL:[/bold green] {target.original_url}")
+    display_url = prefill_url or target.original_url
+    console.print(f"\n  [bold green]Open Apply URL:[/bold green] {display_url}")
 
     return console.file.getvalue()  # type: ignore
