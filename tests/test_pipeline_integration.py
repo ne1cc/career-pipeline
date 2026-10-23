@@ -12,6 +12,7 @@ def isolate_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(run_pipeline, "BASE_DIR", tmp_path)
     monkeypatch.setattr(run_pipeline, "CONFIG_FILE", tmp_path / "pipeline_config.json")
     monkeypatch.setattr(run_pipeline, "notify_macos", lambda **kwargs: None)
+    monkeypatch.setattr(run_pipeline, "audit_pipeline_health", lambda *args: {"health": "HEALTHY"})
     monkeypatch.setenv("JOBSPY_RESULTS_DIR", str(tmp_path / "results"))
     monkeypatch.setenv("JOBSPY_LOGS_DIR", str(tmp_path / "logs"))
 
@@ -252,3 +253,49 @@ def test_empty_workbook_raises_handled_error(tmp_path):
         run_pipeline.build_excel_workbook(
             tmp_path, run_pipeline.EXPECTED_OUTPUTS, state_file=tmp_path / "urls.json"
         )
+
+
+@pytest.mark.parametrize("failure", ["scrapers", "workbook", "ingest", "partial"])
+def test_main_records_failed_outcome(monkeypatch, tmp_path, failure):
+    from cockpit.pipeline_monitor import get_state_file
+    import json
+
+    ingested = []
+    monkeypatch.setattr(run_pipeline, "load_config", lambda: {})
+    monkeypatch.setattr(run_pipeline, "validate_config", lambda cfg: False)
+
+    def scrape():
+        if failure == "scrapers":
+            raise SystemExit(1)
+
+    def workbook(*args):
+        if failure == "workbook":
+            raise SystemExit(1)
+        return tmp_path / "report.xlsx", {}, False
+
+    def ingest(*args):
+        ingested.append(True)
+        return failure != "ingest"
+
+    monkeypatch.setattr(run_pipeline, "run_scrapers", scrape)
+    monkeypatch.setattr(run_pipeline, "build_excel_workbook", workbook)
+    monkeypatch.setattr(run_pipeline, "send_email_with_attachment", lambda *args: False)
+    monkeypatch.setattr(run_pipeline, "run_cockpit_ingest", ingest)
+    if failure == "partial":
+        monkeypatch.setattr(
+            run_pipeline,
+            "audit_pipeline_health",
+            lambda *args: {
+                "health": "CRITICAL",
+                "anomalies": [{"severity": "CRITICAL", "message": "worker failed"}],
+            },
+        )
+
+    with pytest.raises((SystemExit, RuntimeError)):
+        run_pipeline.main()
+    state = json.loads(get_state_file(tmp_path).read_text())
+    assert state["phase"] == "FAILED"
+    assert state["error"]
+    assert state["finished_at"]
+    if failure in {"ingest", "partial"}:
+        assert ingested == [True]

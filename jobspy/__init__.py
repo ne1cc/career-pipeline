@@ -55,7 +55,7 @@ def scrape_jobs(
     Collect jobs concurrently, preserving successful boards when another fails.
 
     Contract:
-    - Returns a DataFrame (possibly empty) from boards that completed.
+    - Returns a DataFrame (possibly empty) with failures in attrs["scrape_errors"].
     - Raises RuntimeError when every requested board raises an exception.
     Limits: Adapters receive independent inputs; network waits use session timeouts.
     """
@@ -228,11 +228,14 @@ def scrape_jobs(
         jobs_df = jobs_df[desired_order]
 
         # Step 4: Sort the DataFrame as required
-        return jobs_df.sort_values(
+        jobs_df = jobs_df.sort_values(
             by=["site", "date_posted"], ascending=[True, False]
         ).reset_index(drop=True)
     else:
-        return pd.DataFrame()
+        jobs_df = pd.DataFrame()
+
+    jobs_df.attrs["scrape_errors"] = board_errors
+    return jobs_df
 
 
 # Add BDJobs to __all__

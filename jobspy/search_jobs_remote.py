@@ -93,6 +93,7 @@ search_terms = [
 
 if __name__ == "__main__":
     all_jobs_list = []
+    had_errors = False
 
     print(f"Starting NATIONWIDE REMOTE scrape for {len(search_terms)} terms...\n")
 
@@ -117,6 +118,8 @@ if __name__ == "__main__":
                 linkedin_fetch_description=True,
             )
 
+            if jobs.attrs.get("scrape_errors"):
+                had_errors = True
             if not jobs.empty and "is_remote" in jobs.columns:
                 jobs = jobs[jobs["is_remote"].ne(False).fillna(True)].copy()
             if not jobs.empty:
@@ -127,6 +130,7 @@ if __name__ == "__main__":
                 print("    Found 0 jobs")
 
         except Exception as e:
+            had_errors = True
             print(f"    Error scraping {term}: {e}")
 
     if all_jobs_list:
@@ -151,3 +155,7 @@ if __name__ == "__main__":
         print(f"Saved to {output_path}")
     else:
         print("No jobs found.")
+
+    if had_errors:
+        print("Some queries failed; any collected partial results were retained.")
+        raise SystemExit(1)

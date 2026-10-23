@@ -67,6 +67,7 @@ search_terms = [
 ]
 
 all_jobs_list = []
+had_errors = False
 
 print(f"Starting scrape for {len(locations)} locations × {len(search_terms)} terms (Entry Level focus)...\n")
 
@@ -91,6 +92,8 @@ for loc in locations:
                 hours_old=48,
                 linkedin_fetch_description=True,
             )
+            if jobs.attrs.get("scrape_errors"):
+                had_errors = True
             if not jobs.empty:
                 jobs["search_keyword"] = term
                 jobs["search_city"] = loc
@@ -99,6 +102,7 @@ for loc in locations:
             else:
                 print("    Found 0 jobs")
         except Exception as e:
+            had_errors = True
             print(f"    Error scraping {term} in {loc}: {e}")
 
 if all_jobs_list:
@@ -123,3 +127,7 @@ if all_jobs_list:
     print(f"Saved to {output_path}")
 else:
     print("No jobs found.")
+
+if had_errors:
+    print("Some queries failed; any collected partial results were retained.")
+    raise SystemExit(1)
