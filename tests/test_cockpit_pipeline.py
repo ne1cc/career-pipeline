@@ -1079,6 +1079,14 @@ def test_tui_cover_letter_and_tailored_staging(db_path, career_ops, tmp_path, ca
             # Press 'b' to save and kick intel worker
             await pilot.press("b")
             await pilot.pause()
+            # Wait for background intel worker to complete in DuckDB
+            for _ in range(50):
+                with db.session(db_path) as con:
+                    st = con.execute("SELECT intel_status FROM jobs_master").fetchone()
+                    if st and st[0] == "done":
+                        break
+                await asyncio.sleep(0.1)
+                await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
 

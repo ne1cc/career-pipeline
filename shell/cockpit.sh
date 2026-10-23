@@ -43,6 +43,16 @@ cjf() {
     cockpit folder "$@"
 }
 
+# cjp [url|query] — generate ATS form prefill mappings and copy to clipboard
+cjp() {
+    cockpit prefill "$@" --copy
+}
+
+# cjv [resume] — audit resume for ATS parseability and keyword coverage
+cjv() {
+    cockpit verify-ats "$@"
+}
+
 # jobspy-pipeline — run the full JobSpy scraping + Excel + Cockpit ingest pipeline
 jobspy-pipeline() {
     (

@@ -115,6 +115,8 @@ class JobCockpitApp(App[None]):
         Binding("o", "stage(False)", "Open"),
         Binding("O", "stage(True)", "Open bg"),
         Binding("p", "preview", "Preview"),
+        Binding("P", "prefill", "Prefill"),
+        Binding("shift+p", "prefill", "Prefill", show=False),
         Binding("a", "mark('APPLIED')", "Applied"),
         Binding("s", "mark('SKIPPED')", "Skip"),
         Binding("h", "hold", "Hold"),
@@ -419,6 +421,44 @@ class JobCockpitApp(App[None]):
                 macos.open_file(folder_p)
             else:
                 self.notify("Job folder not created on disk yet.", severity="warning")
+
+    def action_prefill(self) -> None:
+        if job := self._job():
+            url = job.get("apply_url")
+            if not url:
+                self.notify("No apply URL for this job", severity="warning")
+                return
+
+            from cockpit import prefill as prefill_mod
+
+            target = prefill_mod.detect_ats(url)
+            if not target:
+                self.notify(f"Could not parse apply URL: {url}", severity="warning")
+                return
+
+            prof = prefill_mod.read_candidate_profile()
+            folder_p = Path(job.get("folder_path") or intel.job_folder_path(job, self.export_dir))
+            resume_file: Path | None = None
+            cover_file: Path | None = None
+
+            if folder_p.exists():
+                pdf_cands = list((folder_p / "exports").glob("*.pdf")) or list(folder_p.glob("*.pdf"))
+                if pdf_cands:
+                    resume_file = pdf_cands[0]
+                cov_md = folder_p / "03_tailored_cover_letter.md"
+                if not cov_md.exists():
+                    cov_md = folder_p / "03_cover_letter.md"
+                if cov_md.exists():
+                    cover_file = cov_md
+
+            fields = prefill_mod.build_prefill_fields(target, prof, resume_file=resume_file, cover_file=cover_file)
+            rendered = prefill_mod.format_prefill_table(target, fields, resume_file=resume_file, cover_file=cover_file)
+
+            try:
+                macos.copy_to_clipboard(rendered)
+                self.notify(f"Copied {target.ats.title()} prefill to clipboard! ({target.company_slug})", title="ATS Prefill")
+            except Exception as e:
+                self.notify(f"Prefill generated, copy error: {e}", severity="warning")
 
     def action_yank(self) -> None:
         if job := self._job():
