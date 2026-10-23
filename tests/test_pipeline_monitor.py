@@ -298,3 +298,39 @@ def test_yield_history_retention_and_dedup(tmp_path):
     today_run_after2 = next(r for r in history_after2["runs"] if r["date"] == today_str)
     assert today_run_after2["tasks"]["search_jobs_seattle.py"] == 90
 
+
+def test_dead_unfinished_pipeline_is_failed_even_without_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_monitor, "is_pid_alive", lambda pid: False)
+    pipeline_monitor.update_pipeline_state(tmp_path, pid=123, phase="SCRAPING")
+    state = pipeline_monitor.get_pipeline_state(tmp_path)
+    assert state["phase"] == "FAILED"
+    assert state["error"]
+
+
+def test_dead_task_does_not_succeed_from_stale_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_monitor, "is_pid_alive", lambda pid: False)
+    stale = tmp_path / "old.csv"
+    stale.write_text("id,title\nold,Analyst\n")
+    pipeline_monitor.update_pipeline_state(
+        tmp_path,
+        pid=123,
+        phase="SCRAPING",
+        tasks={
+            "search_jobs_remote.py": {
+                "status": "running",
+                "pid": 456,
+                "output_csv": str(stale),
+            }
+        },
+    )
+    state = pipeline_monitor.get_pipeline_state(tmp_path)
+    assert state["tasks"]["search_jobs_remote.py"]["status"] == "failed"
+    assert state["phase"] == "FAILED"
+
+
+def test_terminal_state_ignores_reused_process_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_monitor, "is_pid_alive", lambda pid: True)
+    pipeline_monitor.update_pipeline_state(tmp_path, pid=123, phase="COMPLETED")
+    state = pipeline_monitor.get_pipeline_state(tmp_path)
+    assert state["phase"] == "COMPLETED"
+    assert state["is_active"] is False

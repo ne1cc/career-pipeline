@@ -109,7 +109,7 @@ if __name__ == "__main__":
                 ],  # all supported major US boards
                 search_term=term,
                 location="United States",
-                google_search_term=f"{term} jobs united states since yesterday",
+                google_search_term=f"{term} remote jobs united states since yesterday",
                 country_indeed="USA",
                 results_wanted=9999,
                 is_remote=True,  # fixes Glassdoor location parsing for nationwide searches
@@ -117,6 +117,8 @@ if __name__ == "__main__":
                 linkedin_fetch_description=True,
             )
 
+            if not jobs.empty and "is_remote" in jobs.columns:
+                jobs = jobs[jobs["is_remote"].ne(False).fillna(True)].copy()
             if not jobs.empty:
                 jobs["search_keyword"] = term
                 all_jobs_list.append(jobs)

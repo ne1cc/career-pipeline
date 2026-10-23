@@ -250,6 +250,70 @@ Notes:
 
 ---
 
+
+## Scraper reliability and runtime limits
+
+Each attempt must exit successfully and produce a new, parseable CSV containing
+job URLs and at least one data row. Missing, empty, malformed, or failed output
+is not published. Failed tasks and tasks with fewer than five rows receive one
+retry; a failed or lower-yield retry preserves valid first-attempt output.
+
+Earlier same-day CSVs are preserved under the run's hidden `previous` directory.
+Attempt CSVs and archived CSVs sit below the daily results directory, so the
+workbook and Cockpit ingest only see current published files:
+
+```text
+jobspy/scraped jobs/results/YYYY_MM/YYYY_MM_DD/
+  <current segment CSVs>
+  .run-<unique identifier>/
+    previous/<prior daily CSVs>
+    <scraper>/first/<attempt CSV>
+    <scraper>/retry/<attempt CSV>
+```
+
+| Environment variable | Default | Behavior |
+| --- | --- | --- |
+| `JOBSPY_TASK_TIMEOUT_SEC` | `7200` | Positive finite deadline per scraper attempt; timeout terminates and reaps the child. |
+| `JOBSPY_MIN_ROWS` | `5` | Retry successful tasks below this row count. |
+| `JOBSPY_DISABLE_RETRY` | unset | Set to `1` to disable the one-shot retry. |
+| `JOBSPY_RETRY_COOLDOWN_SEC` | `15` | Pause before the retry wave. |
+| `JOBSPY_STAGGER_SEC` | `2.5` | Delay between launching board-search processes. |
+
+HTTP sessions default to a 60-second timeout when a caller does not supply one.
+Search terms, result limits, and the 48-hour window are unchanged. The per-attempt
+deadline can truncate long searches: scripts still write their collected rows
+at the end, so a killed attempt loses rows held only in memory. Increase the
+deadline explicitly if coverage requires a longer run. Each sequential retry
+has its own deadline, so the deadline does not cap the entire pipeline at two
+hours.
+
+Ingestion failure marks the pipeline failed. Configured email failure still
+allows ingestion, then records failure. Unconfigured email is skipped. A dead
+process or a prior CSV cannot establish a successful run; the runner must record
+completion. Partial source coverage remains visible through task status and
+pipeline health.
+
+When a repository moves or is renamed, update both installed scraper and
+Cockpit sync agents. Use the canonical checkout and an existing interpreter
+containing the scraper dependencies; a Poetry command in the old directory
+cannot find the project. The environment created by the setup script can be
+checked from the canonical checkout without starting a scrape:
+
+```bash
+"$(pwd)/.venv/bin/python" -c 'import bs4, ats_scrapers, pandas; print("scraper imports OK")'
+/usr/bin/plutil -lint ~/Library/LaunchAgents/com.jobspy-custom.pipeline.plist
+/usr/bin/plutil -lint ~/Library/LaunchAgents/com.jobcockpit.sync.plist
+launchctl print gui/$(id -u)/com.jobspy-custom.pipeline
+launchctl print gui/$(id -u)/com.jobcockpit.sync
+```
+
+Validate the rendered agents before reloading them, preserve the user's existing
+calendar intervals, and inspect the loaded working directory and command after
+reload. Configuration checks do not prove live board compatibility and do not
+require kickstarting a full scraper or mail synchronization.
+
+---
+
 ## 6. Verify
 
 ```bash

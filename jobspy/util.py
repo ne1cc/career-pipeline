@@ -83,6 +83,7 @@ class RequestsRotating(RotatingProxySession, requests.Session):
                 self.proxies = next_proxy
             else:
                 self.proxies = {}
+        kwargs.setdefault("timeout", 60)
         return requests.Session.request(self, method, url, **kwargs)
 
 
@@ -98,6 +99,7 @@ class TLSRotating(RotatingProxySession, tls_client.Session):
                 self.proxies = next_proxy
             else:
                 self.proxies = {}
+        kwargs.setdefault("timeout_seconds", 60)
         response = tls_client.Session.execute_request(self, *args, **kwargs)
         response.ok = response.status_code in range(200, 400)
         return response

@@ -44,7 +44,7 @@ def is_entry_to_mid_level(title: str, description: str) -> bool:
     Checks the title for senior terms and checks description for high years of experience.
     """
     title_lower = title.lower()
-    
+
     # Senior / leadership keywords to exclude from title
     exclude_terms = [
         "senior", "sr.", "sr ", "lead", "principal", "director", 
@@ -52,15 +52,15 @@ def is_entry_to_mid_level(title: str, description: str) -> bool:
         "architect", "staff", "expert", "distinguished", "fellow",
         "iii", "iv", "v"  # levels III, IV, V are typically senior
     ]
-    
+
     for term in exclude_terms:
-        if term == "lead" and not re.search(r'\blead\b', title_lower):
-            continue
-        if term == "staff" and not re.search(r'\bstaff\b', title_lower):
+        if term in {"lead", "staff", "iii", "iv", "v"} and not re.search(
+            rf"\b{term}\b", title_lower
+        ):
             continue
         if term in title_lower:
             return False
-            
+
     # Check description for high experience requirements (e.g. 6+, 7+, 8+, 10+ years of experience)
     # Entry to mid-level usually ranges from 0 to 5 years.
     high_exp_patterns = [
@@ -71,13 +71,13 @@ def is_entry_to_mid_level(title: str, description: str) -> bool:
         r'\b[6-9]\s*or\s*more\s*(?:years|yrs)\b',
         r'\b1[0-9]\s*or\s*more\s*(?:years|yrs)\b'
     ]
-    
+
     if isinstance(description, str) and description.strip():
         desc_lower = description.lower()
         for pattern in high_exp_patterns:
             if re.search(pattern, desc_lower):
                 return False
-                
+
     return True
 
 

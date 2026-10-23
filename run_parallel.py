@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import csv
+import math
+import tempfile
 import os
-import sys
 import time
 import signal
 from datetime import datetime
@@ -50,11 +51,16 @@ def count_csv_rows(csv_path: Path) -> int:
         return 0
     try:
         with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
-            reader = csv.reader(f)
+            reader = csv.reader(f, strict=True)
             header = next(reader, None)
             if header is None:
                 return 0
-            return sum(1 for _ in reader)
+            rows = 0
+            for row in reader:
+                if len(row) != len(header):
+                    return 0
+                rows += 1
+            return rows
     except Exception:
         return 0
 
@@ -86,306 +92,251 @@ def spawn_scraper_process(
         existing_ld = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = f"/home/linuxbrew/.linuxbrew/opt/openblas/lib:{existing_ld}" if existing_ld else "/home/linuxbrew/.linuxbrew/opt/openblas/lib"
 
-    p = subprocess.Popen(
-        [py_bin, str(script)],
-        stdout=lf,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=str(base_dir),
-        env=env,
-    )
+    try:
+        p = subprocess.Popen(
+            [py_bin, str(script)],
+            stdout=lf,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(base_dir),
+            env=env,
+        )
+    except BaseException:
+        lf.close()
+        raise
     return p, log_file_path, lf
 
 
+def stop_process(process: subprocess.Popen) -> None:
+    """Terminate and reap a child, escalating when it ignores termination."""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+
+
 def main():
-    # 1. Define paths
-    base_dir = BASE_DIR
-    jobspy_dir = JOBSPY_DIR
-    scripts = SCRIPTS
+    """Publish fresh CSVs from bounded scraper attempts and one-shot retries.
 
-    # Verify all scripts exist
-    for script in scripts:
-        if not script.exists():
-            print(f"Error: Script not found: {script}")
-            sys.exit(1)
+    Contract:
+    - Returns when at least one task produced valid current output.
+    - Exits nonzero when no task produced output or execution was interrupted.
+    - Propagates launch and filesystem errors after cleaning up children.
+    Limits: Search scripts save at completion; timed-out in-memory rows are lost.
+    """
+    # 1. Validate the deadline before moving prior output or launching children.
+    task_timeout = float(os.environ.get("JOBSPY_TASK_TIMEOUT_SEC", "7200"))
+    if not math.isfinite(task_timeout) or task_timeout <= 0:
+        raise ValueError("JOBSPY_TASK_TIMEOUT_SEC must be a positive finite number")
+    for script in SCRIPTS:
+        if not script.is_file():
+            raise FileNotFoundError(f"Scraper script not found: {script}")
 
-    # 2. Setup logs directory
-    timestamp_month = datetime.now().strftime("%Y_%m")
-    timestamp_day = datetime.now().strftime("%Y_%m_%d")
-    env_logs = os.environ.get("JOBSPY_LOGS_DIR")
-    logs_dir = Path(env_logs) if env_logs else (jobspy_dir / "scraped jobs" / "logs" / timestamp_month / timestamp_day)
+    month = datetime.now().strftime("%Y_%m")
+    day = datetime.now().strftime("%Y_%m_%d")
+    results_dir = Path(
+        os.environ.get("JOBSPY_RESULTS_DIR")
+        or JOBSPY_DIR / "scraped jobs" / "results" / month / day
+    )
+    logs_dir = Path(
+        os.environ.get("JOBSPY_LOGS_DIR")
+        or JOBSPY_DIR / "scraped jobs" / "logs" / month / day
+    )
+    results_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Setup results directory (so we can check output files later)
-    env_results = os.environ.get("JOBSPY_RESULTS_DIR")
-    results_dir = Path(env_results) if env_results else (jobspy_dir / "scraped jobs" / "results" / timestamp_month / timestamp_day)
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 80)
-    print(f"Career Pipeline Parallel Runner - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Logs directory: {logs_dir}")
-    print(f"Results directory: {results_dir}")
-    print("=" * 80)
-
-    processes = []
-    start_times = {}
-    log_files = {}
-    task_states = {}
-    active_retry: dict[str, Any] = {"process": None, "name": None, "log_file": None}
-
-    # 3. Handle termination signal to clean up subprocesses nicely
-    def signal_handler(sig, frame):
-        print("\n\n[!] Interruption detected! Terminating all running scrape processes...")
-        # Clean up active retry process if one is running
-        if active_retry["process"] is not None and active_retry["process"].poll() is None:
-            name = active_retry["name"]
-            p = active_retry["process"]
-            print(f" -> Terminating retry task {name} (PID: {p.pid})...")
-            p.terminate()
-            if name in task_states:
-                task_states[name]["status"] = "failed"
-                task_states[name]["exit_code"] = -15
-            if active_retry.get("log_file"):
-                active_retry["log_file"].close()
-
-        for p_info in processes:
-            p = p_info["process"]
-            name = p_info["name"]
-            if p.poll() is None:
-                print(f" -> Terminating {name} (PID: {p.pid})...")
-                p.terminate()
-                if name in task_states:
-                    task_states[name]["status"] = "failed"
-                    task_states[name]["exit_code"] = -15
-        time.sleep(1)
-        for p_info in processes:
-            p = p_info["process"]
-            name = p_info["name"]
-            if p.poll() is None:
-                print(f" -> Killing {name} (PID: {p.pid})...")
-                p.kill()
-                if name in task_states:
-                    task_states[name]["status"] = "failed"
-                    task_states[name]["exit_code"] = -9
-        for lf in log_files.values():
-            lf.close()
-        update_pipeline_state(base_dir, phase="FAILED", error="Interrupted by signal", tasks=task_states)
-        print("[!] Cleanup complete. Exiting.")
-        sys.exit(1)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    # Resolve Python executable for scrapers
     py_bin = os.environ.get("JOBSPY_PYTHON")
     if not py_bin:
-        candidates = [
-            base_dir / ".venv" / "bin" / "python",
-            Path.home() / ".local" / "venvs" / "jobspy-custom-3.12" / "bin" / "python",
-            Path(sys.executable),
-        ]
-        for cand in candidates:
-            if cand.is_file() and os.access(cand, os.X_OK):
-                try:
-                    res = subprocess.run([str(cand), "-c", "import bs4, ats_scrapers"], capture_output=True, timeout=3)
-                    if res.returncode == 0:
-                        py_bin = str(cand)
-                        break
-                except Exception:
-                    pass
-        if not py_bin:
-            py_bin = sys.executable
+        from cockpit.pipeline_monitor import resolve_pipeline_python
 
-    # Preflight check on scraper dependencies
-    try:
-        chk = subprocess.run([py_bin, "-c", "import bs4, ats_scrapers"], capture_output=True, text=True, timeout=5)
-        if chk.returncode != 0:
-            print(f"[!] Warning: Python interpreter '{py_bin}' failed scraper dependency check:")
-            print(f"    {chk.stderr.strip() or chk.stdout.strip()}")
-    except Exception as exc:
-        print(f"[!] Preflight check warning: {exc}")
+        py_bin = resolve_pipeline_python(BASE_DIR)
 
-    # 4. Start all scripts in parallel (Wave 1 with launch staggering)
-    stagger_seconds = float(os.environ.get("JOBSPY_STAGGER_SEC", "2.5"))
-    ordered_scripts = [s for s in scripts if s.name in IMMEDIATE_SCRAPERS] + [
-        s for s in scripts if s.name not in IMMEDIATE_SCRAPERS
-    ]
+    # 2. Preserve prior daily CSVs outside the paths consumed by report/ingest.
+    run_dir = Path(tempfile.mkdtemp(prefix=".run-", dir=results_dir))
+    archive_dir = run_dir / "previous"
+    for name in EXPECTED_OUTPUTS.values():
+        previous = results_dir / name
+        if previous.is_file():
+            archive_dir.mkdir(exist_ok=True)
+            previous.replace(archive_dir / name)
 
-    launched_board_scrapers = 0
-    for script in ordered_scripts:
-        script_name = script.name
-        is_immediate = script_name in IMMEDIATE_SCRAPERS
-
-        if not is_immediate:
-            if launched_board_scrapers > 0 and stagger_seconds > 0:
-                time.sleep(stagger_seconds)
-            launched_board_scrapers += 1
-
-        print(f"[START] Spawning {script_name}...")
-        p, log_file_path, lf = spawn_scraper_process(
-            script, py_bin, base_dir, results_dir, logs_dir, is_retry=False
-        )
-        log_files[script_name] = lf
-
-        processes.append({
-            "name": script_name,
-            "process": p,
-            "path": script,
-            "log_path": log_file_path,
-            "log_file": lf,
-        })
-        start_times[script_name] = time.time()
-        task_states[script_name] = {
-            "status": "running",
-            "pid": p.pid,
-            "started_at": datetime.now().isoformat(),
-            "log_path": str(log_file_path),
-            "output_csv": str(results_dir / EXPECTED_OUTPUTS.get(script_name, "")),
-            "retried": False,
+    print(f"Career Pipeline Parallel Runner - Started at {datetime.now().isoformat()}")
+    print(f"Results directory: {results_dir}")
+    print(f"Attempt directory: {run_dir}")
+    print(f"Per-attempt deadline: {task_timeout:g}s")
+    task_states = {
+        script.name: {
+            "status": "pending",
+            "row_count": 0,
+            "output_csv": str(results_dir / EXPECTED_OUTPUTS[script.name]),
         }
+        for script in SCRIPTS
+    }
+    update_pipeline_state(BASE_DIR, phase="SCRAPING", tasks=task_states)
+    attempts = []
 
-    update_pipeline_state(base_dir, phase="SCRAPING", tasks=task_states)
-
-    print("\nAll processes launched. Monitoring status (polling every 5 seconds)...\n")
-    print("-" * 80)
-
-    # 5. Monitor processes for Wave 1
-    completed_count = 0
-    total_count = len(processes)
-
-    while completed_count < total_count:
-        time.sleep(5)
-
-        for p_info in processes:
-            if p_info.get("completed", False):
-                continue
-
-            p = p_info["process"]
-            name = p_info["name"]
-            exit_code = p.poll()
-
-            if exit_code is not None:
-                p_info["completed"] = True
-                completed_count += 1
-
-                p_info["log_file"].close()
-
-                duration = time.time() - start_times[name]
-                minutes, seconds = divmod(duration, 60)
-                duration_str = f"{int(minutes)}m {seconds:.1f}s"
-
-                csv_path = results_dir / EXPECTED_OUTPUTS.get(name, "")
-                row_count = count_csv_rows(csv_path)
-                status_str = "SUCCESS" if exit_code == 0 else f"FAILED (Exit Code: {exit_code})"
-
-                task_states[name].update({
-                    "status": "success" if exit_code == 0 else "failed",
-                    "exit_code": exit_code,
-                    "finished_at": datetime.now().isoformat(),
-                    "duration_sec": duration,
-                    "row_count": row_count,
-                    "retried": False,
-                })
-                update_pipeline_state(base_dir, tasks=task_states)
-
-                print(f"[FINISHED] {name}")
-                print(f"           Status:    {status_str}")
-                print(f"           Duration:  {duration_str}")
-                print(f"           Rows:      {row_count}")
-                print(f"           Log:       {p_info['log_path']}")
-                print("-" * 80)
-
-    print("\n" + "=" * 80)
-    print("Wave 1 parallel scrape tasks have completed.")
-    print("=" * 80)
-
-    # 6. Wave 2 Automatic One-Shot Retry
-    min_expected_rows = int(os.environ.get("JOBSPY_MIN_ROWS", "5"))
-    disable_retry = os.environ.get("JOBSPY_DISABLE_RETRY") == "1"
-
-    retry_names = [
-        name for name, state in task_states.items()
-        if not disable_retry and (state.get("exit_code") != 0 or state.get("row_count", 0) < min_expected_rows)
-    ]
-
-    if retry_names:
-        retry_cooldown_sec = float(os.environ.get("JOBSPY_RETRY_COOLDOWN_SEC", "15.0"))
-        print(f"\n[!] Wave 1 detected {len(retry_names)} failed or low-yield task(s): {', '.join(retry_names)}")
-        print(f"    Entering Wave 2 retry cooldown ({retry_cooldown_sec:.1f}s)...")
-        if retry_cooldown_sec > 0:
-            time.sleep(retry_cooldown_sec)
-
-        for script_name in retry_names:
-            script = next((s for s in scripts if s.name == script_name), None)
-            if not script:
-                continue
-
-            print(f"[RETRY START] Re-running {script_name}...")
-            p, log_file_path, lf = spawn_scraper_process(
-                script, py_bin, base_dir, results_dir, logs_dir, is_retry=True
-            )
-            active_retry["process"] = p
-            active_retry["name"] = script_name
-            active_retry["log_file"] = lf
-
-            retry_start = time.time()
-            task_states[script_name]["status"] = "running"
-            update_pipeline_state(base_dir, tasks=task_states)
-
-            p.wait()
-            lf.close()
-            active_retry["process"] = None
-            active_retry["name"] = None
-            active_retry["log_file"] = None
-
-            retry_exit = p.returncode
-            retry_dur = time.time() - retry_start
-            csv_path = results_dir / EXPECTED_OUTPUTS.get(script_name, "")
-            new_rows = count_csv_rows(csv_path)
-            prev_dur = task_states[script_name].get("duration_sec", 0.0) or 0.0
-
-            task_states[script_name].update({
-                "status": "success" if retry_exit == 0 else "failed",
-                "exit_code": retry_exit,
-                "retry_exit_code": retry_exit,
-                "row_count": new_rows,
-                "retried": True,
-                "duration_sec": prev_dur + retry_dur,
-                "finished_at": datetime.now().isoformat(),
-            })
-            update_pipeline_state(base_dir, tasks=task_states)
-
-            status_str = "SUCCESS" if retry_exit == 0 else f"FAILED (Exit Code: {retry_exit})"
-            print(f"[RETRY FINISHED] {script_name}")
-            print(f"                 Status: {status_str}")
-            print(f"                 Rows:   {new_rows}")
-            print("-" * 80)
-
-    print("\n" + "=" * 80)
-    print("All scrape tasks have completed.")
-    print("=" * 80)
-
-    # 7. Show summary of generated results files
-    print("\nDiscrete Results Summary:")
-    expected_outputs = EXPECTED_OUTPUTS
-
-    for script_name, csv_name in expected_outputs.items():
-        csv_path = results_dir / csv_name
-        if csv_path.exists():
-            size_mb = csv_path.stat().st_size / (1024 * 1024)
-            rows = task_states.get(script_name, {}).get("row_count", count_csv_rows(csv_path))
-            retried_str = " [RETRIED]" if task_states.get(script_name, {}).get("retried") else ""
-            print(f" - {csv_name}: SAVED ({size_mb:.2f} MB, {rows} rows){retried_str}")
-            print(f"   Path: {csv_path}")
+    def start_attempt(script: Path, retry: bool = False) -> dict:
+        name = script.name
+        attempt_dir = run_dir / script.stem / ("retry" if retry else "first")
+        attempt_dir.mkdir(parents=True)
+        process, log_path, log_file = spawn_scraper_process(
+            script, py_bin, BASE_DIR, attempt_dir, logs_dir, is_retry=retry
+        )
+        previous_duration = task_states[name].get("duration_sec", 0) or 0
+        attempt = {
+            "process": process,
+            "name": name,
+            "log_file": log_file,
+            "csv": attempt_dir / EXPECTED_OUTPUTS[name],
+            "start": time.monotonic(),
+            "retry": retry,
+            "previous_duration": previous_duration,
+            "finished": False,
+        }
+        attempts.append(attempt)
+        now = datetime.now().isoformat()
+        task_states[name].update(
+            {
+                "status": "running",
+                "pid": process.pid,
+                "log_path": str(log_path),
+                "attempt_started_at": now,
+                "duration_sec": None,
+                "retried": retry,
+            }
+        )
+        if not retry:
+            task_states[name]["started_at"] = now
         else:
-            print(f" - {csv_name}: NOT FOUND (Likely failed or no jobs found)")
+            task_states[name]["retry_started_at"] = now
+        update_pipeline_state(BASE_DIR, tasks=task_states)
+        print(f"[{'RETRY' if retry else 'START'}] {name} (PID: {process.pid})")
+        return attempt
 
-    failed_count = sum(1 for s in task_states.values() if s.get("exit_code") != 0)
-    if failed_count == len(scripts):
-        print(f"\n[!] All {failed_count} scraping tasks failed! Aborting pipeline.")
-        sys.exit(1)
+    def finish_attempt(attempt: dict, timed_out: bool = False) -> None:
+        process = attempt["process"]
+        name = attempt["name"]
+        task = task_states[name]
+        if timed_out:
+            stop_process(process)
+        attempt["log_file"].close()
+        attempt["finished"] = True
+        rows = count_csv_rows(attempt["csv"])
+        if rows:
+            with attempt["csv"].open(encoding="utf-8", newline="") as stream:
+                if "job_url" not in next(csv.reader(stream), []):
+                    rows = 0
+        valid = process.returncode == 0 and rows > 0 and not timed_out
+        error = None
+        if timed_out:
+            error = f"Scraper timed out after {task_timeout:g}s"
+        elif process.returncode != 0:
+            error = f"Scraper exited with code {process.returncode}"
+        elif not rows:
+            error = "Expected CSV is missing, empty, or invalid"
 
-    print("\nDone!")
+        # 3. Only a valid attempt can replace published output; worse retries cannot.
+        previous_rows = task.get("row_count", 0)
+        if valid and rows >= previous_rows:
+            attempt["csv"].replace(results_dir / EXPECTED_OUTPUTS[name])
+            task.update(row_count=rows, error=None)
+        elif not previous_rows:
+            task["error"] = error
+        selected_valid = task.get("row_count", 0) > 0
+        task.update(
+            {
+                "status": "success" if selected_valid else "failed",
+                "exit_code": 0 if selected_valid else (process.returncode or 1),
+                "finished_at": datetime.now().isoformat(),
+                "duration_sec": attempt["previous_duration"]
+                + time.monotonic()
+                - attempt["start"],
+            }
+        )
+        if attempt["retry"]:
+            task.update(retry_exit_code=process.returncode, retry_error=error)
+        update_pipeline_state(BASE_DIR, tasks=task_states)
+        print(f"[FINISHED] {name}: {task['status']}, {task['row_count']} selected rows")
+
+    def interrupted(signum, frame):
+        raise SystemExit(f"Interrupted by signal {signum}")
+
+    previous_handlers = {
+        sig: signal.signal(sig, interrupted) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        # 4. Stagger board launches; each process owns its own monotonic deadline.
+        ordered = [s for s in SCRIPTS if s.name in IMMEDIATE_SCRAPERS] + [
+            s for s in SCRIPTS if s.name not in IMMEDIATE_SCRAPERS
+        ]
+        stagger = float(os.environ.get("JOBSPY_STAGGER_SEC", "2.5"))
+        board_count = 0
+        for script in ordered:
+            if script.name not in IMMEDIATE_SCRAPERS:
+                if board_count and stagger > 0:
+                    time.sleep(stagger)
+                board_count += 1
+            start_attempt(script)
+
+        first_wave = list(attempts)
+        while any(not a["finished"] for a in first_wave):
+            for attempt in first_wave:
+                if attempt["finished"]:
+                    continue
+                if attempt["process"].poll() is not None:
+                    finish_attempt(attempt)
+                elif time.monotonic() - attempt["start"] >= task_timeout:
+                    finish_attempt(attempt, timed_out=True)
+            if any(not a["finished"] for a in first_wave):
+                time.sleep(min(5, task_timeout))
+
+        # 5. Retry failed/low-yield tasks once, retaining usable first-wave output.
+        min_rows = int(os.environ.get("JOBSPY_MIN_ROWS", "5"))
+        retry_scripts = [
+            s
+            for s in SCRIPTS
+            if task_states[s.name]["status"] == "failed"
+            or task_states[s.name]["row_count"] < min_rows
+        ]
+        if os.environ.get("JOBSPY_DISABLE_RETRY") != "1" and retry_scripts:
+            cooldown = float(os.environ.get("JOBSPY_RETRY_COOLDOWN_SEC", "15"))
+            if cooldown > 0:
+                time.sleep(cooldown)
+            for script in retry_scripts:
+                attempt = start_attempt(script, retry=True)
+                try:
+                    attempt["process"].wait(timeout=task_timeout)
+                except subprocess.TimeoutExpired:
+                    finish_attempt(attempt, timed_out=True)
+                else:
+                    finish_attempt(attempt)
+
+        if not any(t["status"] == "success" for t in task_states.values()):
+            raise SystemExit(1)
+        print("All scrape tasks completed; current valid outputs published.")
+    except BaseException as exc:
+        for attempt in attempts:
+            stop_process(attempt["process"])
+            task = task_states[attempt["name"]]
+            if task["status"] == "running":
+                task.update(
+                    status="failed",
+                    exit_code=attempt["process"].returncode,
+                    error="Scraping interrupted",
+                )
+        update_pipeline_state(
+            BASE_DIR, phase="FAILED", error=str(exc), tasks=task_states
+        )
+        raise
+    finally:
+        for attempt in attempts:
+            stop_process(attempt["process"])
+            attempt["log_file"].close()
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
