@@ -1,0 +1,62 @@
+# ==============================================================================
+# 01_master_career_history.yaml — Verified Candidate Identity, Education & Work
+# ==============================================================================
+# Run `cockpit onboard` or edit `config/evidence/01_master_career_history.yaml`
+# to populate this file with your own verified background.
+# NEVER invent employers, titles, dates, degrees, or metrics outside this file.
+
+candidate:
+  name: "Jane Smith"
+  location: "San Francisco, CA"
+  email: "jane@example.com"
+  phone: "+1-555-0123"
+  links:
+    github: "https://github.com/janesmith"
+    linkedin: "https://linkedin.com/in/janesmith"
+    portfolio: "https://janesmith.dev"
+  work_authorization: "US Citizen / Authorized to work in the United States"
+  target_availability: "Immediate / Flexible"
+
+education:
+  - id: "grad_degree"
+    institution: "State University"
+    location: "San Francisco, CA"
+    degree: "Master of Science in Computer Science & Analytics"
+    dates: "Sep 2024 – Jun 2026"
+    highlights:
+      - "Graduate coursework in Distributed Systems, Data Engineering, Machine Learning, and Optimization."
+
+  - id: "undergrad_degree"
+    institution: "Tech Institute"
+    location: "Los Angeles, CA"
+    degree: "Bachelor of Science in Computer Science"
+    dates: "Sep 2020 – Jun 2024"
+    highlights:
+      - "Undergraduate focus on Algorithms, Database Systems, and Software Engineering."
+
+work_experience:
+  - id: "acme_analytics"
+    company: "Acme Analytics"
+    location: "San Francisco, CA"
+    official_title: "Data & Backend Engineering Intern"
+    allowed_framing_titles:
+      - "Data & Backend Engineering Intern"
+      - "Software & Data Engineering Intern"
+    dates: "Jun 2025 – Sep 2025"
+    verified_bullets:
+      - archetype_tags: ["data_eng", "swe_backend", "analytics_msba"]
+        text: "Built automated Python and SQL ingestion pipelines processing 2M+ daily events with schema validation and dead-letter quarantine."
+      - archetype_tags: ["data_eng", "analytics_msba"]
+        text: "Reduced reporting query latency by 45% by refactoring legacy SQL views into incremental dbt star-schema marts."
+
+  - id: "metro_research"
+    company: "Metro Research Lab"
+    location: "Los Angeles, CA"
+    official_title: "Research Data Assistant"
+    allowed_framing_titles:
+      - "Research Data Assistant"
+      - "Data Analyst Assistant"
+    dates: "Sep 2023 – Jun 2024"
+    verified_bullets:
+      - archetype_tags: ["analytics_msba", "data_eng"]
+        text: "Automated longitudinal dataset cleaning and statistical validation workflows in Python, cutting manual QA time by 60%."

@@ -225,7 +225,7 @@ def upsert_jobspy_frame(
             .sort("priority_score", descending=True, maintain_order=True)
             .unique(subset="dedup_key", keep="first", maintain_order=True)
         )
-        before = con.execute("SELECT count(*) FROM jobs_master").fetchone()[0]
+        before = con.execute("SELECT count(*) FROM jobs_master").fetchall()[0][0]
         con.register("incoming", batch.to_arrow())
         try:
             con.execute(
@@ -234,7 +234,7 @@ def upsert_jobspy_frame(
             )
         finally:
             con.unregister("incoming")
-        stats["inserted"] = con.execute("SELECT count(*) FROM jobs_master").fetchone()[0] - before
+        stats["inserted"] = con.execute("SELECT count(*) FROM jobs_master").fetchall()[0][0] - before
         if pairs:
             con.register("seg_in", pl.DataFrame(sorted(pairs), schema=["dedup_key", "segment"], orient="row").to_arrow())
             try:

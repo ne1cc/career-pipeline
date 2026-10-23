@@ -1,0 +1,34 @@
+# ==============================================================================
+# 03_skills_inventory.yaml — Verified Skills & Evidence Tiers
+# ==============================================================================
+# Run `cockpit onboard` or edit `config/evidence/03_skills_inventory.yaml`
+# to configure your verified skills.
+
+skills:
+  languages:
+    - name: "Python"
+      tier: "production"
+    - name: "SQL"
+      tier: "production"
+    - name: "TypeScript"
+      tier: "project"
+    - name: "Bash"
+      tier: "production"
+
+  data_and_analytics:
+    - name: "DuckDB"
+      tier: "project"
+    - name: "dbt"
+      tier: "production"
+    - name: "Polars"
+      tier: "project"
+    - name: "PostgreSQL"
+      tier: "production"
+
+  backend_and_cloud:
+    - name: "FastAPI"
+      tier: "project"
+    - name: "Docker"
+      tier: "production"
+    - name: "Git / GitHub Actions"
+      tier: "production"

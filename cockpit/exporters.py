@@ -190,7 +190,7 @@ def render_docx(markdown_text: str, output_path: Path | str, title: str = "Docum
     return out
 
 
-def markdown_to_html(markdown_text: str, title: str = "Alex Sun - Resume") -> str:
+def markdown_to_html(markdown_text: str, title: str = "Resume") -> str:
     """Converts resume/cover letter markdown into clean semantic HTML with single-page print CSS."""
     # Process line by line into HTML
     html_lines = []
@@ -347,27 +347,120 @@ def markdown_to_html(markdown_text: str, title: str = "Alex Sun - Resume") -> st
 </html>"""
 
 
-def render_pdf(markdown_text: str, output_path: Path | str, title: str = "Document") -> Path:
-    """Renders a pixel-perfect 1-page PDF using Playwright headless Chromium."""
-    from playwright.sync_api import sync_playwright
+def _write_minimal_pdf(markdown_text: str, out: Path) -> Path:
+    """Writes a valid single-page PDF 1.4 document when headless Chromium is unavailable."""
+    lines = []
+    for raw in markdown_text.splitlines():
+        clean = re.sub(r"[#*_`]", "", raw).strip()
+        clean = clean.encode("ascii", "replace").decode("ascii")
+        clean = clean.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        if clean:
+            lines.append(clean[:105])
+    text_ops = ["BT", "/F1 9 Tf", "40 750 Td", "11 TL"]
+    for idx, ln in enumerate(lines[:62]):
+        if idx == 0:
+            text_ops.append(f"({ln}) Tj")
+        else:
+            text_ops.append(f"T* ({ln}) Tj")
+    text_ops.append("ET")
+    stream_bytes = "\n".join(text_ops).encode("ascii")
 
+    objs = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        f"5 0 obj\n<< /Length {len(stream_bytes)} >>\nstream\n".encode("ascii") + stream_bytes + b"\nendstream\nendobj\n",
+    ]
+    buf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for obj in objs:
+        offsets.append(len(buf))
+        buf.extend(obj)
+    xref_pos = len(buf)
+    buf.extend(f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode("ascii"))
+    for off in offsets:
+        buf.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+    buf.extend(
+        f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii")
+    )
+    out.write_bytes(bytes(buf))
+    return out
+
+
+def render_pdf(markdown_text: str, output_path: Path | str, title: str = "Document") -> Path:
+    """Renders a pixel-perfect 1-page PDF using Playwright headless Chromium, falling back to minimal PDF."""
     out = Path(output_path).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
 
     html_content = markdown_to_html(markdown_text, title=title)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        try:
-            page = browser.new_page()
-            page.set_content(html_content, wait_until="load")
-            page.pdf(
-                path=str(out),
-                format="Letter",
-                print_background=True,
-                margin={"top": "0.42in", "bottom": "0.42in", "left": "0.48in", "right": "0.48in"},
-            )
-        finally:
-            browser.close()
+    try:
+        from playwright.sync_api import sync_playwright
 
-    return out
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.set_content(html_content, wait_until="load")
+                page.pdf(
+                    path=str(out),
+                    format="Letter",
+                    print_background=True,
+                    margin={"top": "0.42in", "bottom": "0.42in", "left": "0.48in", "right": "0.48in"},
+                )
+            finally:
+                browser.close()
+        return out
+    except Exception:
+        return _write_minimal_pdf(markdown_text, out)
+
+
+ARCHETYPE_RESUME_ALIASES: dict[str, str] = {
+    "swe_fullstack_ai": "swe_backend_v1",
+    "data_analytics_engineering": "data_eng_lakehouse_v1",
+    "analytics_bi_product": "analytics_msba_v1",
+    "swe_backend": "swe_backend_v1",
+    "data_eng": "data_eng_lakehouse_v1",
+    "analytics_msba": "analytics_msba_v1",
+}
+
+
+def build_base_resumes(
+    evidence_dir: Path | str | None = None,
+    output_dir: Path | str | None = None,
+) -> list[Path]:
+    """Compiles Markdown base resumes into .docx and .pdf inside resumes/ (including archetype aliases)."""
+    from cockpit import intel
+    from cockpit.normalizer import REPO_ROOT
+
+    ev_dir = intel.resolve_evidence_dir(evidence_dir)
+    base_resumes_dir = ev_dir / "base_resumes"
+    if not base_resumes_dir.exists() or not list(base_resumes_dir.glob("*.md")):
+        fallback_dir = intel.TEMPLATE_EVIDENCE_DIR / "base_resumes"
+        if fallback_dir.exists():
+            base_resumes_dir = fallback_dir
+
+    out_root = Path(output_dir).expanduser().resolve() if output_dir else (REPO_ROOT / "resumes")
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    generated: list[Path] = []
+    md_files = sorted(base_resumes_dir.glob("*.md")) if base_resumes_dir.exists() else []
+
+    for md_file in md_files:
+        md_text = md_file.read_text("utf-8")
+        cand = intel.resolve_candidate_name(md_text, evidence_dir=ev_dir)
+        stem = md_file.stem
+        targets = [stem]
+        if alias := ARCHETYPE_RESUME_ALIASES.get(stem):
+            if alias not in targets:
+                targets.append(alias)
+
+        for target_stem in targets:
+            docx_out = out_root / f"{target_stem}.docx"
+            pdf_out = out_root / f"{target_stem}.pdf"
+            render_docx(md_text, docx_out, title=f"{cand} - Resume ({target_stem})")
+            render_pdf(md_text, pdf_out, title=f"{cand} - Resume ({target_stem})")
+            generated.extend([docx_out, pdf_out])
+
+    return generated

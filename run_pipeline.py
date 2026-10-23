@@ -112,21 +112,47 @@ EXPECTED_OUTPUTS = {
     "tech_portals_jobs.csv": "Tech Portals Jobs",
 }
 
+EMAIL_PLACEHOLDERS = {
+    "ENTER_SENDER_EMAIL_HERE",
+    "ENTER_SENDER_APP_PASSWORD_HERE",
+    "ENTER_RECEIVER_EMAIL_HERE",
+    "YOUR_EMAIL@gmail.com",
+    "YOUR_16_CHAR_APP_PASSWORD",
+    "RECIPIENT_EMAIL@gmail.com",
+}
+
+
+def is_email_configured(config: dict) -> bool:
+    if config.get("email_enabled") is False:
+        return False
+    sender_email = config.get("sender_email")
+    sender_password = config.get("sender_password")
+    receiver_email = config.get("receiver_email") or config.get("recipient_email")
+    if not sender_email or sender_email in EMAIL_PLACEHOLDERS:
+        return False
+    if not sender_password or sender_password in EMAIL_PLACEHOLDERS:
+        return False
+    if not receiver_email or receiver_email in EMAIL_PLACEHOLDERS:
+        return False
+    return True
+
+
 def load_config():
     if not CONFIG_FILE.exists():
         default_config = {
+            "email_enabled": False,
             "sender_email": "ENTER_SENDER_EMAIL_HERE",
             "sender_password": "ENTER_SENDER_APP_PASSWORD_HERE",
             "receiver_email": "ENTER_RECEIVER_EMAIL_HERE",
             "smtp_server": "smtp.gmail.com",
-            "smtp_port": 587
+            "smtp_port": 587,
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(default_config, f, indent=4)
         print(f"[!] Created default configuration file: {CONFIG_FILE}")
-        print("Please edit it and set your Email settings before running.")
-        sys.exit(0)
-        
+        print("[!] Email delivery is disabled by default; scraping and Cockpit ingestion will proceed.")
+        return default_config
+
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -147,21 +173,13 @@ def run_scrapers():
     print("Scraping completed successfully.")
 
 def validate_config(config):
-    sender_email = config.get("sender_email")
-    sender_password = config.get("sender_password")
-    receiver_email = config.get("receiver_email")
-    
-    placeholders = ["ENTER_SENDER_EMAIL_HERE", "ENTER_SENDER_APP_PASSWORD_HERE", "ENTER_RECEIVER_EMAIL_HERE"]
-    
-    if not sender_email or sender_email in placeholders:
-        print(f"ERROR: Sender email is not configured in '{CONFIG_FILE.name}'!")
-        sys.exit(1)
-    if not sender_password or sender_password in placeholders:
-        print(f"ERROR: Sender password is not configured in '{CONFIG_FILE.name}'!")
-        sys.exit(1)
-    if not receiver_email or receiver_email in placeholders:
-        print(f"ERROR: Receiver email is not configured in '{CONFIG_FILE.name}'!")
-        sys.exit(1)
+    if not is_email_configured(config):
+        print(
+            f"[!] Email delivery is not configured in '{CONFIG_FILE.name}' — "
+            "Step 3 (Email) will be skipped after scraping and Excel build."
+        )
+        return False
+    return True
 
 def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
     timestamp_day = datetime.now().strftime("%Y_%m_%d")
@@ -281,9 +299,13 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
         sys.exit(1)
 
 def send_email_with_attachment(config, excel_path, stats, has_previous_run):
+    if not is_email_configured(config):
+        print(f"\n[{datetime.now()}] Step 3: Skipping email delivery (SMTP not configured).")
+        return False
+
     sender_email = config.get("sender_email")
     sender_password = config.get("sender_password")
-    receiver_email = config.get("receiver_email")
+    receiver_email = config.get("receiver_email") or config.get("recipient_email")
     smtp_server = config.get("smtp_server", "smtp.gmail.com")
     smtp_port = config.get("smtp_port", 587)
     

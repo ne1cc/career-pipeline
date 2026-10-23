@@ -15,8 +15,11 @@ from cockpit import db, macos
 from cockpit.normalizer import REPO_ROOT
 
 DEFAULT_EXPORT_DIR = Path.home() / "Documents" / "jobspy-cockpit"
-DEFAULT_CAREER_OPS = Path.home() / "Github" / "ne1cc" / "career-ops"
+VENDORED_CAREER_OPS = REPO_ROOT / "config" / "career_ops"
+LEGACY_CAREER_OPS = Path.home() / "Github" / "ne1cc" / "career-ops"
+DEFAULT_CAREER_OPS = VENDORED_CAREER_OPS
 DEFAULT_EVIDENCE_DIR = REPO_ROOT / "config" / "evidence"
+TEMPLATE_EVIDENCE_DIR = REPO_ROOT / "config" / "templates" / "evidence"
 
 
 class IntelUnavailable(Exception):
@@ -64,37 +67,48 @@ def spend_tier_to_model(tier: str, provider: str = "claude-cli") -> str:
                 return "gemini-3.5-flash-lite"
 
 
+def _anchor_repo_path(path_val: Path | str) -> Path:
+    p = Path(path_val).expanduser()
+    if not p.is_absolute():
+        p = REPO_ROOT / p
+    return p.resolve()
+
+
 def resolve_career_ops_root(given: Path | str | None = None) -> Path:
     if given:
-        return Path(given).expanduser().resolve()
+        return _anchor_repo_path(given)
 
     env = os.environ.get("CAREER_OPS_ROOT") or os.environ.get("CAREER_OPS_DATA_DIR")
     if env:
-        return Path(env).expanduser().resolve()
+        return _anchor_repo_path(env)
     try:
         from cockpit.normalizer import load_rules
 
         rules = load_rules()
         if path_val := rules.get("intel", {}).get("career_ops_root"):
-            return Path(path_val).expanduser().resolve()
+            candidate = _anchor_repo_path(path_val)
+            if candidate.exists():
+                return candidate
     except Exception:
         pass
-    return DEFAULT_CAREER_OPS.resolve()
+    if VENDORED_CAREER_OPS.exists():
+        return VENDORED_CAREER_OPS.resolve()
+    return LEGACY_CAREER_OPS.resolve()
 
 
 def resolve_export_dir(given: Path | str | None = None) -> Path:
     if given:
-        return Path(given).expanduser().resolve()
+        return _anchor_repo_path(given)
 
     env = os.environ.get("JOBSPY_EXPORT_DIR")
     if env:
-        return Path(env).expanduser().resolve()
+        return _anchor_repo_path(env)
     try:
         from cockpit.normalizer import load_rules
 
         rules = load_rules()
         if path_val := rules.get("intel", {}).get("export_dir"):
-            return Path(path_val).expanduser().resolve()
+            return _anchor_repo_path(path_val)
     except Exception:
         pass
     return DEFAULT_EXPORT_DIR.resolve()
@@ -102,22 +116,25 @@ def resolve_export_dir(given: Path | str | None = None) -> Path:
 
 def resolve_evidence_dir(given: Path | str | None = None) -> Path:
     if given:
-        return Path(given).expanduser().resolve()
+        return _anchor_repo_path(given)
 
     env = os.environ.get("EVIDENCE_DIR")
     if env:
-        return Path(env).expanduser().resolve()
+        return _anchor_repo_path(env)
     try:
         from cockpit.normalizer import load_rules
 
         rules = load_rules()
         if path_val := rules.get("intel", {}).get("evidence_dir"):
-            p = Path(path_val).expanduser()
-            if not p.is_absolute():
-                p = REPO_ROOT / p
-            return p.resolve()
+            p = _anchor_repo_path(path_val)
+            if p.exists():
+                return p
     except Exception:
         pass
+    if DEFAULT_EVIDENCE_DIR.exists():
+        return DEFAULT_EVIDENCE_DIR.resolve()
+    if TEMPLATE_EVIDENCE_DIR.exists():
+        return TEMPLATE_EVIDENCE_DIR.resolve()
     return DEFAULT_EVIDENCE_DIR.resolve()
 
 
@@ -146,6 +163,26 @@ def load_context(
     cv = cv_path.read_text("utf-8").strip()
     yml = profile_yml.read_text("utf-8").strip() if profile_yml.exists() else ""
     prof_md = profile_md.read_text("utf-8").strip() if profile_md.exists() else ""
+
+    # Optional career-ops writing, voice, custom, and recruiter heuristics
+    optional_blocks: list[str] = []
+    for rel_file, header_title in [
+        ("modes/_writing.md", "WRITING GUARDRAILS (modes/_writing.md)"),
+        ("voice-dna.md", "VOICE DNA GUARDRAILS (voice-dna.md)"),
+        ("modes/heuristics/recruiter-side.md", "RECRUITER-SIDE HEURISTICS (modes/heuristics/recruiter-side.md)"),
+        ("modes/_custom.md", "USER CUSTOM RULES (modes/_custom.md)"),
+    ]:
+        opt_p = base / rel_file
+        if opt_p.exists():
+            opt_txt = opt_p.read_text("utf-8").strip()
+            if opt_txt:
+                optional_blocks.append(
+                    f"\n═══════════════════════════════════════════════════════\n"
+                    f"{header_title}\n"
+                    f"═══════════════════════════════════════════════════════\n"
+                    f"{opt_txt}\n"
+                )
+    optional_context_str = "".join(optional_blocks)
 
     # Resolve provider: explicit > env > config > "claude-cli"
     selected_provider = provider or os.environ.get("LLM_PROVIDER")
@@ -249,7 +286,7 @@ CANDIDATE PROFILE & TARGETS (config/profile.yml)
 USER ARCHETYPES & NARRATIVE (_profile.md)
 ═══════════════════════════════════════════════════════
 {prof_md}
-{evidence_block}
+{optional_context_str}{evidence_block}
 ═══════════════════════════════════════════════════════
 OPERATING RULES & OUTPUT SPECIFICATION
 ═══════════════════════════════════════════════════════
@@ -375,6 +412,48 @@ def extract_section(text: str, section_name: str) -> str:
     if match:
         return match.group(1).strip()
     return ""
+
+
+def resolve_candidate_name(
+    resume_text: str = "",
+    career_ops_root: Path | None = None,
+    evidence_dir: Path | None = None,
+) -> str:
+    """Resolve candidate's full name dynamically from resume heading, profile.yml, cv.md, or career history."""
+    if resume_text:
+        m = re.search(r"^\s*#\s+(.+)$", resume_text, re.MULTILINE)
+        if m:
+            heading = re.sub(r"[*_`]", "", m.group(1)).strip()
+            if heading:
+                return heading
+
+    try:
+        base = resolve_career_ops_root(career_ops_root)
+        profile_yml = base / "config" / "profile.yml"
+        if profile_yml.exists():
+            yml_text = profile_yml.read_text("utf-8")
+            m_full = re.search(r"^\s*full_name\s*:\s*['\"]?([^'\"\n#]+)['\"]?", yml_text, re.MULTILINE)
+            if m_full and m_full.group(1).strip():
+                return m_full.group(1).strip()
+        cv_file = base / "cv.md"
+        if cv_file.exists():
+            m_cv = re.search(r"^\s*#\s+(.+)$", cv_file.read_text("utf-8"), re.MULTILINE)
+            if m_cv and m_cv.group(1).strip():
+                return re.sub(r"[*_`]", "", m_cv.group(1)).strip()
+    except Exception:
+        pass
+
+    try:
+        ev = resolve_evidence_dir(evidence_dir)
+        hist = ev / "01_master_career_history.yaml"
+        if hist.exists():
+            m_hist = re.search(r"^\s*name\s*:\s*['\"]?([^'\"\n#]+)['\"]?", hist.read_text("utf-8"), re.MULTILINE)
+            if m_hist and m_hist.group(1).strip():
+                return m_hist.group(1).strip()
+    except Exception:
+        pass
+
+    return "Candidate"
 
 
 def sanitize_filename_part(text: str | None, default: str = "unknown") -> str:
@@ -581,19 +660,21 @@ date_saved: {format_date_saved(job.get('saved_at'))}
     # 5. Render exports (.docx + 1-page .pdf)
     exports_dir = folder / "exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
+    cand_name = resolve_candidate_name(resume_text)
+    safe_candidate = sanitize_filename_part(cand_name, "Candidate").replace(" ", "_")
     safe_company = sanitize_filename_part(job.get("company"), "Company").replace(" ", "_")
     safe_role = sanitize_filename_part(job.get("title"), "Role").replace(" ", "_")
 
     out_resume_pdf = None
     if resume_text:
         try:
-            res_docx = exports_dir / f"Alex_Sun_Resume_{safe_company}_{safe_role}.docx"
-            render_docx(resume_text, res_docx, title=f"Alex Sun Resume - {job.get('company')}")
+            res_docx = exports_dir / f"{safe_candidate}_Resume_{safe_company}_{safe_role}.docx"
+            render_docx(resume_text, res_docx, title=f"{cand_name} Resume - {job.get('company')}")
         except Exception:
             pass
         try:
-            res_pdf = exports_dir / f"Alex_Sun_Resume_{safe_company}_{safe_role}.pdf"
-            render_pdf(resume_text, res_pdf, title=f"Alex Sun Resume - {job.get('company')}")
+            res_pdf = exports_dir / f"{safe_candidate}_Resume_{safe_company}_{safe_role}.pdf"
+            render_pdf(resume_text, res_pdf, title=f"{cand_name} Resume - {job.get('company')}")
             out_resume_pdf = str(res_pdf)
         except Exception:
             pass
@@ -601,13 +682,13 @@ date_saved: {format_date_saved(job.get('saved_at'))}
     out_cl_pdf = None
     if cover_letter_text:
         try:
-            cl_docx = exports_dir / f"Alex_Sun_Cover_Letter_{safe_company}_{safe_role}.docx"
-            render_docx(cover_letter_text, cl_docx, title=f"Alex Sun Cover Letter - {job.get('company')}")
+            cl_docx = exports_dir / f"{safe_candidate}_Cover_Letter_{safe_company}_{safe_role}.docx"
+            render_docx(cover_letter_text, cl_docx, title=f"{cand_name} Cover Letter - {job.get('company')}")
         except Exception:
             pass
         try:
-            cl_pdf = exports_dir / f"Alex_Sun_Cover_Letter_{safe_company}_{safe_role}.pdf"
-            render_pdf(cover_letter_text, cl_pdf, title=f"Alex Sun Cover Letter - {job.get('company')}")
+            cl_pdf = exports_dir / f"{safe_candidate}_Cover_Letter_{safe_company}_{safe_role}.pdf"
+            render_pdf(cover_letter_text, cl_pdf, title=f"{cand_name} Cover Letter - {job.get('company')}")
             out_cl_pdf = str(cl_pdf)
         except Exception:
             pass
@@ -791,7 +872,16 @@ def create_claude_cli_client(
         if found:
             bin_p = Path(found)
         else:
-            raise IntelUnavailable(f"Claude CLI not found at {binary_path} or on PATH")
+            fallback_candidates = [
+                Path.home() / ".local" / "bin" / "claude",
+                Path.home() / ".claude" / "bin" / "claude",
+                Path("/usr/local/bin/claude"),
+            ]
+            matched = next((p for p in fallback_candidates if p.exists()), None)
+            if matched is not None:
+                bin_p = matched
+            else:
+                raise IntelUnavailable(f"Claude CLI not found at {binary_path} or on PATH")
 
     def call_claude(system_prompt: str, user_content: str) -> str:
         cmd = [
@@ -889,7 +979,12 @@ def create_llm_client(
 
     if prov in ("claude", "claude-cli", "anthropic"):
         mod = model_name or "sonnet"
-        return create_claude_cli_client(model_name=mod)
+        try:
+            return create_claude_cli_client(model_name=mod)
+        except IntelUnavailable:
+            if provider is None and macos.gemini_api_key():
+                return create_gemini_client(model_name="gemini-3.5-flash-lite")
+            raise
     else:
         mod = model_name or "gemini-3.5-flash-lite"
         return create_gemini_client(model_name=mod)

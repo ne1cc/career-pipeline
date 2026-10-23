@@ -1,0 +1,30 @@
+# ==============================================================================
+# 02_project_evidence_bank.yaml — Verified Technical & Analytical Projects
+# ==============================================================================
+# Run `cockpit onboard` or edit `config/evidence/02_project_evidence_bank.yaml`
+# to list your own projects, verified metrics, and archetype tags.
+
+projects:
+  - id: "lakehouse_engine"
+    title: "Contract-First Local Lakehouse Engine"
+    repo_url: "https://github.com/janesmith/lakehouse-engine"
+    archetypes: ["data_eng", "swe_backend"]
+    stack: ["Python", "Polars", "DuckDB", "PyArrow", "pytest"]
+    verified_metrics:
+      - "50+ automated unit and integration tests"
+      - "Zero-copy Arrow partition pruning"
+    bullets:
+      - "Engineered a Medallion (Bronze/Silver/Gold) lakehouse pipeline in Python, Polars, and DuckDB enforcing strict schema contracts and dead-letter quarantine across 50+ automated tests."
+      - "Implemented idempotent incremental upserts and content-hash deduplication to prevent downstream table corruption."
+
+  - id: "ops_forecasting_service"
+    title: "Real-Time Operations & Forecasting Service"
+    repo_url: "https://github.com/janesmith/ops-forecasting"
+    archetypes: ["swe_backend", "analytics_msba", "data_eng"]
+    stack: ["Python", "FastAPI", "PostgreSQL", "SQL", "Docker"]
+    verified_metrics:
+      - "Sub-100ms p95 API response time"
+      - "Automated anomaly detection and cohort retention tracking"
+    bullets:
+      - "Built a containerized FastAPI and PostgreSQL backend serving real-time operational KPIs and demand forecasts with sub-100ms p95 latency."
+      - "Designed SQL cohort retention and anomaly alerting queries to surface supply-demand imbalances automatically."

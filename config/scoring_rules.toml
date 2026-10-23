@@ -3,9 +3,9 @@
 min_score = 10.0
 
 [resumes]
-swe_backend = "~/resumes/swe_backend_v1.pdf"
-data_eng = "~/resumes/data_eng_lakehouse_v1.pdf"
-analytics_msba = "~/resumes/analytics_msba_v1.pdf"
+swe_backend = "resumes/swe_backend_v1.pdf"
+data_eng = "resumes/data_eng_lakehouse_v1.pdf"
+analytics_msba = "resumes/analytics_msba_v1.pdf"
 
 [penalties]
 points = 100.0
@@ -106,12 +106,12 @@ analytics = 3.0
 sql = 2.0
 
 [outreach]
-template = """Hi — I'm Alex Sun. I just applied for the {title} role at {company} and wanted to reach out directly. \
+template = """Hi — I just applied for the {title} role at {company} and wanted to reach out directly. \
 My background is a strong fit for the work, and I'd welcome a quick 10-minute chat, \
 or a pointer to the right person to talk to."""
 
 [intel]
-career_ops_root = "~/Github/ne1cc/career-ops"
+career_ops_root = "config/career_ops"
 export_dir = "~/Documents/jobspy-cockpit"
 evidence_dir = "config/evidence"
 provider = "claude-cli"

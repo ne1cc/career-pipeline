@@ -1,11 +1,83 @@
-# Jobspy Custom
+# Career Pipeline & Job Application Cockpit
 
-Personal fork of [JobSpy](https://github.com/cullenwatson/JobSpy) that scrapes analyst / data roles (Seattle, remote, west coast), compiles an Excel report, and emails it on a schedule.
+Self-contained job discovery, funnel tracking, and AI application packaging pipeline combining multi-board scraping (**JobSpy** + **ATS Direct Scrapers**), a local **DuckDB + Textual TUI Execution Cockpit**, and bundled **career-ops** 8-artifact dossier & resume/cover-letter tailoring.
 
-**New Mac setup:** [SETUP_MACOS.md](SETUP_MACOS.md) (launchd job, email config, Poetry).  
-**Proxies:** [PROXIES.md](PROXIES.md).
+---
 
-The emailed workbook drops `description`, `company_description`, and `job_url_direct`; remaining URL cells are clickable hyperlinks and columns are auto-sized.
+## Quickstart (Clone & Run)
+
+```bash
+git clone https://github.com/ne1cc/career-pipeline.git
+cd career-pipeline
+./setup.sh
+```
+
+`./setup.sh` automatically:
+1. Installs `uv` (if not already present) and creates a Python 3.12 `.venv` with all dependencies.
+2. Installs Playwright Chromium for pixel-perfect 1-page `.pdf` resume and cover letter rendering.
+3. Seeds clean starter configuration templates (`config/evidence/`, `config/career_ops/cv.md`, `config/career_ops/config/profile.yml`, `pipeline_config.json`) without tracking any personal data in git.
+4. Initializes the local DuckDB database (`data/cockpit.duckdb`) and compiles base resumes (`resumes/*.pdf` & `*.docx`).
+5. Links `bin/cockpit` and `bin/tmux-jobcockpit` into `~/bin` and sources `shell/cockpit.sh` (`cjd`, `cjn`, `cjf`, `jobspy-pipeline`, `jobspy-parallel`).
+
+---
+
+## Personalize With Your Own Resumes & Profile (`cockpit onboard`)
+
+No personal resumes or candidate history are hardcoded in the repository. Bring your own `.pdf`, `.docx`, or `.md` resumes using `cockpit onboard`:
+
+```bash
+# Option 1: Import your existing PDF/DOCX/Markdown resume(s)
+cockpit onboard --from-resumes ~/path/to/your/resume.pdf
+
+# Option 2: Interactive onboarding wizard (sets name, links, target roles, locations & resumes)
+cockpit onboard
+
+# Option 3: Non-interactive CLI flags
+cockpit onboard \
+  --from-resumes ~/resumes/ \
+  --name "Jane Smith" \
+  --email "jane@example.com" \
+  --location "Seattle, WA" \
+  --roles "Software Engineer,Data Engineer,Data Analyst" \
+  --locations "seattle,remote,san francisco"
+
+# Recompile Markdown base resumes in config/evidence/base_resumes/*.md -> resumes/*.{pdf,docx}
+cockpit build-resumes
+
+# Audit environment, database, prompts, resumes, and LLM readiness
+cockpit doctor
+```
+
+### User-Layer vs. System-Layer Data Contract
+
+All personal files are gitignored so you can customize freely without leaking PII:
+
+| Path | Layer | Purpose |
+|---|---|---|
+| `config/career_ops/config/profile.yml` | User (gitignored) | Candidate identity, target roles, comp floor, location rules (seeded from `profile.example.yml`) |
+| `config/career_ops/cv.md` | User (gitignored) | Master Markdown CV used by `career-ops` evaluation modes (seeded from `cv.example.md`) |
+| `config/evidence/01_master_career_history.yaml` | User (gitignored) | Verified employers, titles, dates, degrees, and bullets |
+| `config/evidence/02_project_evidence_bank.yaml` | User (gitignored) | Verified project portfolio, stack, and metrics |
+| `config/evidence/base_resumes/*.md` | User (gitignored) | Archetype base resumes compiled into `resumes/*.{pdf,docx}` by `cockpit build-resumes` |
+| `config/scoring_rules.local.toml` | User (gitignored) | Local overrides for location boosts, keyword weights, and outreach template |
+| `config/career_ops/modes/**` & `templates/**` | System (tracked) | Bundled `career-ops` evaluation prompts (`oferta.md`, `_shared.md`, `_writing.md`, `recruiter-side.md`, `hm-audit.md`) and HTML/YAML templates |
+
+---
+
+## Daily Workflow & Commands
+
+| Command | Description |
+|---|---|
+| `cockpit` (or `cockpit tui`) | Launch the interactive Textual Job Application Cockpit TUI |
+| `cockpit pipeline run` | Run the parallel JobSpy + ATS scraper pipeline, build the Excel report, and ingest into DuckDB |
+| `cockpit intel` | Generate 8-file application packages (fit matrix, tailored 1-page `.docx`/`.pdf` resume & cover letter, Blocks A–G interview dossier, outreach notes, STAR+T drills) for saved jobs |
+| `cockpit dossier [query]` | List saved job dossiers, view in terminal (`--cat`), or open in Neovim (`-v`) |
+| `cockpit edit [query]` / `cjn` | Open all 4 core dossier Markdown files in Neovim tabs |
+| `cockpit folder [query]` / `cjf` | Open the job's artifact package folder in Finder / file manager |
+| `cjd [query]` | `cd` directly into a saved job's dossier folder |
+| `cockpit doctor` | Run full healthcheck across DuckDB, prompts, resumes, and LLM provider |
+
+**Additional Docs:** [Shortcuts Guide](docs/COCKPIT_SHORTCUTS.md) | [macOS LaunchAgent Setup](SETUP_MACOS.md) | [Proxies](PROXIES.md)
 
 ---
 

@@ -12,13 +12,29 @@ from cockpit.models import JobRow, ResumeArchetype
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RULES_PATH = REPO_ROOT / "config" / "scoring_rules.toml"
+LOCAL_RULES_PATH = REPO_ROOT / "config" / "scoring_rules.local.toml"
 
 _COMPANY_SUFFIX = re.compile(r"\b(inc|incorporated|llc|ltd|corp|corporation|co|company)\b")
 
 
-def load_rules(path: Path = RULES_PATH) -> dict[str, Any]:
+def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for k, v in override.items():
+        if isinstance(v, Mapping) and isinstance(merged.get(k), Mapping):
+            merged[k] = _deep_merge(dict(merged[k]), v)
+        else:
+            merged[k] = v
+    return merged
+
+
+def load_rules(path: Path = RULES_PATH, local_path: Path | None = None) -> dict[str, Any]:
     with path.open("rb") as f:
-        return tomllib.load(f)
+        rules = tomllib.load(f)
+    override_file = local_path if local_path is not None else (LOCAL_RULES_PATH if path == RULES_PATH else None)
+    if override_file is not None and override_file.exists():
+        with override_file.open("rb") as lf:
+            rules = _deep_merge(rules, tomllib.load(lf))
+    return rules
 
 
 def _squash(text: str) -> str:
@@ -51,8 +67,17 @@ def _has(text: str, keyword: str) -> bool:
 
 def resolve_resume(path_str: str) -> str:
     p = Path(path_str).expanduser()
-    fallback = REPO_ROOT / "resumes" / p.name
-    return str(fallback if not p.exists() and fallback.exists() else p)
+    if not p.is_absolute():
+        p = REPO_ROOT / p
+    if p.exists():
+        return str(p)
+    repo_fallback = REPO_ROOT / "resumes" / p.name
+    if repo_fallback.exists():
+        return str(repo_fallback)
+    home_fallback = Path.home() / "resumes" / p.name
+    if home_fallback.exists():
+        return str(home_fallback)
+    return str(p)
 
 
 @dataclass(frozen=True)
@@ -245,8 +270,12 @@ def normalize_row(row: Mapping[str, Any], rules: Mapping[str, Any]) -> JobRow | 
 
 
 def render_outreach(job: Mapping[str, Any], rules: Mapping[str, Any]) -> str:
+    candidate_name = rules.get("outreach", {}).get("candidate_name", "a candidate")
     return rules["outreach"]["template"].format(
-        company=job["company"], title=job["title"], resume_archetype=job["resume_archetype"]
+        company=job["company"],
+        title=job["title"],
+        resume_archetype=job["resume_archetype"],
+        candidate_name=candidate_name,
     )
 
 

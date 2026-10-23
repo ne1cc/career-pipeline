@@ -13,7 +13,16 @@ def posix_path(path: str) -> str:
 
 
 def copy_to_clipboard(text: str) -> None:
-    subprocess.run(["/usr/bin/pbcopy"], input=text.encode("utf-8"), check=True)
+    data = text.encode("utf-8")
+    try:
+        subprocess.run(["/usr/bin/pbcopy"], input=data, check=True)
+    except (FileNotFoundError, OSError):
+        for fallback in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
+            try:
+                subprocess.run(fallback, input=data, check=True)
+                return
+            except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+                continue
 
 
 def copy_resume_path(resume_path: str) -> str:
@@ -25,7 +34,13 @@ def copy_resume_path(resume_path: str) -> str:
 
 def open_url(url: str, background: bool = False) -> None:
     cmd = ["/usr/bin/open", "-g", url] if background else ["/usr/bin/open", url]
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except (FileNotFoundError, OSError):
+        try:
+            subprocess.run(["xdg-open", url], check=False)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def quicklook(resume_path: str) -> subprocess.Popen[bytes]:
@@ -58,19 +73,28 @@ KEYCHAIN_GEMINI_SERVICE = "jobcockpit-gemini"
 
 
 def open_file(path: str | Path) -> None:
-    subprocess.run(["/usr/bin/open", str(path)], check=True)
+    try:
+        subprocess.run(["/usr/bin/open", str(path)], check=True)
+    except (FileNotFoundError, OSError):
+        try:
+            subprocess.run(["xdg-open", str(path)], check=False)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def keychain_password(service: str = KEYCHAIN_SERVICE, env_var: str = "GMAIL_APP_PASSWORD") -> str | None:
     """Password from login Keychain, falling back to an environment variable."""
-    r = subprocess.run(
-        ["/usr/bin/security", "find-generic-password", "-s", service, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if r.returncode == 0 and r.stdout.strip():
-        return r.stdout.strip()
+    try:
+        r = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (FileNotFoundError, OSError):
+        pass
     return os.getenv(env_var) or None
 
 

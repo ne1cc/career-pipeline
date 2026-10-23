@@ -12,6 +12,11 @@ readme = "README.md"
 keywords = [ "jobs-scraper", "linkedin", "indeed", "glassdoor", "ziprecruiter", "bayt", "naukri"]
 [[tool.poetry.packages]]
 include = "jobspy"
+[[tool.poetry.packages]]
+include = "cockpit"
+
+[tool.poetry.scripts]
+cockpit = "cockpit.cli:app"
 
 [tool.black]
 line-length = 88
@@ -30,6 +35,17 @@ gspread = "^6.2.1"
 openpyxl = "^3.1.5"
 google-api-python-client = "^2.198.0"
 ats-scrapers = {version = ">=0.2.0", extras = ["scrapers"]}
+duckdb = ">=1.1.0,<2.0.0"
+polars = ">=1.0.0"
+pyarrow = ">=16.0.0"
+textual = ">=0.80.0"
+typer = ">=0.12.0"
+rich = ">=13.7.0"
+google-genai = ">=0.1.0"
+python-docx = ">=1.1.0"
+pyyaml = ">=6.0.0"
+playwright = ">=1.40.0"
+pypdf = ">=4.0.0"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"

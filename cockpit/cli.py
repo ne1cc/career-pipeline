@@ -688,5 +688,198 @@ def pipeline_logs(
         console.print(f"[red]Error reading log: {e}[/red]")
 
 
+@app.command("init")
+def init_cmd() -> None:
+    """Initialize the local DuckDB database and schema."""
+    with db.session() as con:
+        db.write_tmux_cache(con)
+    console.print(f"[green]Initialized DuckDB database at {db.DB_PATH}[/green]")
+
+
+@app.command("build-resumes")
+def build_resumes_cmd(
+    evidence_dir: Annotated[Optional[Path], typer.Option(help="Path to evidence bank directory")] = None,
+    output_dir: Annotated[Optional[Path], typer.Option(help="Output directory for compiled resumes")] = None,
+) -> None:
+    """Compile Markdown base resumes into ATS-clean .docx and 1-page .pdf files in resumes/."""
+    from cockpit.exporters import build_base_resumes
+
+    generated = build_base_resumes(evidence_dir=evidence_dir, output_dir=output_dir)
+    if not generated:
+        console.print("[yellow]No Markdown base resumes found to compile.[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"[bold green]Compiled {len(generated)} resume artifact(s):[/bold green]")
+    for p in generated:
+        console.print(f"  • {p}")
+
+
+@app.command("onboard")
+def onboard_cmd(
+    from_resumes: Annotated[
+        Optional[Path],
+        typer.Option("--from-resumes", "-r", help="Import existing .pdf, .docx, or .md resume file or directory"),
+    ] = None,
+    seed_defaults: Annotated[
+        bool,
+        typer.Option("--seed-defaults", help="Seed starter templates into user-layer config without prompting"),
+    ] = False,
+    name: Annotated[Optional[str], typer.Option("--name", help="Candidate full name")] = None,
+    email: Annotated[Optional[str], typer.Option("--email", help="Candidate email address")] = None,
+    phone: Annotated[Optional[str], typer.Option("--phone", help="Candidate phone number")] = None,
+    location: Annotated[Optional[str], typer.Option("--location", help="Primary city/state or Remote")] = None,
+    linkedin: Annotated[Optional[str], typer.Option("--linkedin", help="LinkedIn profile URL")] = None,
+    github: Annotated[Optional[str], typer.Option("--github", help="GitHub profile URL")] = None,
+    roles: Annotated[
+        Optional[str],
+        typer.Option("--roles", help="Comma-separated target roles (e.g. 'Software Engineer,Data Engineer')"),
+    ] = None,
+    locations: Annotated[
+        Optional[str],
+        typer.Option("--locations", help="Comma-separated target locations (e.g. 'seattle,remote,san francisco')"),
+    ] = None,
+) -> None:
+    """Set up Career Pipeline with your own resumes, candidate profile, and target role configurations."""
+    from cockpit import onboard
+
+    seeded = onboard.seed_user_layer(REPO_ROOT, overwrite=False)
+    if seeded:
+        console.print(f"[cyan]Seeded {len(seeded)} starter user-layer file(s).[/cyan]")
+
+    if seed_defaults and not from_resumes and not name:
+        compiled = onboard.build_base_resumes()
+        console.print(f"[green]Default templates seeded and {len(compiled)} resume artifact(s) compiled.[/green]")
+        return
+
+    detected: dict[str, str] = {}
+    if from_resumes is not None:
+        try:
+            res = onboard.import_user_resumes(from_resumes, repo_root=REPO_ROOT)
+            detected = res.get("heuristics", {})
+            console.print(
+                f"[bold green]Imported {len(res['imported_files'])} resume(s)[/bold green] -> {res['cv_path']}"
+            )
+            console.print(f"[green]Compiled {len(res['compiled_resumes'])} resume artifact(s) into resumes/[/green]")
+        except Exception as e:
+            console.print(f"[bold red]Resume import failed:[/bold red] {e}")
+            raise typer.Exit(1)
+
+    interactive = not any([name, email, phone, location, linkedin, github, roles, locations, from_resumes, seed_defaults])
+    if interactive:
+        console.print("[bold cyan]─── Career Pipeline User Onboarding ───[/bold cyan]")
+        resume_input = typer.prompt(
+            "Path to your existing resume (.pdf, .docx, .md, or directory) [leave blank to use starter template]",
+            default="",
+            show_default=False,
+        ).strip()
+        if resume_input:
+            res = onboard.import_user_resumes(Path(resume_input), repo_root=REPO_ROOT)
+            detected = res.get("heuristics", {})
+            console.print(f"[green]Imported resume(s) from {resume_input}[/green]")
+
+        name = typer.prompt("Full Name", default=detected.get("name") or "Jane Smith")
+        email = typer.prompt("Email", default=detected.get("email") or "jane@example.com")
+        phone = typer.prompt("Phone", default=detected.get("phone") or "+1-555-0123")
+        location = typer.prompt("Primary City/Location", default="Remote")
+        linkedin = typer.prompt("LinkedIn URL", default=detected.get("linkedin") or "")
+        github = typer.prompt("GitHub URL", default=detected.get("github") or "")
+        roles = typer.prompt("Target Roles (comma-separated)", default="Software Engineer,Data Engineer,Data Analyst")
+        locations = typer.prompt("Target Locations (comma-separated)", default=f"{location.lower()},remote")
+
+    if name or detected.get("name"):
+        final_name = name or detected.get("name") or "Candidate"
+        role_list = [r.strip() for r in (roles or "").split(",") if r.strip()] or None
+        loc_list = [l.strip() for l in (locations or "").split(",") if l.strip()] or None
+        paths = onboard.write_user_profile_configs(
+            repo_root=REPO_ROOT,
+            name=final_name,
+            email=email or detected.get("email", ""),
+            phone=phone or detected.get("phone", ""),
+            location=location or "Remote",
+            linkedin=linkedin or detected.get("linkedin", ""),
+            github=github or detected.get("github", ""),
+            primary_roles=role_list,
+            primary_locations=loc_list,
+        )
+        console.print(f"[bold green]Updated user configuration for {final_name}:[/bold green]")
+        for label, p in paths.items():
+            console.print(f"  • {label}: {p}")
+
+    if not from_resumes:
+        compiled = onboard.build_base_resumes()
+        console.print(f"[green]Compiled {len(compiled)} base resume file(s) in resumes/[/green]")
+
+
+@app.command("doctor")
+def doctor_cmd() -> None:
+    """Audit environment, DuckDB, vendored career-ops prompts, user resumes, and LLM readiness."""
+    from cockpit import intel as intel_module
+    from cockpit.normalizer import load_rules, resolve_resume
+
+    table = Table(title="Career Pipeline & Cockpit Healthcheck")
+    table.add_column("Check", style="bold")
+    table.add_column("Status")
+    table.add_column("Details")
+
+    def add_row(check: str, ok: bool, detail: str, warn_only: bool = False) -> None:
+        badge = "[bold green]OK[/bold green]" if ok else ("[bold yellow]WARN[/bold yellow]" if warn_only else "[bold red]FAIL[/bold red]")
+        table.add_row(check, badge, detail)
+
+    # 1. DuckDB initialization
+    try:
+        with db.session() as con:
+            db.write_tmux_cache(con)
+        add_row("DuckDB Database", db.DB_PATH.exists(), str(db.DB_PATH))
+    except Exception as e:
+        add_row("DuckDB Database", False, str(e))
+
+    # 2. Vendored career-ops root & required prompt files
+    co_root = intel_module.resolve_career_ops_root()
+    oferta_ok = (co_root / "modes" / "oferta.md").exists() and (co_root / "modes" / "_shared.md").exists()
+    add_row("Career-Ops Prompts", oferta_ok, str(co_root))
+
+    # 3. User CV & Profile
+    cv_exists = (co_root / "cv.md").exists()
+    prof_exists = (co_root / "config" / "profile.yml").exists()
+    add_row(
+        "User Profile & CV",
+        cv_exists and prof_exists,
+        f"cv.md={'yes' if cv_exists else 'no'}, profile.yml={'yes' if prof_exists else 'no'} (run `cockpit onboard`)",
+        warn_only=True,
+    )
+
+    # 4. Evidence Bank
+    ev_dir = intel_module.resolve_evidence_dir()
+    ev_ok = (ev_dir / "01_master_career_history.yaml").exists() and (ev_dir / "02_project_evidence_bank.yaml").exists()
+    add_row("Evidence Bank", ev_ok, str(ev_dir), warn_only=True)
+
+    # 5. Base Resumes for Archetypes
+    rules = load_rules()
+    res_map = rules.get("resumes", {})
+    resolved_resumes = {k: Path(resolve_resume(v)) for k, v in res_map.items()}
+    all_resumes_ok = bool(resolved_resumes) and all(p.exists() for p in resolved_resumes.values())
+    missing_res = [k for k, p in resolved_resumes.items() if not p.exists()]
+    add_row(
+        "Archetype Resumes",
+        all_resumes_ok,
+        "All archetype PDFs present" if all_resumes_ok else f"Missing: {', '.join(missing_res)} (run `cockpit build-resumes`)",
+        warn_only=True,
+    )
+
+    # 6. LLM Backend Readiness
+    claude_bin = shutil.which("claude") or (
+        "/opt/homebrew/bin/claude" if Path("/opt/homebrew/bin/claude").exists() else None
+    )
+    gemini_key = macos.gemini_api_key()
+    llm_ok = bool(claude_bin or gemini_key)
+    llm_detail = f"claude={claude_bin or 'not found'}, gemini_key={'set' if gemini_key else 'not set'}"
+    add_row("LLM Provider", llm_ok, llm_detail, warn_only=True)
+
+    # 7. Shell & Tmux
+    tmux_bin = shutil.which("tmux")
+    add_row("Tmux Popup Support", bool(tmux_bin), tmux_bin or "tmux not found on PATH", warn_only=True)
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()

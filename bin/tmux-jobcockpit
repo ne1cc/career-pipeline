@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-jobcockpit — Instant floating Job Application Cockpit for tmux
+# Bound to: Alt-j (M-j)
+# ==============================================================================
+set -euo pipefail
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$PATH"
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+COCKPIT_BIN="$SCRIPT_DIR/cockpit"
+if [[ ! -x "$COCKPIT_BIN" ]]; then
+    COCKPIT_BIN="$(command -v cockpit || echo "$HOME/bin/cockpit")"
+fi
+
+CLIENT_TTY="${1:-}"
+
+# 1. If cockpit TUI is already running, toggle it closed
+if pgrep -f '[c]ockpit.*tui' >/dev/null 2>&1; then
+    pkill -f '[c]ockpit.*tui' 2>/dev/null || true
+    exit 0
+fi
+
+# 2. Build popup arguments targeting the explicit client TTY when available
+POPUP_ARGS=(
+    -E
+    -w 92%
+    -h 90%
+    -b rounded
+    -T " Job Application Cockpit (Alt-j to close) "
+)
+if [[ -n "$CLIENT_TTY" ]]; then
+    POPUP_ARGS=(-c "$CLIENT_TTY" "${POPUP_ARGS[@]}")
+fi
+
+# 3. Launch cockpit TUI directly in popup — NO nested tmux session
+exec tmux display-popup "${POPUP_ARGS[@]}" "'$COCKPIT_BIN' tui"
