@@ -87,3 +87,23 @@ def test_is_entry_to_mid_level_filters_senior_roles():
     assert search_jobs_msba_west.is_entry_to_mid_level("Lead Business Analyst", "") is False
     assert search_jobs_msba_west.is_entry_to_mid_level("Director of Analytics", "") is False
     assert search_jobs_msba_west.is_entry_to_mid_level("Data Analyst", "") is True
+
+
+@pytest.mark.parametrize("module", [search_jobs_msba_west, search_jobs_seattle_msba])
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Revenue Analyst",
+        "Financial Advisor",
+        "Data Visualization Analyst",
+        "Junior BI Developer",
+    ],
+)
+def test_msba_filter_accepts_ordinary_words_containing_roman_letters(module, title):
+    assert module.is_entry_to_mid_level(title, "") is True
+
+
+@pytest.mark.parametrize("module", [search_jobs_msba_west, search_jobs_seattle_msba])
+@pytest.mark.parametrize("level", ["III", "IV", "V"])
+def test_msba_filter_rejects_senior_roman_levels(module, level):
+    assert module.is_entry_to_mid_level(f"Data Analyst {level}", "") is False

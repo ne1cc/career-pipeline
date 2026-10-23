@@ -52,8 +52,12 @@ def scrape_jobs(
     **kwargs,
 ) -> pd.DataFrame:
     """
-    Scrapes job data from job boards concurrently
-    :return: Pandas DataFrame containing job data
+    Collect jobs concurrently, preserving successful boards when another fails.
+
+    Contract:
+    - Returns a DataFrame (possibly empty) from boards that completed.
+    - Raises RuntimeError when every requested board raises an exception.
+    Limits: Adapters receive independent inputs; network waits use session timeouts.
     """
     SCRAPER_MAPPING = {
         Site.LINKEDIN: LinkedIn,
@@ -104,7 +108,7 @@ def scrape_jobs(
     def scrape_site(site: Site) -> Tuple[str, JobResponse]:
         scraper_class = SCRAPER_MAPPING[site]
         scraper = scraper_class(proxies=proxies, ca_cert=ca_cert, user_agent=user_agent)
-        scraped_data: JobResponse = scraper.scrape(scraper_input)
+        scraped_data: JobResponse = scraper.scrape(scraper_input.model_copy(deep=True))
         cap_name = site.value.capitalize()
         site_name = "ZipRecruiter" if cap_name == "Zip_recruiter" else cap_name
         site_name = "LinkedIn" if cap_name == "Linkedin" else cap_name
@@ -112,6 +116,7 @@ def scrape_jobs(
         return site.value, scraped_data
 
     site_to_jobs_dict = {}
+    board_errors = {}
 
     def worker(site):
         site_val, scraped_info = scrape_site(site)
@@ -123,8 +128,17 @@ def scrape_jobs(
         }
 
         for future in as_completed(future_to_site):
-            site_value, scraped_data = future.result()
-            site_to_jobs_dict[site_value] = scraped_data
+            try:
+                site_value, scraped_data = future.result()
+                site_to_jobs_dict[site_value] = scraped_data
+            except Exception as exc:
+                site = future_to_site[future].value
+                board_errors[site] = str(exc)
+                create_logger(site).error(f"Board failed: {exc}")
+
+    if board_errors and not site_to_jobs_dict:
+        details = "; ".join(f"{site}: {error}" for site, error in board_errors.items())
+        raise RuntimeError(f"All requested boards failed: {details}")
 
     jobs_dfs: list[pd.DataFrame] = []
 
@@ -185,7 +199,7 @@ def scrape_jobs(
                 else None
             )
 
-            #naukri-specific fields
+            # naukri-specific fields
             job_data["skills"] = (
                 ", ".join(job_data["skills"]) if job_data["skills"] else None
             )

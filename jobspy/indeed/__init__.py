@@ -68,10 +68,12 @@ class Indeed(Scraper):
                 f"search page: {page} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)}"
             )
             jobs, cursor = self._scrape_page(cursor)
-            if not jobs:
+            if not jobs and not (scraper_input.is_remote and cursor):
                 log.info(f"found no jobs on page: {page}")
                 break
             job_list += jobs
+            if not cursor:
+                break
             page += 1
         return JobResponse(
             jobs=job_list[
@@ -101,7 +103,6 @@ class Indeed(Scraper):
                 if self.scraper_input.location
                 else ""
             ),
-            dateOnIndeed=self.scraper_input.hours_old,
             cursor=f'cursor: "{cursor}"' if cursor else "",
             filters=filters,
         )
@@ -136,11 +137,11 @@ class Indeed(Scraper):
 
     def _build_filters(self):
         """
-        Builds the filters dict for job type/is_remote. If hours_old is provided, composite filter for job_type/is_remote is not possible.
+        Builds the date or keyword filter; remote searches apply recency locally.
         IndeedApply: filters: { keyword: { field: "indeedApplyScope", keys: ["DESKTOP"] } }
         """
         filters_str = ""
-        if self.scraper_input.hours_old:
+        if self.scraper_input.hours_old and not self.scraper_input.is_remote:
             filters_str = """
             filters: {{
                 date: {{
@@ -202,6 +203,11 @@ class Indeed(Scraper):
         if job_url in self.seen_urls:
             return
         self.seen_urls.add(job_url)
+        # Remote and date filters cannot be combined by this query template.
+        if self.scraper_input.is_remote and self.scraper_input.hours_old:
+            age_seconds = datetime.now().timestamp() - job["datePublished"] / 1000
+            if age_seconds > self.scraper_input.hours_old * 3600:
+                return None
         description = job["description"]["html"]
         if self.scraper_input.description_format == DescriptionFormat.MARKDOWN:
             description = markdown_converter(description)

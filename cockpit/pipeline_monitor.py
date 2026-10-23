@@ -299,16 +299,17 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
 
         log_path = Path(t_data.get("log_path") or (logs_dir / f"{Path(name).stem}.log"))
         csv_path = Path(t_data.get("output_csv") or (results_dir / EXPECTED_OUTPUTS[name]))
-        if not csv_path.exists() and (month_results_dir / EXPECTED_OUTPUTS[name]).exists():
+        if (
+            not t_data.get("output_csv")
+            and not csv_path.exists()
+            and (month_results_dir / EXPECTED_OUTPUTS[name]).exists()
+        ):
             csv_path = month_results_dir / EXPECTED_OUTPUTS[name]
 
         # Check PID liveness
         if task_status == "running":
             if not is_pid_alive(task_pid):
-                if csv_path.exists():
-                    task_status = "success"
-                else:
-                    task_status = "failed"
+                task_status = "failed"
                 t_data["status"] = task_status
 
         # Calculate elapsed or duration
@@ -350,11 +351,14 @@ def get_pipeline_state(repo_root: Path) -> dict[str, Any]:
 
     # Determine overall status
     is_any_task_running = any(t["status"] == "running" for t in normalized_tasks.values())
-    is_pipeline_active = is_master_running or is_any_task_running
+    is_pipeline_active = phase in PHASES and (is_master_running or is_any_task_running)
 
     if not is_pipeline_active:
         if phase in PHASES:
-            phase = "FAILED" if any(t["status"] == "failed" for t in normalized_tasks.values()) else "COMPLETED"
+            phase = "FAILED"
+            state["error"] = (
+                state.get("error") or "Pipeline stopped before recording completion"
+            )
 
     # Overall duration
     overall_duration = None

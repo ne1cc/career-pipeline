@@ -159,17 +159,17 @@ def load_config():
 def run_scrapers():
     print(f"\n[{datetime.now()}] Step 1: Spawning parallel scraper scripts...")
     runner_script = BASE_DIR / "run_parallel.py"
-    
+
     if not runner_script.exists():
-        print(f"ERROR: Scraper parallel runner not found at: {runner_script}")
-        sys.exit(1)
-        
+        raise RuntimeError(f"Scraper parallel runner not found at: {runner_script}")
+
     py_bin = os.environ.get("JOBSPY_PYTHON") or sys.executable
     # Execute the scraper parallel runner using the current Python environment
     result = subprocess.run([py_bin, str(runner_script)], cwd=str(BASE_DIR), env=os.environ.copy())
     if result.returncode != 0:
-        print(f"ERROR: Scraper parallel runner failed with return code {result.returncode}!")
-        sys.exit(result.returncode)
+        raise RuntimeError(
+            f"Scraper parallel runner failed with return code {result.returncode}"
+        )
     print("Scraping completed successfully.")
 
 def validate_config(config):
@@ -185,14 +185,14 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
     timestamp_day = datetime.now().strftime("%Y_%m_%d")
     excel_filename = f"Job_Report_{timestamp_day}.xlsx"
     excel_path = results_dir / excel_filename
-    
+
     print(f"\n[{datetime.now()}] Step 2: Compiling CSV files into Excel workbook...")
     previous_urls_by_segment = load_previous_urls(state_file)
     has_previous_run = bool(previous_urls_by_segment)
     segment_frames: dict[str, pd.DataFrame] = {}
     current_urls_by_segment: dict[str, list[str]] = {}
     prepared_tabs: list[tuple[str, str, pd.DataFrame, pd.DataFrame]] = []
-    
+
     try:
         has_data = False
         for csv_name, sheet_tab in expected_outputs.items():
@@ -200,7 +200,7 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
             if not csv_path.exists():
                 print(f" - {csv_name}: File not found. Skipping tab '{sheet_tab}'.")
                 continue
-            
+
             print(f" - Processing '{sheet_tab}' from '{csv_name}'...")
             raw_df = pd.read_csv(csv_path)
             if "job_url" in raw_df.columns:
@@ -233,8 +233,7 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
             has_data = True
 
         if not has_data:
-            print("ERROR: No CSV files were found to compile into Excel!")
-            sys.exit(1)
+            raise RuntimeError("No CSV data was found to compile into Excel")
 
         action_items = build_action_items_sheet(segment_frames)
         action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
@@ -288,15 +287,14 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
 
         if current_urls_by_segment:
             save_current_urls(state_file, current_urls_by_segment)
-            
+
         size_mb = excel_path.stat().st_size / (1024 * 1024)
         print(f"Excel workbook created successfully: {excel_path} ({size_mb:.2f} MB)")
         stats = summarize_enrichment(segment_frames)
         return excel_path, stats, has_previous_run
-        
+
     except Exception as e:
-        print(f"ERROR: Failed to compile Excel workbook: {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Failed to compile Excel workbook: {e}") from e
 
 def send_email_with_attachment(config, excel_path, stats, has_previous_run):
     if not is_email_configured(config):
@@ -308,15 +306,15 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
     receiver_email = config.get("receiver_email") or config.get("recipient_email")
     smtp_server = config.get("smtp_server", "smtp.gmail.com")
     smtp_port = config.get("smtp_port", 587)
-    
+
     print(f"\n[{datetime.now()}] Step 3: Preparing email attachment...")
-    
+
     # Create the message container
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = receiver_email
     msg['Subject'] = f"Daily Job Scraper Report - {datetime.now().strftime('%Y-%m-%d')}"
-    
+
     body = (
         f"Hello,\n\n"
         f"Please find attached the consolidated job scraper report for {datetime.now().strftime('%Y-%m-%d')}.\n\n"
@@ -326,35 +324,34 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
         f"Career Pipeline"
     )
     msg.attach(MIMEText(body, 'plain'))
-    
+
     # Open the Excel file in binary mode
     try:
         with open(excel_path, "rb") as attachment:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(attachment.read())
-            
+
         encoders.encode_base64(part)
         part.add_header(
             "Content-Disposition",
             f"attachment; filename= {excel_path.name}",
         )
         msg.attach(part)
-        
+
         # Connect to SMTP server and send
         print(f"Connecting to SMTP server {smtp_server}:{smtp_port}...")
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()  # Secure the connection
         server.login(sender_email, sender_password)
-        
+
         print("Sending email...")
         text = msg.as_string()
         server.sendmail(sender_email, receiver_email, text)
         server.quit()
         print("Email sent successfully!")
-        
+
     except Exception as e:
-        print(f"ERROR: Failed to send email: {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Failed to send email: {e}") from e
 
 def run_cockpit_ingest(results_dir: Path | None = None) -> bool:
     print(f"\n[{datetime.now()}] Step 4: Running Cockpit Ingest...")
@@ -378,10 +375,12 @@ def run_cockpit_ingest(results_dir: Path | None = None) -> bool:
     else:
         cmd = [sys.executable, "-m", "cockpit.cli", "ingest"]
 
-    if results_dir and results_dir.is_dir():
+    if results_dir is not None:
         csv_files = sorted(results_dir.glob("*_jobs.csv"))
-        if csv_files:
-            cmd.extend(str(p) for p in csv_files)
+        if not csv_files:
+            print("[!] No current CSVs available for Cockpit ingest")
+            return False
+        cmd.extend(str(p) for p in csv_files)
 
     try:
         res = subprocess.run(cmd, cwd=str(BASE_DIR))
@@ -397,15 +396,15 @@ def run_cockpit_ingest(results_dir: Path | None = None) -> bool:
 def main():
     config = load_config()
     validate_config(config)
-    
+
     # List of expected CSV outputs mapping to target Excel tabs
     expected_outputs = EXPECTED_OUTPUTS
-    
+
     # Locate scraped jobs results directory organized by date within month
     timestamp_month = datetime.now().strftime("%Y_%m")
     timestamp_day = datetime.now().strftime("%Y_%m_%d")
     results_dir = BASE_DIR / "jobspy" / "scraped jobs" / "results" / timestamp_month / timestamp_day
-    
+
     # Check if results folder exists or create it
     results_dir.mkdir(parents=True, exist_ok=True)
     os.environ["JOBSPY_RESULTS_DIR"] = str(results_dir)
@@ -413,29 +412,43 @@ def main():
     logs_dir = BASE_DIR / "jobspy" / "scraped jobs" / "logs" / timestamp_month / timestamp_day
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["JOBSPY_LOGS_DIR"] = str(logs_dir)
-    
+
     update_pipeline_state(
         BASE_DIR,
         pid=os.getpid(),
         started_at=datetime.now().isoformat(),
         phase="SCRAPING",
         error=None,
+        tasks={},
+        finished_at=None,
+        excel_path=None,
+        health="HEALTHY",
+        anomalies=[],
     )
-    
+
     try:
         run_scrapers()
-        
+
         update_pipeline_state(BASE_DIR, phase="EXCEL_BUILD")
         excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
         update_pipeline_state(BASE_DIR, excel_path=str(excel_path))
-        
+
+        email_error = None
         try:
             update_pipeline_state(BASE_DIR, phase="EMAIL")
             send_email_with_attachment(config, excel_path, stats, has_previous_run)
+        except Exception as exc:
+            email_error = exc
         finally:
             update_pipeline_state(BASE_DIR, phase="INGEST")
-            run_cockpit_ingest(results_dir)
-            
+            if not run_cockpit_ingest(results_dir):
+                message = "Cockpit ingest failed"
+                if email_error is not None:
+                    message = f"{email_error}; {message}"
+                raise RuntimeError(message) from email_error
+        if email_error is not None:
+            raise email_error
+
         update_pipeline_state(
             BASE_DIR,
             phase="COMPLETED",
