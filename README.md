@@ -88,11 +88,11 @@ cockpit onboard \
   --name "Jane Smith" \
   --email "jane@example.com" \
   --phone "+1-555-0123" \
-  --location "Seattle, WA" \
+  --location "City, State" \
   --linkedin "linkedin.com/in/janesmith" \
   --github "github.com/janesmith" \
   --roles "Software Engineer,Data Engineer,Analytics Engineer" \
-  --locations "seattle,bellevue,remote,san francisco"
+  --locations "city-a,city-b,remote"
 ```
 
 ### Deep-Customizing Your Evidence Bank & Scoring Rules
