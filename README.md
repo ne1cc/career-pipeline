@@ -187,9 +187,11 @@ bind-key -n M-j run-shell "~/bin/tmux-jobcockpit '#{client_tty}'"
 | `s` | **Skip Job** | Transitions job state to `SKIPPED` |
 | `h` | **Hold for Referral** | Places job in `HOLD_REFERRAL` (24h hold) and opens LinkedIn people search for the company |
 | `c` | **Copy Cover Letter** | Copies the tailored cover letter `.pdf` path (or Markdown text) to clipboard |
-| `p` | **Open Package Folder** | Reveals the job's generated artifact folder in Finder / file manager |
+| `p` | **Preview Resume** | Previews the staged resume PDF via macOS QuickLook |
+| `P` | **ATS Form Prefill** | Generates ATS prefill field mappings (Greenhouse/Ashby/Lever) and copies to clipboard |
 | `i` | **Open Interview Dossier** | Opens `05_interview_dossier.md` in default Markdown viewer |
 | `e` | **Edit in Neovim** | Suspends TUI and opens the job's 4 core Markdown artifacts in `$EDITOR` / `nvim -p` |
+| `F` | **Open Folder** | Reveals the job's generated artifact folder in Finder / file manager |
 | `r` | **QuickLook Resume** | Previews the staged resume PDF via macOS QuickLook (`qlmanage -p`) |
 | `y` | **Copy Outreach Note** | Copies the tailored LinkedIn outreach note (or template fallback) to clipboard |
 | `l` | **LinkedIn Referral Search** | Opens LinkedIn people search for the selected company in background |
@@ -216,6 +218,8 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 | `cjd [query]` | `cd "$(cockpit folder [query])"` | `cd` directly into the matching job's dossier folder (or root export dir) |
 | `cjn [query]` | `cockpit edit [query]` | Open the job's 4 core dossier Markdown files in Neovim tabs (`nvim -p`) |
 | `cjf [query]` | `cockpit folder [query]` | Reveal the job's dossier folder in Finder / system file manager |
+| `cjp [url\|query]` | `cockpit prefill [query] --copy` | Generate ATS form prefill mappings and copy to clipboard |
+| `cjv [resume]` | `cockpit verify-ats [resume]` | Audit resume for ATS parseability (0-100) and keyword coverage |
 | `jobspy-pipeline` | `python run_pipeline.py` | Run the full parallel scraping + Excel workbook + Cockpit ingest pipeline |
 | `jobspy-parallel` | `python run_parallel.py` | Run the 8 parallel scrapers standalone |
 
@@ -230,6 +234,8 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 | `cockpit init` | Initialize `data/job_funnel.duckdb` schema and tmux status cache |
 | `cockpit ingest [PATHS...]` | Ingest JobSpy CSVs or Excel workbooks into DuckDB (auto-discovers latest `Job_Report_*.xlsx` if omitted) |
 | `cockpit sprint [--limit N] [--recent]` | Launch sequential interactive CLI application sprint for top-scored queued jobs |
+| `cockpit prefill [URL\|KEY] [--copy] [--open]` | Format ATS application form fields for Greenhouse, Ashby, Lever, or generic jobs |
+| `cockpit verify-ats [PATH] [--all] [-k "..."]` | Score resume ATS parseability (0-100), letter grade, and keyword match coverage |
 | `cockpit intel [--limit N] [--retry-failed]` | Generate 8-file dossiers and `.docx`/`.pdf` exports for bookmarked jobs |
 | `cockpit dossier [QUERY] [--cat] [-v]` | List saved dossiers, print to terminal (`--cat`), or open in Neovim (`-v`) |
 | `cockpit edit [QUERY]` | Open all core Markdown files for a saved job in `$EDITOR` / Neovim |

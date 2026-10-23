@@ -809,6 +809,212 @@ def onboard_cmd(
         console.print(f"[green]Compiled {len(compiled)} base resume file(s) in resumes/[/green]")
 
 
+@app.command("prefill")
+def prefill_cmd(
+    target: Annotated[Optional[str], typer.Argument(help="Apply URL or job dedup_key / row index")] = None,
+    job: Annotated[Optional[str], typer.Option("--job", "-j", help="Job dedup_key or row index in DuckDB")] = None,
+    pdf: Annotated[Optional[Path], typer.Option("--pdf", "-p", help="Path to resume PDF file")] = None,
+    cover: Annotated[Optional[Path], typer.Option("--cover", "-c", help="Path to cover letter file")] = None,
+    copy: Annotated[bool, typer.Option("--copy", help="Copy prefill text to system clipboard")] = False,
+    open_browser: Annotated[bool, typer.Option("--open", "-o", help="Open apply URL in default browser")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Generate ATS application form prefill mappings for Greenhouse, Ashby, Lever, or generic jobs."""
+    import json
+    from cockpit import prefill as prefill_mod
+    from cockpit import intel as intel_module
+
+    raw_target = target or job
+    apply_url = ""
+    resume_file = pdf
+    cover_file = cover
+
+    # If raw_target is provided, check if it's a URL or a DuckDB job identifier
+    if raw_target and (raw_target.startswith("http://") or raw_target.startswith("https://")):
+        apply_url = raw_target
+    elif raw_target:
+        try:
+            with db.session() as con:
+                row = con.execute("SELECT * FROM jobs_master WHERE dedup_key = ?", [raw_target]).fetchone()
+                if not row:
+                    try:
+                        idx = int(raw_target)
+                        rows = con.execute("SELECT * FROM jobs_master ORDER BY priority_score DESC LIMIT 1 OFFSET ?", [idx]).fetchall()
+                        if rows:
+                            row = rows[0]
+                    except ValueError:
+                        pass
+                if row:
+                    cols = [d[0] for d in con.description]
+                    job_dict = dict(zip(cols, row))
+                    apply_url = job_dict.get("apply_url") or ""
+                    export_dir = intel_module.resolve_export_dir()
+                    folder = intel_module.job_folder_path(job_dict, export_dir)
+                    if not resume_file and folder.exists():
+                        resume_file = next(folder.glob("*.pdf"), None)
+                    if not cover_file and folder.exists():
+                        cov_p = folder / "03_tailored_cover_letter.md"
+                        if cov_p.exists():
+                            cover_file = cov_p
+        except Exception as e:
+            console.print(f"[yellow]DuckDB query notice:[/yellow] {e}")
+
+    if not apply_url:
+        console.print("[bold red]Error:[/bold red] Please provide an apply URL or job identifier: `cockpit prefill <url>` or `--job <key>`")
+        raise typer.Exit(1)
+
+    ats_target = prefill_mod.detect_ats(apply_url)
+    if not ats_target:
+        console.print(f"[bold red]Error:[/bold red] Could not parse apply URL: {apply_url}")
+        raise typer.Exit(1)
+
+    profile = prefill_mod.read_candidate_profile(REPO_ROOT)
+    fields = prefill_mod.build_prefill_fields(ats_target, profile, resume_file=resume_file, cover_file=cover_file)
+    prefill_url = prefill_mod.build_prefill_url(ats_target, profile)
+
+    if as_json:
+        payload = {
+            "ats": ats_target.ats,
+            "company_slug": ats_target.company_slug,
+            "job_id": ats_target.job_id,
+            "apply_url": ats_target.original_url,
+            "prefill_url": prefill_url,
+            "fields": dict(fields),
+            "resume": str(resume_file) if resume_file else None,
+            "cover": str(cover_file) if cover_file else None,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    table_text = prefill_mod.format_prefill_table(
+        ats_target, fields, resume_file=resume_file, cover_file=cover_file, prefill_url=prefill_url
+    )
+    console.print(table_text)
+
+    if copy:
+        try:
+            macos.copy_to_clipboard(table_text)
+            console.print("[green]Copied prefill summary to clipboard![/green]")
+        except Exception as e:
+            console.print(f"[yellow]Could not copy to clipboard:[/yellow] {e}")
+
+    if open_browser:
+        macos.open_url(prefill_url)
+
+
+@app.command("verify-ats")
+def verify_ats_cmd(
+    resume_path: Annotated[Optional[Path], typer.Argument(help="Path to resume file (.md, .pdf, .docx, .html)")] = None,
+    all_resumes: Annotated[bool, typer.Option("--all", "-a", help="Audit all resumes in resumes/ and config/evidence/base_resumes/")] = False,
+    keywords: Annotated[Optional[str], typer.Option("--keywords", "-k", help="Comma-separated keywords to check in text")] = None,
+    role: Annotated[Optional[str], typer.Option("--role", "-r", help="Target role title to check in text")] = None,
+    min_score: Annotated[int, typer.Option("--min-score", "-m", help="Minimum passing score threshold (0-100)")] = 70,
+    as_json: Annotated[bool, typer.Option("--json", help="Output audit results as JSON")] = False,
+) -> None:
+    """Score a resume's ATS parseability (0-100), letter grade, and keyword coverage."""
+    import json
+    from cockpit import verify_ats as verify_ats_mod
+
+    kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else None
+
+    if all_resumes or resume_path is None:
+        candidates: list[Path] = []
+        res_dir = REPO_ROOT / "resumes"
+        if res_dir.exists():
+            candidates.extend(sorted(res_dir.glob("*.pdf")))
+            candidates.extend(sorted(res_dir.glob("*.docx")))
+        base_dir = REPO_ROOT / "config" / "evidence" / "base_resumes"
+        if base_dir.exists():
+            candidates.extend(sorted(base_dir.glob("*.md")))
+        else:
+            tmpl_dir = REPO_ROOT / "config" / "templates" / "evidence" / "base_resumes"
+            if tmpl_dir.exists():
+                candidates.extend(sorted(tmpl_dir.glob("*.md")))
+
+        if not candidates:
+            console.print("[yellow]No resumes found in resumes/ or config/evidence/base_resumes/[/yellow]")
+            return
+
+        summary_table = Table(title="ATS Resume Parseability Scorecard")
+        summary_table.add_column("Resume File", style="bold cyan")
+        summary_table.add_column("Score", justify="right")
+        summary_table.add_column("Grade", justify="center")
+        summary_table.add_column("Status", justify="center")
+        summary_table.add_column("Sections")
+        summary_table.add_column("Issues")
+
+        all_passed = True
+        json_results = []
+        for p in candidates:
+            try:
+                res = verify_ats_mod.audit_resume_file(p, keywords=kw_list, role=role, min_score=min_score)
+                if not res.pass_status:
+                    all_passed = False
+                color = "green" if res.score >= 80 else ("yellow" if res.score >= 70 else "red")
+                status = "[green]PASS[/green]" if res.pass_status else "[red]FAIL[/red]"
+                issue_summary = f"{len(res.issues)} issue(s)" if res.issues else "None"
+                summary_table.add_row(
+                    p.name,
+                    f"[{color}]{res.score}[/{color}]",
+                    f"[{color}]{res.grade}[/{color}]",
+                    status,
+                    ", ".join(res.found_sections).title(),
+                    issue_summary,
+                )
+                if as_json:
+                    json_results.append({
+                        "file": p.name,
+                        "path": str(p),
+                        "score": res.score,
+                        "grade": res.grade,
+                        "pass": res.pass_status,
+                        "sections": res.found_sections,
+                        "issues": [{"severity": i.severity, "message": i.message} for i in res.issues],
+                    })
+            except Exception as e:
+                summary_table.add_row(p.name, "ERR", "F", "[red]ERROR[/red]", "", str(e))
+
+        if as_json:
+            typer.echo(json.dumps(json_results, indent=2))
+        else:
+            console.print(summary_table)
+
+        if not all_passed:
+            raise typer.Exit(1)
+        return
+
+    if not resume_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Resume file not found: {resume_path}")
+        raise typer.Exit(1)
+
+    result = verify_ats_mod.audit_resume_file(resume_path, keywords=kw_list, role=role, min_score=min_score)
+
+    if as_json:
+        payload = {
+            "file": resume_path.name,
+            "path": str(resume_path),
+            "score": result.score,
+            "grade": result.grade,
+            "pass": result.pass_status,
+            "sections": result.found_sections,
+            "issues": [{"severity": i.severity, "message": i.message} for i in result.issues],
+            "keyword_coverage": {
+                "found": result.keyword_coverage.found,
+                "total": result.keyword_coverage.total,
+                "percent": result.keyword_coverage.percent,
+                "missing": result.keyword_coverage.missing,
+                "role_found": result.keyword_coverage.role_found,
+            } if result.keyword_coverage else None,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        report_text = verify_ats_mod.format_ats_report(result, min_score=min_score)
+        console.print(report_text)
+
+    if not result.pass_status:
+        raise typer.Exit(1)
+
+
 @app.command("doctor")
 def doctor_cmd() -> None:
     """Audit environment, DuckDB, vendored career-ops prompts, user resumes, and LLM readiness."""
@@ -877,6 +1083,29 @@ def doctor_cmd() -> None:
     # 7. Shell & Tmux
     tmux_bin = shutil.which("tmux")
     add_row("Tmux Popup Support", bool(tmux_bin), tmux_bin or "tmux not found on PATH", warn_only=True)
+
+    # 8. ATS Resume Quality
+    try:
+        from cockpit.verify_ats import audit_resume_file
+
+        sample_res = (
+            next((REPO_ROOT / "resumes").glob("*.pdf"), None)
+            or next((REPO_ROOT / "config" / "evidence" / "base_resumes").glob("*.md"), None)
+            or next((REPO_ROOT / "config" / "templates" / "evidence" / "base_resumes").glob("*.md"), None)
+        )
+        if sample_res and sample_res.exists():
+            ats_res = audit_resume_file(sample_res, min_score=70)
+            add_row(
+                "ATS Resume Quality",
+                ats_res.pass_status,
+                f"{sample_res.name}: {ats_res.score}/100 ({ats_res.grade})"
+                + (f" ({len(ats_res.issues)} issues)" if ats_res.issues else ""),
+                warn_only=True,
+            )
+        else:
+            add_row("ATS Resume Quality", False, "No resumes found to audit (run `cockpit build-resumes`)", warn_only=True)
+    except Exception as e:
+        add_row("ATS Resume Quality", False, str(e), warn_only=True)
 
     console.print(table)
 
