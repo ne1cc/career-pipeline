@@ -122,3 +122,16 @@ def test_main_creates_date_directory(monkeypatch, tmp_path):
     # The parent part is YYYY_MM, and the leaf part is YYYY_MM_DD
     assert len(r_dir.name.split("_")) == 3
     assert len(r_dir.parent.name.split("_")) == 2
+
+
+def test_pipeline_gracefully_skips_unconfigured_email(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "pipeline_config.json"
+    monkeypatch.setattr(run_pipeline, "CONFIG_FILE", cfg_file)
+
+    # First run creates default config with email_enabled=False without sys.exit
+    cfg = run_pipeline.load_config()
+    assert cfg_file.exists()
+    assert cfg["email_enabled"] is False
+    assert run_pipeline.validate_config(cfg) is False
+    assert run_pipeline.send_email_with_attachment(cfg, tmp_path / "dummy.xlsx", {}, False) is False
+

@@ -27,6 +27,21 @@ results/
 data/*.duckdb
 data/*.duckdb.wal
 
+# User layer (personal resumes, profile, evidence bank, and local overrides — never commit)
+config/evidence/
+config/scoring_rules.local.toml
+config/career_ops/cv.md
+config/career_ops/config/profile.yml
+config/career_ops/config/cv-facts.json
+config/career_ops/modes/_profile.md
+config/career_ops/modes/_custom.md
+config/career_ops/modes/_brief.md
+config/career_ops/voice-dna.md
+resumes/*
+!resumes/.gitkeep
+documents/*
+!documents/.gitkeep
+
 # assistant sessions
 .claude/
 .gemini/

@@ -142,8 +142,8 @@ class JobCockpitApp(App[None]):
         self.db_path = db_path
         self.rules = load_rules()
         intel_cfg = self.rules.get("intel", {})
-        self.export_dir = Path(export_dir or intel_cfg.get("export_dir", intel.DEFAULT_EXPORT_DIR)).expanduser()
-        self.career_ops_root = Path(career_ops_root or intel_cfg.get("career_ops_root", intel.DEFAULT_CAREER_OPS)).expanduser()
+        self.export_dir = intel.resolve_export_dir(export_dir)
+        self.career_ops_root = intel.resolve_career_ops_root(career_ops_root)
         self.model = model or intel_cfg.get("model")
         self.generate = generate
         self.rows: list[dict[str, Any]] = []

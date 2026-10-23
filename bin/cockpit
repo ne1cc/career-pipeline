@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# cockpit — Job Application Execution Cockpit & Funnel Tracker CLI
+# ==============================================================================
+set -euo pipefail
+
+# Resolve symlinks so `~/bin/cockpit -> /path/to/career-pipeline/bin/cockpit` locates REPO_ROOT
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+CANDIDATE_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+
+if [[ -n "${COCKPIT_REPO_ROOT:-}" && -d "${COCKPIT_REPO_ROOT}" ]]; then
+    REPO_ROOT="$COCKPIT_REPO_ROOT"
+elif [[ -f "$CANDIDATE_ROOT/cockpit/cli.py" ]]; then
+    REPO_ROOT="$CANDIDATE_ROOT"
+elif [[ -d "$HOME/Github/ne1cc/career-pipeline" ]]; then
+    REPO_ROOT="$HOME/Github/ne1cc/career-pipeline"
+else
+    REPO_ROOT="$HOME/Github/ne1cc/Jobspy-Custom"
+fi
+
+REQS="$REPO_ROOT/cockpit/requirements.txt"
+
+if [[ ! -d "$REPO_ROOT" ]]; then
+    echo "Error: career-pipeline repo not found at $REPO_ROOT" >&2
+    exit 1
+fi
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+cd "$REPO_ROOT"
+# Default to `tui` when invoked with no subcommand
+if [[ $# -eq 0 ]]; then
+    set -- tui
+fi
+
+if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    exec "$REPO_ROOT/.venv/bin/python" -m cockpit.cli "$@"
+fi
+
+exec uv run --no-project --python 3.12 --with-requirements "$REQS" python -m cockpit.cli "$@"

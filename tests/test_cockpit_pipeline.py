@@ -1197,4 +1197,135 @@ def test_tui_e_edits_dossier_in_editor(db_path, tmp_path, monkeypatch):
     assert str(dossier) in editor_runs[0]
 
 
+def test_vendored_career_ops_resolution_and_optional_prompts(tmp_path, monkeypatch):
+    for var in ("CAREER_OPS_ROOT", "CAREER_OPS_DATA_DIR"):
+        monkeypatch.delenv(var, raising=False)
+
+    # Default resolution points to REPO_ROOT / "config" / "career_ops"
+    resolved = intel.resolve_career_ops_root()
+    assert resolved == (intel.REPO_ROOT / "config" / "career_ops").resolve()
+    assert (resolved / "modes" / "oferta.md").exists()
+    assert (resolved / "modes" / "_shared.md").exists()
+    assert (resolved / "modes" / "_writing.md").exists()
+    assert (resolved / "modes" / "heuristics" / "recruiter-side.md").exists()
+
+    # Optional files in career_ops are injected into prompt when present
+    co = tmp_path / "co"
+    (co / "modes" / "heuristics").mkdir(parents=True)
+    (co / "config").mkdir()
+    (co / "modes" / "oferta.md").write_text("oferta body")
+    (co / "modes" / "_shared.md").write_text("shared body")
+    (co / "modes" / "_writing.md").write_text("NO_EM_DASH_RULE")
+    (co / "modes" / "heuristics" / "recruiter-side.md").write_text("SIX_SECOND_CLARITY_GATE")
+    (co / "voice-dna.md").write_text("VOICE_DNA_MARKER")
+    (co / "cv.md").write_text("# Jane Smith\nPython, SQL")
+    ctx = intel.load_context(co)
+    assert "NO_EM_DASH_RULE" in ctx.prompt
+    assert "SIX_SECOND_CLARITY_GATE" in ctx.prompt
+    assert "VOICE_DNA_MARKER" in ctx.prompt
+
+
+def test_dynamic_candidate_name_in_exports(tmp_path):
+    custom_output = FULL_PACKAGE_OUTPUT.replace("# Alex Sun", "# Jane Doe")
+    folder = tmp_path / "pkg"
+    job = {
+        "dedup_key": "abc12345",
+        "company": "Databricks",
+        "title": "Data Engineer",
+        "location": "San Francisco, CA",
+        "apply_url": "https://databricks.com/jobs/1",
+        "priority_score": 25.0,
+        "status": "QUEUED",
+    }
+    summary = intel.parse_summary(custom_output)
+    info = intel.write_application_package(job, folder, custom_output, summary=summary)
+    exports = folder / "exports"
+    assert list(exports.glob("Jane_Doe_Resume_Databricks_Data_Engineer.docx"))
+    assert list(exports.glob("Jane_Doe_Resume_Databricks_Data_Engineer.pdf"))
+    assert list(exports.glob("Jane_Doe_Cover_Letter_Databricks_Data_Engineer.docx"))
+    assert list(exports.glob("Jane_Doe_Cover_Letter_Databricks_Data_Engineer.pdf"))
+    assert Path(info["tailored_resume_path"]).exists()
+
+
+def test_onboard_seed_import_and_cli_commands(tmp_path, monkeypatch):
+    import shutil
+    from typer.testing import CliRunner
+    from cockpit import onboard
+    from cockpit.cli import app as cli_app
+    from cockpit.exporters import render_docx, render_pdf
+
+    # Create isolated repo structure in tmp_path
+    fake_repo = tmp_path / "repo"
+    shutil.copytree(intel.REPO_ROOT / "config" / "templates", fake_repo / "config" / "templates")
+    shutil.copytree(intel.REPO_ROOT / "config" / "career_ops", fake_repo / "config" / "career_ops")
+    shutil.copy2(intel.REPO_ROOT / "pipeline_config.example.json", fake_repo / "pipeline_config.example.json")
+
+    seeded = onboard.seed_user_layer(fake_repo)
+    assert (fake_repo / "config" / "career_ops" / "cv.md").exists()
+    assert (fake_repo / "config" / "career_ops" / "config" / "profile.yml").exists()
+    assert (fake_repo / "config" / "evidence" / "01_master_career_history.yaml").exists()
+    assert len(seeded) >= 6
+
+    # Test importing a .docx and .pdf resume
+    sample_res_dir = tmp_path / "my_resumes"
+    sample_res_dir.mkdir()
+    sample_md = "# Jordan Rivera\nSeattle, WA | jordan@rivera.dev | +1-206-555-0199 | github.com/jrivera\n\n## Experience\n- Built distributed Rust and Python services."
+    docx_file = sample_res_dir / "jordan_resume.docx"
+    pdf_file = sample_res_dir / "jordan_resume.pdf"
+    render_docx(sample_md, docx_file, title="Jordan Rivera Resume")
+    render_pdf(sample_md, pdf_file, title="Jordan Rivera Resume")
+
+    assert "Jordan Rivera" in onboard.extract_resume_text(docx_file)
+    assert "Jordan Rivera" in onboard.extract_resume_text(pdf_file)
+
+    import_info = onboard.import_user_resumes(docx_file, repo_root=fake_repo)
+    assert import_info["heuristics"]["name"] == "Jordan Rivera"
+    assert import_info["heuristics"]["email"] == "jordan@rivera.dev"
+    assert (fake_repo / "resumes" / "swe_backend_v1.pdf").exists()
+    assert (fake_repo / "resumes" / "data_eng_lakehouse_v1.pdf").exists()
+    assert (fake_repo / "resumes" / "analytics_msba_v1.pdf").exists()
+
+    cfg_paths = onboard.write_user_profile_configs(
+        repo_root=fake_repo,
+        name="Jordan Rivera",
+        email="jordan@rivera.dev",
+        location="Seattle, WA",
+        primary_roles=["Backend Engineer"],
+        primary_locations=["seattle", "remote"],
+    )
+    assert "Jordan Rivera" in cfg_paths["profile_yml"].read_text("utf-8")
+    assert "Jordan Rivera" in cfg_paths["local_rules_toml"].read_text("utf-8")
+
+    # Verify load_rules merges scoring_rules.local.toml
+    merged_rules = load_rules(
+        path=intel.REPO_ROOT / "config" / "scoring_rules.toml",
+        local_path=cfg_paths["local_rules_toml"],
+    )
+    assert merged_rules["outreach"]["candidate_name"] == "Jordan Rivera"
+    outreach_msg = render_outreach(
+        {"company": "Stripe", "title": "Backend Engineer", "resume_archetype": "swe_backend"},
+        merged_rules,
+    )
+    assert "Jordan Rivera" in outreach_msg
+
+    # Verify CLI doctor command
+    runner = CliRunner()
+    res_doc = runner.invoke(cli_app, ["doctor"])
+    assert res_doc.exit_code == 0
+    assert "Career Pipeline & Cockpit Healthcheck" in res_doc.stdout
+
+
+def test_macos_helpers_survive_missing_binaries_on_linux(monkeypatch):
+    def raise_fnf(*args, **kwargs):
+        raise FileNotFoundError("No such file or directory")
+
+    monkeypatch.setattr(macos.subprocess, "run", raise_fnf)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-linux-key")
+    assert macos.gemini_api_key() == "test-linux-key"
+    macos.copy_to_clipboard("hello")
+    macos.open_url("https://example.com")
+    macos.open_file("/tmp/test.txt")
+
+
+
 
