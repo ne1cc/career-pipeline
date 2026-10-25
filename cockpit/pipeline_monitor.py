@@ -615,6 +615,19 @@ def launch_pipeline(repo_root: Path) -> subprocess.Popen:
         env=env,
         start_new_session=True,
     )
+    # Immediately initialize state so monitor_loop doesn't read a stale finished/failed run
+    update_pipeline_state(
+        repo_root,
+        pid=p.pid,
+        started_at=datetime.now().isoformat(),
+        phase="SCRAPING",
+        error=None,
+        tasks={},
+        finished_at=None,
+        excel_path=None,
+        health="HEALTHY",
+        anomalies=[],
+    )
     return p
 
 
