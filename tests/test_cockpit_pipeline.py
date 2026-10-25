@@ -481,6 +481,26 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
     assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - * - Seattle, WA - */05_interview_dossier.md"))
 
 
+def test_cockpit_table_highlight_cursor_has_black_text(db_path, tmp_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({"company": "Acme Corp", "title": "Software Engineer"}))
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            table = app.query_one(DataTable)
+            style = table.get_component_rich_style("datatable--cursor")
+            assert str(style.color) == "#000000" or getattr(style.color, "triplet", None) == (0, 0, 0)
+            lines = table._render_cell(0, 2, table._get_row_style(0, table.rich_style), 20, cursor=True)
+            rendered_texts = [s for s in lines[0] if s.text.strip()]
+            assert any(
+                s.text == "Acme Corp" and (str(s.style.color) == "#000000" or getattr(s.style.color, "triplet", None) == (0, 0, 0))
+                for s in rendered_texts
+            )
+
+    asyncio.run(drive())
+
+
 def test_dossier_path_format(tmp_path):
     job = {
         "title": "Senior Data / Platform Engineer",

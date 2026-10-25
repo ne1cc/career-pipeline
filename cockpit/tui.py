@@ -71,6 +71,17 @@ class NoteModal(ModalScreen[str | None]):
 
 
 class CockpitTable(DataTable):
+    DEFAULT_CSS = """
+    CockpitTable > .datatable--cursor {
+        background: $block-cursor-background;
+        color: #000000;
+    }
+    CockpitTable:focus > .datatable--cursor {
+        background: $block-cursor-background;
+        color: #000000;
+    }
+    """
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.highlighted_row_keys: set[Any] = set()
@@ -88,6 +99,14 @@ class JobCockpitApp(App[None]):
     CSS = """
     #score { height: 1; padding: 0 1; background: $boost; }
     #table { width: 65%; }
+    #table > .datatable--cursor {
+        background: $block-cursor-background;
+        color: #000000;
+    }
+    #table:focus > .datatable--cursor {
+        background: $block-cursor-background;
+        color: #000000;
+    }
     #detail-pane { width: 35%; border-left: solid $primary; padding: 0 1; }
     """
     BINDINGS = [
