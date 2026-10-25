@@ -623,6 +623,7 @@ def pipeline_default(
         pipeline_monitor.monitor_loop(REPO_ROOT, once=True)
 
 
+@app.command("run", help="Launch scraper pipeline in background and attach live visual monitor.")
 @pipeline_app.command("run")
 def pipeline_run() -> None:
     """Launch run_pipeline.py in background and attach live visual monitor."""

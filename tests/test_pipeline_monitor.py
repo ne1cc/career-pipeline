@@ -154,6 +154,33 @@ def test_cli_pipeline_run_launches_process(tmp_path, monkeypatch):
     assert "Master pipeline process spawned (PID: 4321)" in res.stdout
     assert called_monitor == [False]
 
+    # Also test top-level shorthand: `cockpit run`
+    res_top = runner.invoke(cli_app, ["run"])
+    assert res_top.exit_code == 0
+    assert "Master pipeline process spawned (PID: 4321)" in res_top.stdout
+    assert called_monitor == [False, False]
+
+
+def test_launch_pipeline_seeds_active_state(tmp_path, monkeypatch):
+    mock_popen = MagicMock()
+    mock_popen.pid = 9876
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: mock_popen)
+    monkeypatch.setattr(pipeline_monitor, "resolve_pipeline_python", lambda repo: "/fake/python")
+
+    # Stale run was marked failed
+    pipeline_monitor.update_pipeline_state(tmp_path, pid=111, phase="FAILED")
+    assert pipeline_monitor.get_pipeline_state(tmp_path)["phase"] == "FAILED"
+
+    # Launch pipeline should immediately overwrite state with new active PID
+    monkeypatch.setattr(pipeline_monitor, "is_pid_alive", lambda pid: pid == 9876)
+    proc = pipeline_monitor.launch_pipeline(tmp_path)
+    assert proc.pid == 9876
+
+    fresh_state = pipeline_monitor.get_pipeline_state(tmp_path)
+    assert fresh_state["pid"] == 9876
+    assert fresh_state["phase"] == "SCRAPING"
+    assert fresh_state["is_active"] is True
+
 
 def test_resolve_pipeline_python(tmp_path, monkeypatch):
     # 1. Tests env var override
