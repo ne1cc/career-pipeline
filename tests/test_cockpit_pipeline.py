@@ -58,6 +58,24 @@ def test_cross_board_dedup(db_path):
     assert stats["inserted"] == 1
 
 
+def test_upsert_jobspy_frame_many_null_descriptions(db_path):
+    # Polars infers pl.Null when the first 100+ rows lack descriptions; explicit schema prevents ComputeError.
+    rows = [
+        {"company": f"Company {i}", "title": f"Engineer {i}", "job_url": f"https://example.com/{i}", "description": None}
+        for i in range(105)
+    ]
+    rows.append({
+        "company": "Deloitte",
+        "title": "Software Engineer II",
+        "job_url": "https://example.com/deloitte",
+        "description": "Help public-sector organizations operate reliable...",
+    })
+    df = pd.DataFrame(rows)
+    with db.session(db_path) as con:
+        stats = db.upsert_jobspy_frame(con, df)
+        assert stats["inserted"] == 106
+
+
 def test_direct_url_wins(db_path):
     df = frame({"job_url_direct": "https://ats/direct"}, {"company": "Acme", "job_url_direct": ""})
     with db.session(db_path) as con:

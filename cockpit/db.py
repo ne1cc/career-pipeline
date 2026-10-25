@@ -220,8 +220,25 @@ def upsert_jobspy_frame(
     stats = {"seen": total, "invalid": total - len(rows), "inserted": 0, "duplicates": 0}
     if rows:
         # Best-scored copy wins when one batch holds the same job from several boards.
+        # Explicit schema prevents polars from inferring pl.Null when the first 100+ rows have None.
+        schema = {
+            "dedup_key": pl.String,
+            "jobspy_id": pl.String,
+            "site": pl.String,
+            "company": pl.String,
+            "company_norm": pl.String,
+            "title": pl.String,
+            "location": pl.String,
+            "is_remote": pl.Boolean,
+            "apply_url": pl.String,
+            "description": pl.String,
+            "date_posted": pl.String,
+            "priority_score": pl.Float64,
+            "resume_archetype": pl.String,
+            "resume_path": pl.String,
+        }
         batch = (
-            pl.DataFrame(rows)
+            pl.DataFrame(rows, schema=schema)
             .sort("priority_score", descending=True, maintain_order=True)
             .unique(subset="dedup_key", keep="first", maintain_order=True)
         )
