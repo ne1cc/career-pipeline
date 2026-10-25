@@ -158,4 +158,5 @@ if __name__ == "__main__":
 
     if had_errors:
         print("Some queries failed; any collected partial results were retained.")
-        raise SystemExit(1)
+        if not all_jobs_list:
+            raise SystemExit(1)
