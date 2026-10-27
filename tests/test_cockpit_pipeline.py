@@ -1373,5 +1373,42 @@ def test_macos_helpers_survive_missing_binaries_on_linux(monkeypatch):
     macos.open_file("/tmp/test.txt")
 
 
+def test_default_results_dir_prefers_max_csv_count_then_latest_date(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    # Empty results
+    res = cli._default_results_dir()
+    assert res is not None
+
+    # Setup 2026_10 with multiple days:
+    # 2026_10_26 has 4 CSVs
+    # 2026_10_27 has 2 CSVs (in-flight run)
+    # 2026_10_25 has 4 CSVs
+    d25 = results / "2026_10" / "2026_10_25"
+    d26 = results / "2026_10" / "2026_10_26"
+    d27 = results / "2026_10" / "2026_10_27"
+    for d in (d25, d26, d27):
+        d.mkdir(parents=True, exist_ok=True)
+
+    for i in range(4):
+        (d25 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+        (d26 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+    for i in range(2):
+        (d27 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+
+    # Should select d26 (tied with d25 on 4 CSVs, but d26 is newer date than d25; beats d27 which only has 2)
+    selected = cli._default_results_dir()
+    assert selected == d26
+
+    # When d27 finishes and gets 5 CSVs, it becomes the top candidate
+    for i in range(2, 5):
+        (d27 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+    selected_after_finish = cli._default_results_dir()
+    assert selected_after_finish == d27
+
+
 
 

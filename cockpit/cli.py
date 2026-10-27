@@ -49,14 +49,30 @@ def _default_results_dir() -> Path:
     month_str = now.strftime("%Y_%m")
     day_str = now.strftime("%Y_%m_%d")
     today_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "results" / month_str / day_str
-    if today_dir.exists() and any(today_dir.glob("*_jobs.csv")):
+    results_root = REPO_ROOT / "jobspy" / "scraped jobs" / "results"
+
+    if not results_root.exists():
         return today_dir
-    month_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "results" / month_str
-    if month_dir.exists():
-        subdirs = sorted([d for d in month_dir.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", d.name)], reverse=True)
-        for sd in subdirs:
-            if any(sd.glob("*_jobs.csv")):
-                return sd
+
+    # Inspect the most recent month directories (current and previous)
+    month_dirs = sorted(
+        [d for d in results_root.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}$", d.name)],
+        reverse=True,
+    )
+    candidates: list[tuple[int, str, Path]] = []
+    for md in month_dirs[:2]:
+        for sd in md.iterdir():
+            if sd.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", sd.name):
+                csv_count = len(list(sd.glob("*_jobs.csv")))
+                if csv_count > 0:
+                    candidates.append((csv_count, sd.name, sd))
+
+    if candidates:
+        # Prefer maximum CSV count first, then most recent directory date
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
+    month_dir = results_root / month_str
     return today_dir if today_dir.exists() else month_dir
 
 
