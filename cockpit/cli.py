@@ -798,11 +798,12 @@ def dossier_cmd(
     cat: Annotated[bool, typer.Option("--cat", "-c", help="Render dossier in terminal with rich markdown formatting")] = False,
     nvim: Annotated[bool, typer.Option("--nvim", "-v", help="Open dossier directly in Neovim")] = False,
     edit: Annotated[bool, typer.Option("--edit", "-e", help="Open dossier in Neovim / $EDITOR")] = False,
+    one_markdown: Annotated[bool, typer.Option("--one-markdown", "-m", help="Open dossier directly in One Markdown")] = False,
     open_in_editor: Annotated[bool, typer.Option("--open", "-o", help="Open dossier in default macOS editor/app")] = False,
     latest: Annotated[bool, typer.Option("--latest", "-l", help="Open/view the most recently modified dossier")] = False,
     export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
 ) -> None:
-    """View an interview dossier in terminal or open it in default editor / Neovim."""
+    """View an interview dossier in terminal or open it in default editor / Neovim / One Markdown."""
     from cockpit import intel as intel_module
     from rich.markdown import Markdown
 
@@ -838,32 +839,34 @@ def dossier_cmd(
         target_apply_url = chosen.get("apply_url", "")
 
         # Interactive quick-action prompt if no specific action flag passed
-        if not (cat or use_nvim or open_in_editor):
+        if not (cat or use_nvim or open_in_editor or one_markdown):
             console.print(f"\n[bold cyan]Selected:[/bold cyan] [bright_white]{chosen['name']}[/bright_white] "
                           f"([yellow]{chosen['fit_score']}★[/yellow])")
             actions_msg = (
-                "[1] View Markdown in terminal  [2] Open in Neovim  [3] Open Folder in Finder  "
-                "[4] Open Apply URL in Browser  [5] Copy Dossier Path  [q] Cancel"
+                "[1] View in terminal    [2] Open in One Markdown  [3] Open in Neovim\n"
+                "[4] Open Folder/Finder  [5] Open Apply URL        [6] Copy Path  [q] Cancel"
             )
             console.print(Panel(actions_msg, title="Choose Action", border_style="cyan"))
-            choice = typer.prompt("Select action", default="1").strip().lower()
+            choice = typer.prompt("Select action", default="2").strip().lower()
 
             if choice in ("1", "view", "cat"):
                 cat = True
-            elif choice in ("2", "v", "nvim", "edit"):
+            elif choice in ("2", "m", "onemarkdown", "one"):
+                one_markdown = True
+            elif choice in ("3", "v", "nvim", "edit"):
                 use_nvim = True
-            elif choice in ("3", "f", "finder", "folder"):
+            elif choice in ("4", "f", "finder", "folder"):
                 macos.open_file(target_folder)
                 console.print(f"Opened folder in Finder: [cyan]{target_folder}[/cyan]")
                 return
-            elif choice in ("4", "a", "url", "apply"):
+            elif choice in ("5", "a", "url", "apply"):
                 if target_apply_url:
                     macos.open_url(target_apply_url)
                     console.print(f"Opened apply URL: [cyan]{target_apply_url}[/cyan]")
                 else:
                     console.print("[yellow]No apply URL found in dossier.[/yellow]")
                 return
-            elif choice in ("5", "c", "copy"):
+            elif choice in ("6", "c", "copy"):
                 macos.copy_to_clipboard(str(target_dossier or target_folder))
                 console.print(f"Copied path to clipboard: [green]{target_dossier or target_folder}[/green]")
                 return
@@ -893,6 +896,10 @@ def dossier_cmd(
         editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
         subprocess.run([editor, str(root)])
         return
+    elif one_markdown:
+        # No query + one_markdown -> open the artifacts root folder in One Markdown
+        macos.open_file(root, app="One Markdown")
+        return
     else:
         valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
         if not valid:
@@ -913,19 +920,33 @@ def dossier_cmd(
             table.add_row(folder.name, mtime, artifacts_str)
 
         console.print(table)
-        console.print("\n[dim]Tip: Use 'cockpit dossier -s' for interactive fuzzy selection and quick actions.[/dim]")
+        console.print("\n[dim]Tip: Use 'cockpit dossier -s' (or 'cockpit md <query>') to open in One Markdown.[/dim]")
         return
 
     if target_dossier:
         if cat:
             console.print(f"[bold cyan]─── Dossier: {target_dossier.parent.name} ───[/bold cyan]\n")
             console.print(Markdown(target_dossier.read_text(encoding="utf-8", errors="replace")))
+        elif one_markdown:
+            macos.open_file(target_dossier, app="One Markdown")
+            console.print(f"Opened dossier in One Markdown: [cyan]{target_dossier}[/cyan]")
         elif use_nvim:
             editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
             subprocess.run([editor, str(target_dossier)])
         else:
             macos.open_file(target_dossier)
             console.print(f"Opened dossier: [cyan]{target_dossier}[/cyan]")
+
+
+@app.command("md")
+@app.command("onemarkdown")
+def onemarkdown_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
+    latest: Annotated[bool, typer.Option("--latest", "-l", help="Open the most recently modified dossier in One Markdown")] = False,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Open an interview dossier (or artifacts root) directly in One Markdown."""
+    dossier_cmd(query=query, one_markdown=True, latest=latest, export_dir=export_dir)
 
 
 @app.command("edit")

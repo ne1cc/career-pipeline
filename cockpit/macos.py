@@ -72,9 +72,13 @@ def notify(message: str, title: str = "JobCockpit") -> None:
 KEYCHAIN_GEMINI_SERVICE = "jobcockpit-gemini"
 
 
-def open_file(path: str | Path) -> None:
+def open_file(path: str | Path, app: str | None = None) -> None:
     try:
-        subprocess.run(["/usr/bin/open", str(path)], check=True)
+        cmd = ["/usr/bin/open"]
+        if app:
+            cmd.extend(["-a", app])
+        cmd.append(str(path))
+        subprocess.run(cmd, check=True)
     except (FileNotFoundError, OSError):
         try:
             subprocess.run(["xdg-open", str(path)], check=False)
