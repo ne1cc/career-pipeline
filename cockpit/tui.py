@@ -130,6 +130,7 @@ class JobCockpitApp(App[None]):
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
         Binding("question_mark", "search", "Search"),
+        Binding("K", "filter_jd_keywords", "JD Words"),
         Binding("r", "referrals", "Referrals"),
         Binding("o", "stage(False)", "Open"),
         Binding("O", "stage(True)", "Open bg"),
@@ -174,6 +175,7 @@ class JobCockpitApp(App[None]):
         self.segment: str | None = None
         self.loc_query: str | None = None
         self.search_query: str | None = None
+        self.jd_keywords: str | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
 
     def compose(self) -> ComposeResult:
@@ -275,6 +277,7 @@ class JobCockpitApp(App[None]):
                 self.segment,
                 self.loc_query,
                 query=self.search_query,
+                jd_keywords=self.jd_keywords,
             )
             b = scoreboard(con)
         self._apply_sort()
@@ -322,10 +325,11 @@ class JobCockpitApp(App[None]):
                 table.move_cursor(row=min(row, len(self.rows) - 1))
         label = FILTERS[self.filter_idx] or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
+        jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         self.query_one("#score", Static).update(
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
-            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}{sort_indicator}]"
+            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}{jd_indicator}{sort_indicator}]"
         )
         self._show(table.cursor_row)
 
@@ -661,7 +665,15 @@ class JobCockpitApp(App[None]):
                 self.search_query = value.strip().lower() or None
                 self._reload(0)
 
-        self.push_screen(NoteModal("Search company, title, or keywords (blank clears)"), done)
+        self.push_screen(NoteModal("Search company, title, or keywords (e.g. 'analyst' or 'aws, python'; blank clears)"), done)
+
+    def action_filter_jd_keywords(self) -> None:
+        def done(value: str | None) -> None:
+            if value is not None:
+                self.jd_keywords = value.strip().lower() or None
+                self._reload(0)
+
+        self.push_screen(NoteModal("Filter by JD text keywords, comma-separated (e.g. 'master, business analytics'; blank clears)"), done)
 
     def action_sync(self) -> None:
         self.notify("Syncing Gmail…")

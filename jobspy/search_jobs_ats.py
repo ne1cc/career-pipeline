@@ -59,6 +59,13 @@ DEFAULT_SEARCH_TERMS = [
     # Product & Operations
     "Associate Product Manager",
     "Business Operations Associate",
+    "BizOps Analyst",
+    "RevOps Analyst",
+    "Revenue Operations Analyst",
+    "Sales Operations Analyst",
+    "GTM Operations Analyst",
+    "Solutions Analyst",
+    "Commercial Analytics Associate",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
     "Data Engineer",
@@ -81,32 +88,98 @@ SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 # Target Company Registry across Greenhouse, Lever, Ashby
 TARGET_COMPANIES: Dict[str, List[str]] = {
     "greenhouse": [
-        "stripe",
+        "affirm",
         "airbnb",
+        "airtable",
+        "andurilindustries",
+        "anthropic",
+        "asana",
+        "blend",
+        "brex",
+        "carta",
+        "checkr",
+        "chime",
+        "clickhouse",
+        "cloudflare",
+        "coinbase",
+        "dagsterlabs",
         "databricks",
-        "snowflake",
-        "figma",
-        "doordash",
-        "instacart",
-        "pinterest",
+        "datadog",
+        "dbtlabsinc",
+        "doordashusa",
         "dropbox",
+        "elastic",
+        "figma",
+        "fivetran",
+        "gitlab",
+        "gleanwork",
+        "gusto",
+        "hextechnologies",
+        "hubspotjobs",
+        "instacart",
+        "lattice",
+        "lyft",
+        "marqeta",
+        "mongodb",
+        "netskope",
+        "okta",
+        "pagerduty",
+        "pinterest",
+        "postman",
         "reddit",
         "robinhood",
-    ],
-    "lever": [
-        "spotify",
-        "eventbrite",
+        "rubrik",
+        "samsara",
+        "scaleai",
+        "spacex",
+        "starburst",
+        "stripe",
+        "tanium",
+        "temporal",
+        "toast",
+        "togetherai",
+        "twilio",
+        "vercel",
+        "webflow",
     ],
     "ashby": [
-        "openai",
-        "anthropic",
-        "ramp",
-        "notion",
-        "perplexity",
-        "retool",
+        "anyscale",
+        "astronomer",
+        "benchling",
+        "character",
+        "clickup",
+        "cohere",
+        "confluent",
         "cursor",
+        "cube",
+        "deepgram",
+        "deel",
+        "ironcladhq",
+        "langchain",
         "linear",
-        "vercel",
+        "llamaindex",
+        "mercury",
+        "modal",
+        "notion",
+        "openai",
+        "perplexity",
+        "pinecone",
+        "plaid",
+        "prefect",
+        "ramp",
+        "runway-ml",
+        "sentry",
+        "snowflake",
+        "snyk",
+        "supabase",
+        "weaviate",
+        "wiz",
+        "zapier",
+    ],
+    "lever": [
+        "mistral",
+        "palantir",
+        "spotify",
     ],
 }
 
@@ -117,13 +190,17 @@ COMPANY_ALIASES = {
     "doordash": ("greenhouse", "doordashusa"),
     "eventbrite": ("greenhouse", "eventbriteinc"),
     "retool": ("gem", "retool"),
+    "hubspot": ("greenhouse", "hubspotjobs"),
+    "anduril": ("greenhouse", "andurilindustries"),
+    "scale": ("greenhouse", "scaleai"),
+    "glean": ("greenhouse", "gleanwork"),
 }
 
-# Regex filter for analytics/data/bi job titles in target company boards
+# Regex filter for analytics/data/bi/operations job titles in target company boards
 ROLE_PATTERN = re.compile(
     r"\b(?:analyst|analytics|data|scientist|statistician|quantitative|bi|"
     r"software|developer|backend|back-end|platform|product engineer|security|cybersecurity|"
-    r"infosec|soc|devops|sre)\b",
+    r"infosec|soc|devops|sre|revops|bizops|operations|solutions)\b",
     re.IGNORECASE,
 )
 
@@ -248,38 +325,42 @@ def scrape_target_companies(
 def scrape_hosted_dataset(
     search_terms: List[str],
     is_smoke_test: bool = False,
+    ats_targets: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Query hosted ATS dataset snapshot for keywords."""
+    """Query hosted ATS dataset snapshots (Ashby, Greenhouse, Lever) for keywords."""
     all_matched_jobs: List[Dict[str, Any]] = []
 
     if is_smoke_test:
         print("\n[2/2] Skipping hosted dataset download in smoke-test mode.")
         return all_matched_jobs
 
-    print("\n[2/2] Loading hosted Ashby dataset snapshot...")
-    try:
-        client = Client()
-        df_snapshot = client.load(ats="ashby")
-        print(f"Loaded snapshot with {len(df_snapshot)} postings.")
+    if ats_targets is None:
+        ats_targets = ["ashby", "greenhouse", "lever"]
 
-        for term in search_terms:
-            print(f" > Filtering hosted snapshot for '{term}'...", end=" ", flush=True)
-            # Case-insensitive title match
-            pattern = re.escape(term)
-            sub_df = df_snapshot[
-                df_snapshot["title"].str.contains(pattern, case=False, na=False)
-            ]
+    client = Client()
+    for ats_name in ats_targets:
+        print(f"\n[2/2] Loading hosted {ats_name.capitalize()} dataset snapshot...")
+        try:
+            df_snapshot = client.load(ats=ats_name)
+            print(f"Loaded {ats_name} snapshot with {len(df_snapshot)} postings.")
 
-            term_records = []
-            for _, row in sub_df.iterrows():
-                record = normalize_dataset_row(row, search_keyword=term)
-                term_records.append(record)
+            for term in search_terms:
+                pattern = re.escape(term)
+                sub_df = df_snapshot[
+                    df_snapshot["title"].str.contains(pattern, case=False, na=False)
+                ]
 
-            all_matched_jobs.extend(term_records)
-            print(f"found {len(term_records)} roles")
+                term_records = []
+                for _, row in sub_df.iterrows():
+                    record = normalize_dataset_row(row, search_keyword=term)
+                    term_records.append(record)
 
-    except Exception as e:
-        print(f"Error querying hosted dataset: {e}")
+                if term_records:
+                    all_matched_jobs.extend(term_records)
+                    print(f" > '{term}' ({ats_name}): found {len(term_records)} roles")
+
+        except Exception as e:
+            print(f"Warning: Failed or interrupted loading hosted dataset for '{ats_name}': {e}")
 
     return all_matched_jobs
 

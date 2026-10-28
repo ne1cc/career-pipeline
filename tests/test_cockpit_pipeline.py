@@ -1373,5 +1373,192 @@ def test_macos_helpers_survive_missing_binaries_on_linux(monkeypatch):
     macos.open_file("/tmp/test.txt")
 
 
+def test_default_results_dir_prefers_max_csv_count_then_latest_date(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    # Empty results
+    res = cli._default_results_dir()
+    assert res is not None
+
+    # Setup 2026_10 with multiple days:
+    # 2026_10_26 has 4 CSVs
+    # 2026_10_27 has 2 CSVs (in-flight run)
+    # 2026_10_25 has 4 CSVs
+    d25 = results / "2026_10" / "2026_10_25"
+    d26 = results / "2026_10" / "2026_10_26"
+    d27 = results / "2026_10" / "2026_10_27"
+    for d in (d25, d26, d27):
+        d.mkdir(parents=True, exist_ok=True)
+
+    for i in range(4):
+        (d25 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+        (d26 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+    for i in range(2):
+        (d27 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+
+    # Should select d26 (tied with d25 on 4 CSVs, but d26 is newer date than d25; beats d27 which only has 2)
+    selected = cli._default_results_dir()
+    assert selected == d26
+
+    # When d27 finishes and gets 5 CSVs, it becomes the top candidate
+    for i in range(2, 5):
+        (d27 / f"seg_{i}_jobs.csv").write_text("a,b\n1,2")
+    selected_after_finish = cli._default_results_dir()
+    assert selected_after_finish == d27
+
+
+def test_expand_inputs_supports_date_and_directories(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    d27 = results / "2026_10" / "2026_10_27"
+    d27.mkdir(parents=True, exist_ok=True)
+    f1 = d27 / "ats_direct_jobs.csv"
+    f2 = d27 / "tech_portals_jobs.csv"
+    f1.write_text("id,title\n1,Software Engineer")
+    f2.write_text("id,title\n2,Data Engineer")
+
+    # Resolve by --date "10/27"
+    res_date = cli._expand_inputs(None, date_str="10/27")
+    assert res_date == [f1, f2]
+
+    # Resolve by positional argument "10/27"
+    res_pos = cli._expand_inputs([Path("10/27")])
+    assert res_pos == [f1, f2]
+
+    # Resolve by explicit directory
+    res_dir = cli._expand_inputs([d27])
+    assert res_dir == [f1, f2]
+
+    # Resolve by YYYY_MM_DD
+    res_full = cli._expand_inputs(None, date_str="2026_10_27")
+    assert res_full == [f1, f2]
+
+
+def test_list_candidate_result_dirs_and_select(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    # Populate two dates: 2026_10_21 with 3 CSVs and 2026_10_27 with 2 CSVs
+    d21 = results / "2026_10" / "2026_10_21"
+    d27 = results / "2026_10" / "2026_10_27"
+    for d in (d21, d27):
+        d.mkdir(parents=True, exist_ok=True)
+
+    for i in range(3):
+        (d21 / f"seg_{i}_jobs.csv").write_text("id\n1")
+    for i in range(2):
+        (d27 / f"seg_{i}_jobs.csv").write_text("id\n2")
+
+    candidates = cli._list_candidate_result_dirs()
+    # Sorted by date descending
+    assert [c[0] for c in candidates] == ["2026_10_27", "2026_10_21"]
+    assert [c[1] for c in candidates] == [2, 3]
+
+    # Test fuzzy scoring logic
+    assert cli._fuzzy_score("10/27", "2026_10_27 2 csv") > 0
+    assert cli._fuzzy_score("3 csv", "2026_10_21 3 csv") > 0
+
+    # Mock selection via --select
+    monkeypatch.setattr(cli, "_interactive_fuzzy_select_dir", lambda: d21)
+    selected_files = cli._expand_inputs(None, select=True)
+    assert len(selected_files) == 3
+    assert selected_files == sorted(d21.glob("*_jobs.csv"))
+
+
+def test_collect_recent_days_and_bulk_ingest(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    # Populate 3 days: 2026_10_26, 2026_10_27, 2026_10_28
+    days = ["2026_10_26", "2026_10_27", "2026_10_28"]
+    for day in days:
+        d = results / "2026_10" / day
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{day}_jobs.csv").write_text("id\n1")
+
+    # Ingest last 2 days (should get 10_28 and 10_27)
+    res_2d = cli._expand_inputs(None, days=2)
+    assert len(res_2d) == 2
+    assert sorted([p.parent.name for p in res_2d]) == ["2026_10_27", "2026_10_28"]
+
+    # Ingest last 5 days (should get all 3 populated days)
+    res_5d = cli._expand_inputs(None, days=5)
+    assert len(res_5d) == 3
+
+
+def test_list_candidate_dossiers_and_fuzzy_score(tmp_path):
+    from cockpit import cli
+    root = tmp_path / "artifacts"
+    root.mkdir()
+
+    job1 = root / "Nintendo - Systems Analyst - 2026-10-21"
+    job1.mkdir()
+    (job1 / "05_interview_dossier.md").write_text(
+        'dedup_key: 123 company: "Nintendo" archetype: "Solutions Architect"\nfit_score: 4.7\napply_url: "https://nintendo.com/jobs/1"\n'
+    )
+
+    job2 = root / "Stripe - Data Engineer - 2026-10-22"
+    job2.mkdir()
+    (job2 / "05_interview_dossier.md").write_text(
+        'dedup_key: 456 company: "Stripe" archetype: "Data Platform"\nfit_score: 3.5\napply_url: "https://stripe.com/jobs/2"\n'
+    )
+
+    candidates = cli._list_candidate_dossiers(root)
+    assert len(candidates) == 2
+    nintendo_cand = [c for c in candidates if "Nintendo" in c["name"]][0]
+    assert nintendo_cand["fit_score"] == "4.7"
+    assert nintendo_cand["apply_url"] == "https://nintendo.com/jobs/1"
+
+    # Test scoring
+    assert cli._fuzzy_score("nintendo", nintendo_cand["name"]) > 0
+    assert cli._fuzzy_score("stripe", nintendo_cand["name"]) == -1
+
+
+def test_fetch_jobs_filters_by_description_keywords(tmp_path):
+    from cockpit import db
+    db_file = tmp_path / "test_keywords.duckdb"
+
+    with db.session(db_file) as con:
+        con.execute(
+            """
+            INSERT INTO jobs_master (dedup_key, company, company_norm, title, apply_url, resume_archetype, resume_path, description, priority_score, status, is_saved)
+            VALUES 
+            ('k1', 'Acme Corp', 'acmecorp', 'Lead Analyst', 'https://example.com/1', 'data_eng', '/tmp/res.pdf', 'Requires a Master''s degree in Business Analytics or related field.', 30, 'QUEUED', false),
+            ('k2', 'Beta Inc', 'betainc', 'Software Engineer', 'https://example.com/2', 'swe_backend', '/tmp/res.pdf', 'Requires BS in Computer Science and Python experience.', 30, 'QUEUED', false),
+            ('k3', 'Gamma LLC', 'gammallc', 'Data Analyst', 'https://example.com/3', 'analytics_msba', '/tmp/res.pdf', 'Master''s degree preferred with SQL and business intelligence.', 25, 'QUEUED', false)
+            """
+        )
+
+        # Multi-term comma search in query
+        res1 = db.fetch_jobs(con, query="master's, business analytics")
+        assert len(res1) == 1
+        assert res1[0]["dedup_key"] == "k1"
+
+        # Explicit jd_keywords list
+        res2 = db.fetch_jobs(con, jd_keywords=["master's", "business analytics"])
+        assert len(res2) == 1
+        assert res2[0]["dedup_key"] == "k1"
+
+        # Partial matching on jd_keywords
+        res3 = db.fetch_jobs(con, jd_keywords="master's")
+        assert len(res3) == 2
+        assert {r["dedup_key"] for r in res3} == {"k1", "k3"}
+
+
+
+
+
+
+
 
 

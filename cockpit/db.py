@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -495,6 +496,7 @@ def fetch_jobs(
     location: str | None = None,
     query: str | None = None,
     hours: int | None = None,
+    jd_keywords: list[str] | str | None = None,
 ) -> list[dict[str, Any]]:
     """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
     clauses, params = [], []
@@ -525,9 +527,29 @@ def fetch_jobs(
         clauses.append("(lower(COALESCE(location, '')) LIKE ? OR (is_remote AND ? = 'remote'))")
         params += [f"%{location.lower()}%", location.lower()]
     if query:
-        q = f"%{query.lower()}%"
-        clauses.append("(lower(company) LIKE ? OR lower(title) LIKE ? OR lower(COALESCE(description, '')) LIKE ?)")
-        params += [q, q, q]
+        # If query contains commas, split into multiple required keyword terms
+        subterms = [t.strip() for t in query.split(",") if t.strip()]
+        if len(subterms) > 1:
+            for term in subterms:
+                term_q = f"%{term.lower()}%"
+                clauses.append("(lower(company) LIKE ? OR lower(title) LIKE ? OR lower(COALESCE(description, '')) LIKE ?)")
+                params += [term_q, term_q, term_q]
+        else:
+            q = f"%{query.lower()}%"
+            clauses.append("(lower(company) LIKE ? OR lower(title) LIKE ? OR lower(COALESCE(description, '')) LIKE ?)")
+            params += [q, q, q]
+
+    if jd_keywords:
+        if isinstance(jd_keywords, str):
+            # Split on commas or semicolons
+            keywords = [k.strip() for k in re.split(r"[,;]+", jd_keywords) if k.strip()]
+        else:
+            keywords = [k.strip() for k in jd_keywords if k.strip()]
+        for kw in keywords:
+            kw_pattern = f"%{kw.lower()}%"
+            clauses.append("lower(COALESCE(description, '')) LIKE ?")
+            params.append(kw_pattern)
+
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
         f"SELECT {_TS_AS_TEXT} FROM jobs_master {where} ORDER BY {order_by}", params
