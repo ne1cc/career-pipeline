@@ -1524,6 +1524,38 @@ def test_list_candidate_dossiers_and_fuzzy_score(tmp_path):
     assert cli._fuzzy_score("stripe", nintendo_cand["name"]) == -1
 
 
+def test_fetch_jobs_filters_by_description_keywords(tmp_path):
+    from cockpit import db
+    db_file = tmp_path / "test_keywords.duckdb"
+
+    with db.session(db_file) as con:
+        con.execute(
+            """
+            INSERT INTO jobs_master (dedup_key, company, company_norm, title, apply_url, resume_archetype, resume_path, description, priority_score, status, is_saved)
+            VALUES 
+            ('k1', 'Acme Corp', 'acmecorp', 'Lead Analyst', 'https://example.com/1', 'data_eng', '/tmp/res.pdf', 'Requires a Master''s degree in Business Analytics or related field.', 30, 'QUEUED', false),
+            ('k2', 'Beta Inc', 'betainc', 'Software Engineer', 'https://example.com/2', 'swe_backend', '/tmp/res.pdf', 'Requires BS in Computer Science and Python experience.', 30, 'QUEUED', false),
+            ('k3', 'Gamma LLC', 'gammallc', 'Data Analyst', 'https://example.com/3', 'analytics_msba', '/tmp/res.pdf', 'Master''s degree preferred with SQL and business intelligence.', 25, 'QUEUED', false)
+            """
+        )
+
+        # Multi-term comma search in query
+        res1 = db.fetch_jobs(con, query="master's, business analytics")
+        assert len(res1) == 1
+        assert res1[0]["dedup_key"] == "k1"
+
+        # Explicit jd_keywords list
+        res2 = db.fetch_jobs(con, jd_keywords=["master's", "business analytics"])
+        assert len(res2) == 1
+        assert res2[0]["dedup_key"] == "k1"
+
+        # Partial matching on jd_keywords
+        res3 = db.fetch_jobs(con, jd_keywords="master's")
+        assert len(res3) == 2
+        assert {r["dedup_key"] for r in res3} == {"k1", "k3"}
+
+
+
 
 
 
