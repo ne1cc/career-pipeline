@@ -516,6 +516,68 @@ def scrape_himalayas_portal(term: str, is_smoke: bool = False) -> list[dict]:
     return jobs
 
 
+def scrape_yc_portal(is_smoke: bool = False) -> list[dict]:
+    """Scrape Y Combinator / Work at a Startup listings."""
+    jobs = []
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    }
+    url = "https://www.workatastartup.com/jobs"
+    try:
+        resp = _get_request(url, headers=headers)
+        if not resp or resp.status_code != 200:
+            return jobs
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        div = soup.find(attrs={"data-page": True})
+        if not div:
+            return jobs
+
+        data = json.loads(html.unescape(div["data-page"]))
+        raw_jobs = data.get("props", {}).get("jobs", [])
+        if is_smoke:
+            raw_jobs = raw_jobs[:10]
+
+        for j in raw_jobs:
+            title = j.get("title", "")
+            if not title or not ROLE_REGEX.search(title):
+                continue
+
+            job_id = str(j.get("id", ""))
+            job_url = f"https://www.workatastartup.com/jobs/{job_id}"
+            company = j.get("companyName", "YC Startup")
+            loc = j.get("location", "Remote")
+            is_remote = "remote" in loc.lower()
+
+            desc_parts = []
+            if j.get("companyOneLiner"):
+                desc_parts.append(f"Company: {j['companyOneLiner']}")
+            if j.get("salary"):
+                desc_parts.append(f"Compensation: {j['salary']}")
+            if j.get("roleType"):
+                desc_parts.append(f"Role Type: {j['roleType']}")
+            description = "\n".join(desc_parts)
+
+            jobs.append({
+                "id": f"yc-{job_id}",
+                "site": "Y Combinator",
+                "job_url": job_url,
+                "job_url_direct": job_url,
+                "title": title,
+                "company": company,
+                "location": loc,
+                "date_posted": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "posted_at": datetime.now(timezone.utc).isoformat(),
+                "description": description,
+                "is_remote": is_remote,
+                "search_keyword": "YC Startup",
+            })
+    except Exception as e:
+        logging.debug(f"Error scraping Y Combinator portal: {e}")
+    return jobs
+
+
 def scrape_remotive_portal(term: str, is_smoke: bool = False) -> list[dict]:
     """Scrape Remotive Public API for data and analytics listings."""
     jobs = []
@@ -728,6 +790,7 @@ def main():
         )
         if not args.watch:
             all_jobs.extend(scrape_himalayas_portal("Data & Analytics", is_smoke=args.smoke_test))
+            all_jobs.extend(scrape_yc_portal(is_smoke=args.smoke_test))
             all_jobs.extend(scrape_remotive_portal("Data & Analytics", is_smoke=args.smoke_test))
             all_jobs.extend(scrape_remoteok_portal("Data & Software", is_smoke=args.smoke_test))
             all_jobs.extend(scrape_jobicy_portal("Data & Analytics", is_smoke=args.smoke_test))
