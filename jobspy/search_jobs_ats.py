@@ -59,6 +59,13 @@ DEFAULT_SEARCH_TERMS = [
     # Product & Operations
     "Associate Product Manager",
     "Business Operations Associate",
+    "BizOps Analyst",
+    "RevOps Analyst",
+    "Revenue Operations Analyst",
+    "Sales Operations Analyst",
+    "GTM Operations Analyst",
+    "Solutions Analyst",
+    "Commercial Analytics Associate",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
     "Data Engineer",
@@ -189,11 +196,11 @@ COMPANY_ALIASES = {
     "glean": ("greenhouse", "gleanwork"),
 }
 
-# Regex filter for analytics/data/bi job titles in target company boards
+# Regex filter for analytics/data/bi/operations job titles in target company boards
 ROLE_PATTERN = re.compile(
     r"\b(?:analyst|analytics|data|scientist|statistician|quantitative|bi|"
     r"software|developer|backend|back-end|platform|product engineer|security|cybersecurity|"
-    r"infosec|soc|devops|sre)\b",
+    r"infosec|soc|devops|sre|revops|bizops|operations|solutions)\b",
     re.IGNORECASE,
 )
 

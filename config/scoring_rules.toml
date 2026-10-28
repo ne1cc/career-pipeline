@@ -63,7 +63,9 @@ data_eng = [
 analytics_msba = [
   "analyst", "analytics", "data scientist", "business intelligence", "bi engineer",
   "bi developer", "decision science", "business analyst", "quantitative", "quant",
-  "product manager", "product analyst", "operations analyst", "bizops", "business operations", "financial analyst",
+  "product manager", "product analyst", "operations analyst", "bizops", "business operations",
+  "revops", "revenue operations", "sales operations", "gtm operations", "solutions analyst",
+  "growth analyst", "commercial analytics", "insights analyst", "financial analyst",
   "marketing analyst", "pricing analyst", "risk analyst", "research analyst", "economist",
   "statistician", "insights"
 ]

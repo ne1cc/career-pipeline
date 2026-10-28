@@ -88,6 +88,13 @@ DEFAULT_SEARCH_TERMS = [
     # Product & Operations
     "Associate Product Manager",
     "Business Operations Associate",
+    "BizOps Analyst",
+    "RevOps Analyst",
+    "Revenue Operations Analyst",
+    "Sales Operations Analyst",
+    "GTM Operations Analyst",
+    "Solutions Analyst",
+    "Commercial Analytics Associate",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
     "Junior Data Analyst",
@@ -113,7 +120,9 @@ ROLE_REGEX = re.compile(
     r"supply chain analysts?|pricing analysts?|revenue analysts?|sales operations analysts?|"
     r"risk analysts?|business analytics consultants?|computer systems analysts?|programmer analysts?|"
     r"associate data & analytics|technology advisory associates?|strategy consultants?|"
-    r"associate product managers?|apm|business operations associates?|"
+    r"associate product managers?|apm|business operations associates?|bizops|"
+    r"revops analysts?|revenue operations|sales operations|gtm operations|solutions analysts?|"
+    r"commercial analytics|insights analysts?|"
     r"software engineers?|software developers?|swe|junior developers?|"
     r"backend engineers?|back-end engineers?|backend developers?|back-end developers?|"
     r"platform engineers?|product engineers?|frontend engineers?|front-end engineers?|"
