@@ -1473,6 +1473,30 @@ def test_list_candidate_result_dirs_and_select(tmp_path, monkeypatch):
     assert selected_files == sorted(d21.glob("*_jobs.csv"))
 
 
+def test_collect_recent_days_and_bulk_ingest(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    # Populate 3 days: 2026_10_26, 2026_10_27, 2026_10_28
+    days = ["2026_10_26", "2026_10_27", "2026_10_28"]
+    for day in days:
+        d = results / "2026_10" / day
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{day}_jobs.csv").write_text("id\n1")
+
+    # Ingest last 2 days (should get 10_28 and 10_27)
+    res_2d = cli._expand_inputs(None, days=2)
+    assert len(res_2d) == 2
+    assert sorted([p.parent.name for p in res_2d]) == ["2026_10_27", "2026_10_28"]
+
+    # Ingest last 5 days (should get all 3 populated days)
+    res_5d = cli._expand_inputs(None, days=5)
+    assert len(res_5d) == 3
+
+
+
 
 
 

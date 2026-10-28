@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -254,7 +254,47 @@ def _resolve_results_date_dir(date_query: str) -> Path:
     return target_dir
 
 
-def _expand_inputs(inputs: list[Path] | None, date_str: str | None = None, select: bool = False) -> list[Path]:
+def _collect_recent_days_inputs(days: int = 5) -> list[Path]:
+    """Collect all *_jobs.csv from results directories within the most recent N days."""
+    candidates = _list_candidate_result_dirs()
+    if not candidates:
+        return []
+
+    # Filter directories whose date is within `days` of either now or the latest available directory date
+    latest_dt: datetime | None = None
+    dir_dates: list[tuple[datetime, Path]] = []
+    for date_str, _, path in candidates:
+        try:
+            dt = datetime.strptime(date_str, "%Y_%m_%d")
+            dir_dates.append((dt, path))
+            if latest_dt is None or dt > latest_dt:
+                latest_dt = dt
+        except ValueError:
+            continue
+
+    if not dir_dates or latest_dt is None:
+        return []
+
+    # Take directories within `days` of latest date, or take top `days` directories
+    cutoff = latest_dt - timedelta(days=days - 1)
+    matched_dirs = [path for dt, path in dir_dates if dt >= cutoff]
+    if not matched_dirs:
+        # Fallback to top N most recent date directories
+        matched_dirs = [path for _, path in dir_dates[:days]]
+
+    all_csvs: list[Path] = []
+    for d in matched_dirs:
+        all_csvs.extend(sorted(d.glob("*_jobs.csv")))
+    return all_csvs
+
+
+def _expand_inputs(inputs: list[Path] | None, date_str: str | None = None, select: bool = False, days: int | None = None) -> list[Path]:
+    if days is not None:
+        csvs = _collect_recent_days_inputs(days=days)
+        if not csvs:
+            raise typer.BadParameter(f"No *_jobs.csv found in results directories from the last {days} days.")
+        return csvs
+
     if select:
         selected_dir = _interactive_fuzzy_select_dir()
         if not selected_dir:
@@ -368,6 +408,7 @@ def _load_input_frame(p: Path, sheet: str | None = None) -> "pd.DataFrame":
 def ingest(
     inputs: Annotated[Optional[list[Path]], typer.Argument(help="JobSpy CSVs, directory, date (e.g. 10/27, 2026_10_27), or Excel workbooks; default: latest results dir or ~/Downloads/Job_Report_*.xlsx")] = None,
     select: Annotated[bool, typer.Option("--select", "-s", help="Open an interactive fuzzy finder (fzf) to choose which results date directory to ingest")] = False,
+    days: Annotated[Optional[int], typer.Option("--days", help="Bulk ingest CSVs from results directories across the last N days (default for bulk: 5)")] = None,
     date: Annotated[Optional[str], typer.Option("--date", "-d", help="Ingest from specific date directory under results/ (e.g. '10/27', '2026_10_27', '2026-10-27')")] = None,
     sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
 ) -> None:
@@ -385,7 +426,7 @@ def ingest(
     )
     from cockpit import intel as intel_module
 
-    paths = _expand_inputs(inputs, date_str=date, select=select)
+    paths = _expand_inputs(inputs, date_str=date, select=select, days=days)
     if not paths:
         raise typer.BadParameter(f"No CSVs found in {_default_results_dir()} and no Job_Report_*.xlsx found in ~/Downloads; pass paths explicitly.")
 
@@ -433,6 +474,15 @@ def ingest(
         f"[bold green]✔ Ingest complete:[/bold green] [cyan]{len(paths)} file(s)[/cyan] from [yellow]{source_label}[/yellow] "
         f"({', '.join(p.name for p in paths)}) {stats} | stale holds flagged: {expired}"
     )
+
+
+@app.command("bulk-ingest")
+def bulk_ingest(
+    days: Annotated[int, typer.Option("--days", "-n", help="Number of recent days of results directories to ingest")] = 5,
+    sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
+) -> None:
+    """Bulk ingest all scraped CSVs across the last N days (default: 5 days)."""
+    ingest(inputs=None, select=False, days=days, date=None, sheet=sheet)
 
 
 @app.command()
