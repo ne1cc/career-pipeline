@@ -621,9 +621,180 @@ def sync_saved(
     )
 
 
+def _list_candidate_dossiers(root: Path) -> list[dict[str, Any]]:
+    """List all saved dossier folders with parsed fit score, mtime, and apply URL."""
+    if not root.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        p = d / "05_interview_dossier.md"
+        if not p.is_file():
+            mds = sorted(d.glob("*dossier*.md"))
+            p = mds[0] if mds else None
+
+        fit_score = "—"
+        apply_url = ""
+        archetype = ""
+        if p and p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="replace")
+                m_fit = re.search(r"fit_score:\s*([\d\.]+)|Score:\s*([\d\.]+)", txt)
+                if m_fit:
+                    fit_score = m_fit.group(1) or m_fit.group(2)
+                m_url = re.search(r"apply_url:\s*\"([^\"]+)\"|URL:\s*(https?://\S+)", txt)
+                if m_url:
+                    apply_url = m_url.group(1) or m_url.group(2)
+                m_arch = re.search(r"archetype:\s*\"?([^\n\"]+)\"?", txt)
+                if m_arch:
+                    archetype = m_arch.group(1).strip()
+            except Exception:
+                pass
+
+        mtime = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d")
+        items.append({
+            "folder": d,
+            "dossier": p,
+            "name": d.name,
+            "fit_score": fit_score,
+            "mtime": mtime,
+            "apply_url": apply_url,
+            "archetype": archetype,
+        })
+    # Sort by mtime descending
+    items.sort(key=lambda x: x["folder"].stat().st_mtime, reverse=True)
+    return items
+
+
+def _curses_fuzzy_select_dossier(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Curses interactive fuzzy finder for dossiers."""
+    import curses
+
+    def _menu(stdscr: curses.window) -> dict[str, Any] | None:
+        curses.curs_set(1)
+        curses.use_default_colors()
+        query = ""
+        selected_idx = 0
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            if not query.strip():
+                matched = candidates[:]
+            else:
+                scored = []
+                for item in candidates:
+                    label = f"{item['name']} {item['fit_score']} {item['archetype']} {item['mtime']}"
+                    s = _fuzzy_score(query, label)
+                    if s >= 0:
+                        scored.append((s, item))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                matched = [item for _, item in scored]
+
+            if selected_idx >= len(matched):
+                selected_idx = max(0, len(matched) - 1)
+
+            header = f"Select Job Dossier | Total: {len(candidates)} dossiers (↑/↓: navigate, Enter: select, Esc/q: cancel)"
+            stdscr.addnstr(0, 0, header[:max_x], max_x, curses.A_BOLD)
+            search_line = f"Search: {query}"
+            stdscr.addnstr(1, 0, search_line[:max_x], max_x, curses.A_UNDERLINE)
+
+            legend = "  FIT    DATE         ROLE / COMPANY"
+            stdscr.addnstr(3, 0, legend[:max_x], max_x, curses.A_DIM)
+
+            list_y = 4
+            available_rows = max_y - list_y - 1
+
+            start_row = 0
+            if selected_idx >= available_rows:
+                start_row = selected_idx - available_rows + 1
+
+            for display_i, i in enumerate(range(start_row, min(len(matched), start_row + available_rows))):
+                item = matched[i]
+                fit_str = f"{item['fit_score']:>3}★" if item['fit_score'] != "—" else "   — "
+                line_str = f"  {fit_str}  {item['mtime']}   {item['name']}"
+                is_selected = (i == selected_idx)
+                attr = curses.A_REVERSE | curses.A_BOLD if is_selected else curses.A_NORMAL
+                marker = "▶" if is_selected else " "
+                stdscr.addnstr(list_y + display_i, 0, f"{marker}{line_str[1:]}"[:max_x], max_x, attr)
+
+            stdscr.refresh()
+            stdscr.move(1, min(len(search_line), max_x - 1))
+
+            ch = stdscr.getch()
+            if ch in (27,):  # ESC
+                return None
+            elif ch in (curses.KEY_ENTER, 10, 13):
+                if matched and 0 <= selected_idx < len(matched):
+                    return matched[selected_idx]
+                return None
+            elif ch in (curses.KEY_UP, 65):
+                selected_idx = max(0, selected_idx - 1)
+            elif ch in (curses.KEY_DOWN, 66):
+                if matched:
+                    selected_idx = min(len(matched) - 1, selected_idx + 1)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                query = query[:-1]
+                selected_idx = 0
+            elif 32 <= ch <= 126:
+                query += chr(ch)
+                selected_idx = 0
+
+    return curses.wrapper(_menu)
+
+
+def _interactive_fuzzy_select_dossier(root: Path) -> dict[str, Any] | None:
+    """Prompt user to select a dossier using fzf or curses."""
+    candidates = _list_candidate_dossiers(root)
+    if not candidates:
+        return None
+
+    fzf_bin = shutil.which("fzf") or (Path("/opt/homebrew/bin/fzf") if Path("/opt/homebrew/bin/fzf").is_file() else None)
+    if fzf_bin and sys.stdin.isatty():
+        lines = []
+        for c in candidates:
+            fit = f"{c['fit_score']:>3}★" if c['fit_score'] != "—" else "   — "
+            lines.append(f"{fit}  │  {c['mtime']}  │  {c['name']}  │  {c['folder']}")
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(fzf_bin),
+                    "--height=40%",
+                    "--reverse",
+                    "--prompt=Select Job Dossier > ",
+                    "--header=Enter: select, Esc: cancel. Search by company, role, or score.",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, _ = proc.communicate(input="\n".join(lines))
+            if proc.returncode == 0 and stdout.strip():
+                parts = stdout.strip().split("│")
+                if len(parts) >= 4:
+                    chosen_folder = Path(parts[-1].strip())
+                    for c in candidates:
+                        if c["folder"] == chosen_folder:
+                            return c
+        except Exception:
+            pass
+
+    if sys.stdin.isatty():
+        try:
+            return _curses_fuzzy_select_dossier(candidates)
+        except Exception:
+            pass
+
+    return candidates[0] if candidates else None
+
+
 @app.command("dossier")
 def dossier_cmd(
     query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
+    select: Annotated[bool, typer.Option("--select", "-s", help="Open an interactive fuzzy finder (fzf) to select and action a dossier")] = False,
     cat: Annotated[bool, typer.Option("--cat", "-c", help="Render dossier in terminal with rich markdown formatting")] = False,
     nvim: Annotated[bool, typer.Option("--nvim", "-v", help="Open dossier directly in Neovim")] = False,
     edit: Annotated[bool, typer.Option("--edit", "-e", help="Open dossier in Neovim / $EDITOR")] = False,
@@ -655,8 +826,51 @@ def dossier_cmd(
     use_nvim = nvim or edit
     target_dossier: Path | None = None
     target_folder: Path | None = None
+    target_apply_url: str = ""
 
-    if latest:
+    if select:
+        chosen = _interactive_fuzzy_select_dossier(root)
+        if not chosen:
+            console.print("[yellow]Selection cancelled.[/yellow]")
+            return
+        target_folder = chosen["folder"]
+        target_dossier = chosen["dossier"]
+        target_apply_url = chosen.get("apply_url", "")
+
+        # Interactive quick-action prompt if no specific action flag passed
+        if not (cat or use_nvim or open_in_editor):
+            console.print(f"\n[bold cyan]Selected:[/bold cyan] [bright_white]{chosen['name']}[/bright_white] "
+                          f"([yellow]{chosen['fit_score']}★[/yellow])")
+            actions_msg = (
+                "[1] View Markdown in terminal  [2] Open in Neovim  [3] Open Folder in Finder  "
+                "[4] Open Apply URL in Browser  [5] Copy Dossier Path  [q] Cancel"
+            )
+            console.print(Panel(actions_msg, title="Choose Action", border_style="cyan"))
+            choice = typer.prompt("Select action", default="1").strip().lower()
+
+            if choice in ("1", "view", "cat"):
+                cat = True
+            elif choice in ("2", "v", "nvim", "edit"):
+                use_nvim = True
+            elif choice in ("3", "f", "finder", "folder"):
+                macos.open_file(target_folder)
+                console.print(f"Opened folder in Finder: [cyan]{target_folder}[/cyan]")
+                return
+            elif choice in ("4", "a", "url", "apply"):
+                if target_apply_url:
+                    macos.open_url(target_apply_url)
+                    console.print(f"Opened apply URL: [cyan]{target_apply_url}[/cyan]")
+                else:
+                    console.print("[yellow]No apply URL found in dossier.[/yellow]")
+                return
+            elif choice in ("5", "c", "copy"):
+                macos.copy_to_clipboard(str(target_dossier or target_folder))
+                console.print(f"Copied path to clipboard: [green]{target_dossier or target_folder}[/green]")
+                return
+            else:
+                return
+
+    elif latest:
         valid_folders = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
         if not valid_folders:
             console.print(f"[yellow]No dossiers found in {root}[/yellow]")
@@ -699,7 +913,7 @@ def dossier_cmd(
             table.add_row(folder.name, mtime, artifacts_str)
 
         console.print(table)
-        console.print("\n[dim]Usage: 'cockpit dossier <query>' (or 'cockpit edit <query>' / 'cjn' for Neovim), add '--cat' to read in terminal[/dim]")
+        console.print("\n[dim]Tip: Use 'cockpit dossier -s' for interactive fuzzy selection and quick actions.[/dim]")
         return
 
     if target_dossier:

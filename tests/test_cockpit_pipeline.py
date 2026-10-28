@@ -1496,6 +1496,35 @@ def test_collect_recent_days_and_bulk_ingest(tmp_path, monkeypatch):
     assert len(res_5d) == 3
 
 
+def test_list_candidate_dossiers_and_fuzzy_score(tmp_path):
+    from cockpit import cli
+    root = tmp_path / "artifacts"
+    root.mkdir()
+
+    job1 = root / "Nintendo - Systems Analyst - 2026-10-21"
+    job1.mkdir()
+    (job1 / "05_interview_dossier.md").write_text(
+        'dedup_key: 123 company: "Nintendo" archetype: "Solutions Architect"\nfit_score: 4.7\napply_url: "https://nintendo.com/jobs/1"\n'
+    )
+
+    job2 = root / "Stripe - Data Engineer - 2026-10-22"
+    job2.mkdir()
+    (job2 / "05_interview_dossier.md").write_text(
+        'dedup_key: 456 company: "Stripe" archetype: "Data Platform"\nfit_score: 3.5\napply_url: "https://stripe.com/jobs/2"\n'
+    )
+
+    candidates = cli._list_candidate_dossiers(root)
+    assert len(candidates) == 2
+    nintendo_cand = [c for c in candidates if "Nintendo" in c["name"]][0]
+    assert nintendo_cand["fit_score"] == "4.7"
+    assert nintendo_cand["apply_url"] == "https://nintendo.com/jobs/1"
+
+    # Test scoring
+    assert cli._fuzzy_score("nintendo", nintendo_cand["name"]) > 0
+    assert cli._fuzzy_score("stripe", nintendo_cand["name"]) == -1
+
+
+
 
 
 
