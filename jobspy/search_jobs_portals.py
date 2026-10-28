@@ -391,6 +391,24 @@ def scrape_builtin_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 continue
 
             soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Extract job description summaries from JSON-LD schema if present
+            ld_descriptions: dict[str, str] = {}
+            for s in soup.find_all("script", type="application/ld+json"):
+                if not s.string:
+                    continue
+                try:
+                    data = json.loads(s.string)
+                    items = data.get("@graph", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                    for item in items:
+                        if isinstance(item, dict) and item.get("@type") == "ItemList":
+                            for elem in item.get("itemListElement", []):
+                                if isinstance(elem, dict) and elem.get("url") and elem.get("description"):
+                                    elem_url = elem["url"].rstrip("/")
+                                    ld_descriptions[elem_url] = elem["description"]
+                except Exception:
+                    pass
+
             cards = soup.find_all("div", attrs={"data-id": "job-card"})
             for card in cards:
                 title_el = card.find("h2") or card.find("a", attrs={"data-id": "job-card-title"})
@@ -415,6 +433,16 @@ def scrape_builtin_portal(term: str, is_smoke: bool = False) -> list[dict]:
                 is_remote = "remote" in card_text.lower()
                 loc = "Seattle, WA" if "seattle" in base_url else ("Remote" if is_remote else "")
 
+                # Match description from JSON-LD or fallback to card body text
+                job_clean_url = job_url.rstrip("/")
+                description = ld_descriptions.get(job_clean_url, "")
+                if not description:
+                    # Check partial URL match in ld_descriptions
+                    for u, desc in ld_descriptions.items():
+                        if u.endswith(href) or href.endswith(u.replace("https://www.builtin.com", "").replace("https://www.builtinseattle.com", "")):
+                            description = desc
+                            break
+
                 date_posted = ""
                 job_id = card.get("id", "").replace("job-card-", "") or job_url
 
@@ -428,6 +456,7 @@ def scrape_builtin_portal(term: str, is_smoke: bool = False) -> list[dict]:
                     "location": loc,
                     "date_posted": date_posted,
                     "posted_at": "",
+                    "description": description,
                     "is_remote": is_remote,
                     "search_keyword": term,
                 })
