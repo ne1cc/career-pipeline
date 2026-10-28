@@ -1410,5 +1410,70 @@ def test_default_results_dir_prefers_max_csv_count_then_latest_date(tmp_path, mo
     assert selected_after_finish == d27
 
 
+def test_expand_inputs_supports_date_and_directories(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    d27 = results / "2026_10" / "2026_10_27"
+    d27.mkdir(parents=True, exist_ok=True)
+    f1 = d27 / "ats_direct_jobs.csv"
+    f2 = d27 / "tech_portals_jobs.csv"
+    f1.write_text("id,title\n1,Software Engineer")
+    f2.write_text("id,title\n2,Data Engineer")
+
+    # Resolve by --date "10/27"
+    res_date = cli._expand_inputs(None, date_str="10/27")
+    assert res_date == [f1, f2]
+
+    # Resolve by positional argument "10/27"
+    res_pos = cli._expand_inputs([Path("10/27")])
+    assert res_pos == [f1, f2]
+
+    # Resolve by explicit directory
+    res_dir = cli._expand_inputs([d27])
+    assert res_dir == [f1, f2]
+
+    # Resolve by YYYY_MM_DD
+    res_full = cli._expand_inputs(None, date_str="2026_10_27")
+    assert res_full == [f1, f2]
+
+
+def test_list_candidate_result_dirs_and_select(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    # Populate two dates: 2026_10_21 with 3 CSVs and 2026_10_27 with 2 CSVs
+    d21 = results / "2026_10" / "2026_10_21"
+    d27 = results / "2026_10" / "2026_10_27"
+    for d in (d21, d27):
+        d.mkdir(parents=True, exist_ok=True)
+
+    for i in range(3):
+        (d21 / f"seg_{i}_jobs.csv").write_text("id\n1")
+    for i in range(2):
+        (d27 / f"seg_{i}_jobs.csv").write_text("id\n2")
+
+    candidates = cli._list_candidate_result_dirs()
+    # Sorted by date descending
+    assert [c[0] for c in candidates] == ["2026_10_27", "2026_10_21"]
+    assert [c[1] for c in candidates] == [2, 3]
+
+    # Test fuzzy scoring logic
+    assert cli._fuzzy_score("10/27", "2026_10_27 2 csv") > 0
+    assert cli._fuzzy_score("3 csv", "2026_10_21 3 csv") > 0
+
+    # Mock selection via --select
+    monkeypatch.setattr(cli, "_interactive_fuzzy_select_dir", lambda: d21)
+    selected_files = cli._expand_inputs(None, select=True)
+    assert len(selected_files) == 3
+    assert selected_files == sorted(d21.glob("*_jobs.csv"))
+
+
+
+
 
 
