@@ -59,6 +59,17 @@ DEFAULT_SEARCH_TERMS = [
     # Product & Operations
     "Associate Product Manager",
     "Business Operations Associate",
+    "BizOps Analyst",
+    "RevOps Analyst",
+    "Revenue Operations Analyst",
+    "Sales Operations Analyst",
+    "GTM Operations Analyst",
+    "Solutions Analyst",
+    "Commercial Analytics Associate",
+    "Operations Coordinator",
+    "Associate Analyst",
+    "Rotational Analyst",
+    "Data Operations Specialist",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
     "Data Engineer",

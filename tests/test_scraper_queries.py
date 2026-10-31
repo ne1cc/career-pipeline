@@ -11,6 +11,9 @@ def test_remote_search_terms_include_analytics_engineer():
     assert "Junior Software Engineer" in terms
     assert "Cybersecurity Analyst" in terms
     assert "Junior Security Engineer" in terms
+    assert "Operations Coordinator" in terms
+    assert "Associate Analyst" in terms
+    assert "Rotational Analyst" in terms
 
 def test_seattle_search_terms_include_analytics_engineer():
     terms = search_jobs_seattle.search_terms
@@ -18,6 +21,8 @@ def test_seattle_search_terms_include_analytics_engineer():
     assert "Business Operations Associate" in terms
     assert "Junior Software Engineer" in terms
     assert "Cybersecurity Analyst" in terms
+    assert "Operations Coordinator" in terms
+    assert "Associate Analyst" in terms
 
 def test_west_search_terms_include_analytics_engineer():
     terms = search_jobs_west.search_terms
@@ -25,6 +30,8 @@ def test_west_search_terms_include_analytics_engineer():
     assert "Associate Product Manager" in terms
     assert "Junior Software Engineer" in terms
     assert "Cybersecurity Analyst" in terms
+    assert "Operations Coordinator" in terms
+    assert "Associate Analyst" in terms
 
 def test_ats_queries_include_early_career_tags():
     terms = search_jobs_ats.DEFAULT_SEARCH_TERMS
