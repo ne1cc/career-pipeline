@@ -63,7 +63,12 @@ search_terms = [
     "Business Operations Associate",
     "BizOps Analyst",
     "Project Coordinator",
+    "Operations Coordinator",
     "Strategy & Operations Associate",
+    "Solutions Analyst",
+    "Associate Analyst",
+    "Rotational Analyst",
+    "Data Operations Specialist",
 
     # Junior Software Engineering & Developer Roles
     "Associate Software Engineer",

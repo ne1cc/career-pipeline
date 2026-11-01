@@ -86,6 +86,21 @@ class CockpitTable(DataTable):
         super().__init__(*args, **kwargs)
         self.highlighted_row_keys: set[Any] = set()
 
+    def on_resize(self, event: Any) -> None:
+        self.adjust_title_width(event.size.width)
+
+    def adjust_title_width(self, total_width: int) -> None:
+        if not self.columns or "title" not in self.columns:
+            return
+        fixed_sum = sum(width for key, _, width in COLUMNS if key != "title")
+        padding_total = (len(self.columns) * 2) + 2
+        avail = total_width - fixed_sum - padding_total
+        new_width = max(34, avail)
+        col = self.columns["title"]
+        if col.width != new_width:
+            col.width = new_width
+            self.refresh(layout=True)
+
     def _get_row_style(self, row_index: int, base_style: Style) -> Style:
         style = super()._get_row_style(row_index, base_style)
         if 0 <= row_index < len(self.ordered_rows):
@@ -187,9 +202,10 @@ class JobCockpitApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one(DataTable)
+        table = self.query_one(CockpitTable)
         for key, label, width in COLUMNS:
             table.add_column(label, width=width, key=key)
+        table.adjust_title_width(table.size.width)
         with session(self.db_path) as con:
             expire_stale_referral_holds(con)
             intel.reconcile_saved_jobs(con, self.export_dir)

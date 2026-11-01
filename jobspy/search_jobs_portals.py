@@ -95,6 +95,10 @@ DEFAULT_SEARCH_TERMS = [
     "GTM Operations Analyst",
     "Solutions Analyst",
     "Commercial Analytics Associate",
+    "Operations Coordinator",
+    "Associate Analyst",
+    "Rotational Analyst",
+    "Data Operations Specialist",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
     "Junior Data Analyst",
