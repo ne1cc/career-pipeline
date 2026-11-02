@@ -497,6 +497,7 @@ def fetch_jobs(
     query: str | None = None,
     hours: int | None = None,
     jd_keywords: list[str] | str | None = None,
+    date_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
     clauses, params = [], []
@@ -526,6 +527,13 @@ def fetch_jobs(
     if location and status != "SAVED":
         clauses.append("(lower(COALESCE(location, '')) LIKE ? OR (is_remote AND ? = 'remote'))")
         params += [f"%{location.lower()}%", location.lower()]
+    if date_filter:
+        norm_date = date_filter.strip().replace("-", "_").replace("/", "_")
+        clauses.append(
+            "(strftime(discovered_at, '%Y_%m_%d') LIKE ? OR strftime(discovered_at, '%m_%d') LIKE ? "
+            "OR strftime(discovered_at, '%Y-%m-%d') LIKE ? OR strftime(discovered_at, '%m/%d') LIKE ?)"
+        )
+        params.extend([f"%{norm_date}%", f"%{norm_date}%", f"%{date_filter.strip()}%", f"%{date_filter.strip()}%"])
     if query:
         # If query contains commas, split into multiple required keyword terms
         subterms = [t.strip() for t in query.split(",") if t.strip()]
@@ -560,6 +568,18 @@ def fetch_jobs(
 
 def list_segments(con: duckdb.DuckDBPyConnection) -> list[str]:
     return [r[0] for r in con.execute("SELECT DISTINCT segment FROM job_segments ORDER BY 1").fetchall()]
+
+
+def list_ingest_dates(con: duckdb.DuckDBPyConnection) -> list[str]:
+    """Returns distinct discovered_at dates formatted as YYYY_MM_DD descending."""
+    return [
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT strftime(discovered_at, '%Y_%m_%d') FROM jobs_master "
+            "WHERE discovered_at IS NOT NULL ORDER BY 1 DESC"
+        ).fetchall()
+        if r[0]
+    ]
 
 
 def rescore_queued(
