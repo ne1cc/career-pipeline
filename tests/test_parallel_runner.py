@@ -38,11 +38,16 @@ modes = MODES
 mode = modes[min(n, len(modes) - 1)]
 if mode == "fail":
     sys.exit(1)
-if mode == "slow":
-    time.sleep(0.4)
-    mode = 6
 out = Path(os.environ["JOBSPY_RESULTS_DIR"])
 out.mkdir(parents=True, exist_ok=True)
+if mode == "incremental_slow":
+    rows = [f"indeed,Analyst,https://example.com/{i}\\n" for i in range(3)]
+    (out / "remote_jobs.csv").write_text("site,title,job_url\\n" + "".join(rows))
+    time.sleep(0.4)
+    mode = "missing"
+elif mode == "slow":
+    time.sleep(0.4)
+    mode = 6
 if mode == "bad":
     (out / "remote_jobs.csv").write_text('site,title,job_url\\nindeed,"unterminated')
 elif mode != "missing":
@@ -206,3 +211,15 @@ def test_monitor_tracks_actual_retry_pid(runner, monkeypatch):
     assert running[0]["pid"] != running[-1]["pid"]
     assert running[-1]["retried"] is True
     assert running[-1]["duration_sec"] is None
+
+
+def test_timeout_preserves_incremental_rows(runner, monkeypatch):
+    root, results, configure = runner
+    script = configure(["incremental_slow", "incremental_slow"])
+    monkeypatch.setenv("JOBSPY_TASK_TIMEOUT_SEC", "0.1")
+    run_parallel.main()
+    task = state(root)["tasks"][script.name]
+    assert task["row_count"] == 3
+    assert "timed out" in task["error"].lower()
+    assert run_parallel.count_csv_rows(results / "remote_jobs.csv") == 3
+

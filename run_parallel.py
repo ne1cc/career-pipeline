@@ -242,9 +242,8 @@ def main():
         previous_complete = previous_rows > 0 and task.get("error") is None
         if (
             rows > 0
-            and not timed_out
             and rows >= previous_rows
-            and (process.returncode == 0 or not previous_complete)
+            and (process.returncode == 0 or not previous_complete or timed_out)
         ):
             attempt["csv"].replace(results_dir / EXPECTED_OUTPUTS[name])
             task.update(row_count=rows, error=error)

@@ -128,7 +128,7 @@ def test_cli_pipeline_logs(tmp_path, monkeypatch):
     assert "cron line 2" in res.stdout
 
     # Test named scraper log
-    logs_dir = tmp_path / "jobspy" / "scraped jobs" / "logs" / "2026_10"
+    logs_dir = tmp_path / "jobspy" / "scraped jobs" / "logs" / datetime.now().strftime("%Y_%m")
     logs_dir.mkdir(parents=True)
     seattle_log = logs_dir / "search_jobs_seattle.log"
     seattle_log.write_text("seattle scrape line\n")

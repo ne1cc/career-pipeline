@@ -66,68 +66,78 @@ search_terms = [
     "SOC Analyst",
 ]
 
-all_jobs_list = []
-had_errors = False
-
-print(f"Starting scrape for {len(locations)} locations × {len(search_terms)} terms (Entry Level focus)...\n")
-
-for loc in locations:
-    print(f"--- {loc} ---")
-    for term in search_terms:
-        print(f"  > Scraping: '{term}' in '{loc}'")
-        try:
-            jobs = scrape_jobs(
-                site_name=[
-                    "indeed",
-                    "linkedin",
-                    "zip_recruiter",
-                    "glassdoor",
-                    "google",
-                ],
-                search_term=term,
-                location=loc,
-                google_search_term=f"{term} jobs near {loc} since yesterday",
-                country_indeed="USA",
-                results_wanted=9999,
-                hours_old=48,
-                linkedin_fetch_description=True,
-            )
-            if jobs.attrs.get("scrape_errors"):
-                had_errors = True
-            if not jobs.empty:
-                jobs["search_keyword"] = term
-                jobs["search_city"] = loc
-                all_jobs_list.append(jobs)
-                print(f"    Found {len(jobs)} jobs")
-            else:
-                print("    Found 0 jobs")
-        except Exception as e:
-            had_errors = True
-            print(f"    Error scraping {term} in {loc}: {e}")
-
-if all_jobs_list:
-    combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
-    combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
-    if "title" in combined_jobs.columns:
-        combined_jobs.sort_values(
+def flush_jobs_to_csv(jobs_list: list[pd.DataFrame], output_path: Path) -> int:
+    """Atomically write collected job dataframes to CSV with deduplication."""
+    if not jobs_list:
+        return 0
+    combined = pd.concat(jobs_list, ignore_index=True)
+    combined.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
+    if "title" in combined.columns:
+        combined.sort_values(
             by="title",
             key=lambda col: col.astype(str).str.lower(),
             ascending=True,
             na_position="last",
             inplace=True,
         )
-    print(f"\nTotal unique entry-level jobs: {len(combined_jobs)}")
-    output_path = OUTPUT_DIR / "seattle_entry_level_jobs.csv"
-    combined_jobs.to_csv(
-        output_path,
+    tmp_path = output_path.with_suffix(".tmp")
+    combined.to_csv(
+        tmp_path,
         quoting=csv.QUOTE_NONNUMERIC,
         escapechar="\\",
         index=False,
     )
-    print(f"Saved to {output_path}")
-else:
-    print("No jobs found.")
+    tmp_path.replace(output_path)
+    return len(combined)
 
-if had_errors:
-    print("Some queries failed; any collected partial results were retained.")
-    raise SystemExit(1)
+
+if __name__ == "__main__":
+    output_path = OUTPUT_DIR / "seattle_entry_level_jobs.csv"
+    all_jobs_list = []
+    had_errors = False
+
+    print(f"Starting scrape for {len(locations)} locations × {len(search_terms)} terms (Entry Level focus)...\n")
+
+    for loc in locations:
+        print(f"--- {loc} ---")
+        for term in search_terms:
+            print(f"  > Scraping: '{term}' in '{loc}'")
+            try:
+                jobs = scrape_jobs(
+                    site_name=[
+                        "indeed",
+                        "linkedin",
+                        "google",
+                    ],
+                    search_term=term,
+                    location=loc,
+                    google_search_term=f"{term} jobs near {loc} since yesterday",
+                    country_indeed="USA",
+                    results_wanted=9999,
+                    hours_old=48,
+                    linkedin_fetch_description=True,
+                )
+                if jobs.attrs.get("scrape_errors"):
+                    had_errors = True
+                if not jobs.empty:
+                    jobs["search_keyword"] = term
+                    jobs["search_city"] = loc
+                    all_jobs_list.append(jobs)
+                    total_unique = flush_jobs_to_csv(all_jobs_list, output_path)
+                    print(f"    Found {len(jobs)} jobs ({total_unique} unique saved)")
+                else:
+                    print("    Found 0 jobs")
+            except Exception as e:
+                had_errors = True
+                print(f"    Error scraping {term} in {loc}: {e}")
+
+    if all_jobs_list:
+        total_unique = flush_jobs_to_csv(all_jobs_list, output_path)
+        print(f"\nTotal unique entry-level jobs: {total_unique}")
+        print(f"Saved to {output_path}")
+    else:
+        print("No jobs found.")
+
+    if had_errors:
+        print("Some queries failed; any collected partial results were retained.")
+        raise SystemExit(1)
