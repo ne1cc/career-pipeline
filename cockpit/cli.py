@@ -689,6 +689,71 @@ def pipeline_logs(
         console.print(f"[red]Error reading log: {e}[/red]")
 
 
+@app.command("stop", help="Stop the currently running scraper pipeline, if active.")
+@pipeline_app.command("stop")
+def pipeline_stop() -> None:
+    """Stop the currently running pipeline, if any."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if not state.get("is_active"):
+        console.print("[yellow]No active pipeline is currently running.[/yellow]")
+        return
+    stopped = pipeline_monitor.stop_pipeline(REPO_ROOT)
+    if stopped:
+        console.print("[green]Active pipeline process terminated.[/green]")
+    else:
+        console.print("[yellow]Marked pipeline as stopped (process was no longer alive).[/yellow]")
+
+
+@app.command("retry", help="Selectively re-run failed scrapers without destroying successful outputs.")
+@pipeline_app.command("retry")
+def pipeline_retry(
+    targets: Annotated[
+        Optional[list[str]],
+        typer.Argument(help="Specific scrapers to retry (e.g. remote seattle); default: all failed"),
+    ] = None,
+    watch: Annotated[
+        bool,
+        typer.Option("--watch/--no-watch", "-w", help="Keep monitor active in terminal"),
+    ] = True,
+    kill_active: Annotated[
+        bool,
+        typer.Option("--kill-active", "-k", help="Stop any active pipeline before retrying"),
+    ] = False,
+) -> None:
+    """Selectively re-run failed scrapers without wiping existing successful CSV outputs."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if state.get("is_active"):
+        if not kill_active:
+            if not typer.confirm("A pipeline is currently active. Stop it and launch retry?", default=True):
+                console.print("[yellow]Aborted retry.[/yellow]")
+                raise typer.Exit(0)
+        console.print("[yellow]Stopping active pipeline...[/yellow]")
+        pipeline_monitor.stop_pipeline(REPO_ROOT)
+        time.sleep(1)
+
+    if targets:
+        target_list = list(targets)
+    else:
+        target_list = pipeline_monitor.get_failed_scrapers(REPO_ROOT)
+        if not target_list:
+            console.print("[green]No failed scrapers found to retry! (All scrapers succeeded or state is clean)[/green]")
+            raise typer.Exit(0)
+
+    console.print(f"[cyan]Retrying scrapers: {', '.join(target_list)}[/cyan]")
+    p = pipeline_monitor.launch_pipeline(REPO_ROOT, scrapers=target_list)
+    console.print(f"[dim]Master pipeline spawned for retry (PID: {p.pid})[/dim]")
+    time.sleep(0.5)
+
+    if watch:
+        pipeline_monitor.monitor_loop(REPO_ROOT, once=False)
+    else:
+        console.print("[green]Pipeline retry launched in background. Run 'cockpit pipeline status' to monitor.[/green]")
+
+
 @app.command("init")
 def init_cmd() -> None:
     """Initialize the local DuckDB database and schema."""

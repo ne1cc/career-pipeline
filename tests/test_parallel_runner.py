@@ -223,3 +223,52 @@ def test_timeout_preserves_incremental_rows(runner, monkeypatch):
     assert "timed out" in task["error"].lower()
     assert run_parallel.count_csv_rows(results / "remote_jobs.csv") == 3
 
+
+def test_resolve_target_scripts_filters_properly(tmp_path):
+    jobspy_dir = tmp_path / "jobspy"
+    jobspy_dir.mkdir()
+    for name in run_parallel.EXPECTED_OUTPUTS.keys():
+        (jobspy_dir / name).touch()
+
+    # Exact filename
+    res1 = run_parallel.resolve_target_scripts(tmp_path, ["search_jobs_remote.py"])
+    assert len(res1) == 1
+    assert res1[0].name == "search_jobs_remote.py"
+
+    # Substring / stem (e.g. "remote", "seattle")
+    res2 = run_parallel.resolve_target_scripts(tmp_path, ["remote", "seattle"])
+    assert len(res2) >= 2
+    names = {s.name for s in res2}
+    assert "search_jobs_remote.py" in names
+    assert "search_jobs_seattle.py" in names
+
+    # Empty / none defaults to all
+    res_all = run_parallel.resolve_target_scripts(tmp_path, [])
+    assert len(res_all) == len(run_parallel.EXPECTED_OUTPUTS)
+
+
+def test_selective_scrapers_preserves_unrelated_output(runner, monkeypatch, tmp_path):
+    root, results, configure = runner
+    script1 = configure([3])
+    script2 = tmp_path / "search_jobs_seattle.py"
+    script2.write_text("""import os, sys
+from pathlib import Path
+out = Path(os.environ["JOBSPY_RESULTS_DIR"])
+(out / "seattle_jobs.csv").write_text("site,title,job_url\\nindeed,Dev,https://example.com/s1\\n")
+""")
+    monkeypatch.setattr(run_parallel, "SCRIPTS", [script1, script2])
+    monkeypatch.setattr(
+        run_parallel,
+        "EXPECTED_OUTPUTS",
+        {script1.name: "remote_jobs.csv", script2.name: "seattle_jobs.csv"},
+    )
+    # Pre-populate seattle_jobs.csv
+    (results / "seattle_jobs.csv").write_text("site,title,job_url\nindeed,Dev,https://example.com/s1\n")
+
+    monkeypatch.setenv("JOBSPY_SCRAPERS", "remote")
+    run_parallel.main()
+
+    assert run_parallel.count_csv_rows(results / "remote_jobs.csv") == 3
+    assert run_parallel.count_csv_rows(results / "seattle_jobs.csv") == 1
+
+

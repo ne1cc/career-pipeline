@@ -4,6 +4,7 @@ import collections
 import csv
 import json
 import os
+import signal
 import statistics
 import subprocess
 import sys
@@ -213,6 +214,55 @@ def is_pid_alive(pid: int | None) -> bool:
         return True
     except OSError:
         return False
+
+
+def stop_pipeline(repo_root: Path) -> bool:
+    """Terminate the currently active pipeline process and its process group."""
+    state = get_pipeline_state(repo_root)
+    pid = state.get("pid")
+    stopped = False
+    if pid and is_pid_alive(pid):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            stopped = True
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                stopped = True
+            except Exception:
+                pass
+    update_pipeline_state(
+        repo_root,
+        phase="STOPPED",
+        error="Pipeline stopped by user",
+        finished_at=datetime.now().isoformat(),
+    )
+    return stopped
+
+
+def get_failed_scrapers(repo_root: Path) -> list[str]:
+    """Return list of scraper script names that failed, were aborted, or yielded 0 rows in the latest run."""
+    state = get_pipeline_state(repo_root)
+    state_file = get_state_file(repo_root)
+    raw_tasks: dict[str, Any] = {}
+    if state_file.is_file():
+        try:
+            raw_tasks = json.loads(state_file.read_text(encoding="utf-8")).get("tasks", {})
+        except Exception:
+            raw_tasks = {}
+
+    if not raw_tasks:
+        return []
+
+    tasks = state.get("tasks", {})
+    failed: list[str] = []
+    for name in raw_tasks:
+        task = tasks.get(name, {})
+        status = task.get("status")
+        rows = task.get("row_count") or 0
+        if status != "done" or rows == 0:
+            failed.append(name)
+    return failed
 
 
 def tail_file(path: Path | str | None, max_lines: int = 1) -> str:
@@ -593,7 +643,7 @@ def resolve_pipeline_python(repo_root: Path) -> str:
     return sys.executable
 
 
-def launch_pipeline(repo_root: Path) -> subprocess.Popen:
+def launch_pipeline(repo_root: Path, scrapers: list[str] | None = None) -> subprocess.Popen:
     """Launch run_pipeline.py as a detached background process with output logged."""
     runner = repo_root / "run_pipeline.py"
     log_file = repo_root / "pipeline_cron.log"
@@ -606,6 +656,8 @@ def launch_pipeline(repo_root: Path) -> subprocess.Popen:
 
     py_bin = resolve_pipeline_python(repo_root)
     env["JOBSPY_PYTHON"] = py_bin
+    if scrapers:
+        env["JOBSPY_SCRAPERS"] = ",".join(scrapers)
 
     p = subprocess.Popen(
         [py_bin, str(runner)],
@@ -616,13 +668,14 @@ def launch_pipeline(repo_root: Path) -> subprocess.Popen:
         start_new_session=True,
     )
     # Immediately initialize state so monitor_loop doesn't read a stale finished/failed run
+    initial_tasks = get_pipeline_state(repo_root).get("tasks", {}) if scrapers else {}
     update_pipeline_state(
         repo_root,
         pid=p.pid,
         started_at=datetime.now().isoformat(),
         phase="SCRAPING",
         error=None,
-        tasks={},
+        tasks=initial_tasks,
         finished_at=None,
         excel_path=None,
         health="HEALTHY",
