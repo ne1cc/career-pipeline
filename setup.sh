@@ -72,10 +72,23 @@ else
 fi
 
 echo "==> [4/6] Seeding user-layer templates, initializing DuckDB, and compiling resumes..."
-chmod +x "$REPO_ROOT/bin/cockpit" "$REPO_ROOT/bin/tmux-jobcockpit"
+chmod +x "$REPO_ROOT/bin/cockpit" "$REPO_ROOT/bin/tmux-jobcockpit" "$REPO_ROOT/bin/import-resume"
 "$REPO_ROOT/.venv/bin/python" -m cockpit.cli init
+
+if [[ -z "$FROM_RESUMES" && -d "$HOME/resumes" ]]; then
+    # Auto-detect existing candidate resume in ~/resumes/ if present
+    auto_res="$(find "$HOME/resumes" -maxdepth 1 -type f \( -name "*.pdf" -o -name "*.docx" \) ! -name "*_v1.*" 2>/dev/null | head -n 1 || true)"
+    if [[ -z "$auto_res" ]]; then
+        auto_res="$(find "$HOME/resumes" -maxdepth 1 -type f \( -name "*.pdf" -o -name "*.docx" \) 2>/dev/null | head -n 1 || true)"
+    fi
+    if [[ -n "$auto_res" ]]; then
+        echo "  • Auto-detected resume in ~/resumes: $auto_res"
+        FROM_RESUMES="$auto_res"
+    fi
+fi
+
 if [[ -n "$FROM_RESUMES" ]]; then
-    "$REPO_ROOT/.venv/bin/python" -m cockpit.cli onboard --from-resumes "$FROM_RESUMES"
+    "$REPO_ROOT/.venv/bin/python" -m cockpit.cli import-resume "$FROM_RESUMES"
 else
     "$REPO_ROOT/.venv/bin/python" -m cockpit.cli onboard --seed-defaults
 fi
@@ -86,6 +99,7 @@ if [[ "$INSTALL_SHELL" -eq 1 ]]; then
     mkdir -p "$BIN_DIR"
     ln -sf "$REPO_ROOT/bin/cockpit" "$BIN_DIR/cockpit"
     ln -sf "$REPO_ROOT/bin/tmux-jobcockpit" "$BIN_DIR/tmux-jobcockpit"
+    ln -sf "$REPO_ROOT/bin/import-resume" "$BIN_DIR/import-resume"
 
     SOURCE_LINE="source \"$REPO_ROOT/shell/cockpit.sh\""
     for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
@@ -107,7 +121,7 @@ else
     echo ""
     echo "✅ Setup complete!"
     echo "Next steps to personalize with your own resumes and profile:"
-    echo "  1. Import your existing resume(s):  cockpit onboard --from-resumes /path/to/your/resume.pdf"
+    echo "  1. Import your existing resume:     ./bin/import-resume /path/to/resume.pdf"
     echo "  2. Or run the interactive wizard:   cockpit onboard"
     echo "  3. Launch the TUI:                  cockpit"
 fi

@@ -810,6 +810,66 @@ def onboard_cmd(
         console.print(f"[green]Compiled {len(compiled)} base resume file(s) in resumes/[/green]")
 
 
+@app.command("import-resume")
+def import_resume_cmd(
+    resume_path: Annotated[Path, typer.Argument(help="Path to resume file (.pdf, .docx, .md, .txt)")],
+    name: Annotated[Optional[str], typer.Option("--name", help="Candidate full name override")] = None,
+    email: Annotated[Optional[str], typer.Option("--email", help="Candidate email override")] = None,
+    phone: Annotated[Optional[str], typer.Option("--phone", help="Candidate phone override")] = None,
+    location: Annotated[Optional[str], typer.Option("--location", help="Primary city/location override")] = None,
+    linkedin: Annotated[Optional[str], typer.Option("--linkedin", help="LinkedIn URL override")] = None,
+    github: Annotated[Optional[str], typer.Option("--github", help="GitHub URL override")] = None,
+    roles: Annotated[Optional[str], typer.Option("--roles", help="Comma-separated target roles")] = None,
+    locations: Annotated[Optional[str], typer.Option("--locations", help="Comma-separated target locations")] = None,
+    sync_home: Annotated[bool, typer.Option("--sync-home/--no-sync-home", help="Mirror resume to ~/resumes/")] = True,
+    update_duckdb: Annotated[bool, typer.Option("--update-duckdb/--no-update-duckdb", help="Update resume_path in DuckDB queued jobs")] = True,
+) -> None:
+    """Turnkey resume importer: stages authentic binary, updates configs/cv.md, syncs DuckDB, and audits ATS."""
+    from cockpit import onboard
+
+    if not resume_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Resume file not found: {resume_path}")
+        raise typer.Exit(1)
+
+    role_list = [r.strip() for r in (roles or "").split(",") if r.strip()] or None
+    loc_list = [l.strip() for l in (locations or "").split(",") if l.strip()] or None
+
+    active_repo = Path(os.environ.get("COCKPIT_REPO_ROOT", str(REPO_ROOT)))
+    try:
+        res = onboard.execute_resume_import(
+            resume_path,
+            repo_root=active_repo,
+            name=name,
+            email=email,
+            phone=phone,
+            location=location,
+            linkedin=linkedin,
+            github=github,
+            roles=role_list,
+            locations=loc_list,
+            sync_home=sync_home,
+            update_duckdb=update_duckdb,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Import failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    table = Table(title="Resume Import & System Staging Report")
+    table.add_column("Component", style="bold cyan")
+    table.add_column("Status / Path", style="green")
+
+    table.add_row("Staged Resume", res["dest_resume"])
+    table.add_row("AI Prompt CV", res["cv_path"])
+    table.add_row("Candidate Profile", res["profile_path"])
+    table.add_row("Scoring Overrides", res["local_rules_path"])
+    table.add_row("DuckDB Queued Jobs Updated", f"{res['duckdb_updated_rows']} jobs")
+    table.add_row("ATS Parseability Score", f"{res['ats_score']}/100 (Grade {res['ats_grade']})")
+    table.add_row("Home Directory Mirrored", "~/resumes/" if res["home_synced"] else "Skipped")
+
+    console.print(table)
+    console.print(f"[bold green]✔ Successfully imported and staged resume:[/bold green] {resume_path.name}")
+
+
 @app.command("prefill")
 def prefill_cmd(
     target: Annotated[Optional[str], typer.Argument(help="Apply URL or job dedup_key / row index")] = None,
