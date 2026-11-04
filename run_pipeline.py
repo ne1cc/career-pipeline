@@ -17,7 +17,7 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from cockpit.macos import notify_macos
-from cockpit.pipeline_monitor import audit_pipeline_health, update_pipeline_state
+from cockpit.pipeline_monitor import audit_pipeline_health, get_pipeline_state, update_pipeline_state
 
 from pipeline_enrichment import (
     apply_row_highlights,
@@ -413,13 +413,14 @@ def main():
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["JOBSPY_LOGS_DIR"] = str(logs_dir)
 
+    current_tasks = get_pipeline_state(BASE_DIR).get("tasks", {}) if os.environ.get("JOBSPY_SCRAPERS") else {}
     update_pipeline_state(
         BASE_DIR,
         pid=os.getpid(),
         started_at=datetime.now().isoformat(),
         phase="SCRAPING",
         error=None,
-        tasks={},
+        tasks=current_tasks,
         finished_at=None,
         excel_path=None,
         health="HEALTHY",

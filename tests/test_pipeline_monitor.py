@@ -361,3 +361,113 @@ def test_terminal_state_ignores_reused_process_id(tmp_path, monkeypatch):
     state = pipeline_monitor.get_pipeline_state(tmp_path)
     assert state["phase"] == "COMPLETED"
     assert state["is_active"] is False
+
+
+def test_get_failed_scrapers(tmp_path):
+    pipeline_monitor.update_pipeline_state(
+        tmp_path,
+        tasks={
+            "search_jobs_remote.py": {"status": "failed", "row_count": 0},
+            "search_jobs_seattle.py": {"status": "done", "row_count": 0},
+            "search_jobs_ats.py": {"status": "done", "row_count": 4164},
+            "search_jobs_west.py": {"status": "running", "row_count": None},
+        },
+    )
+    failed = pipeline_monitor.get_failed_scrapers(tmp_path)
+    assert "search_jobs_remote.py" in failed
+    assert "search_jobs_seattle.py" in failed
+    assert "search_jobs_west.py" in failed
+    assert "search_jobs_ats.py" not in failed
+
+
+def test_stop_pipeline_terminates_and_marks_state(tmp_path, monkeypatch):
+    killed_pids = []
+    monkeypatch.setattr(pipeline_monitor, "is_pid_alive", lambda pid: pid == 1234)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed_pids.append(pgid))
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+
+    pipeline_monitor.update_pipeline_state(tmp_path, pid=1234, phase="SCRAPING")
+    stopped = pipeline_monitor.stop_pipeline(tmp_path)
+    assert stopped is True
+    assert killed_pids == [1234]
+
+    state = pipeline_monitor.get_pipeline_state(tmp_path)
+    assert state["phase"] == "STOPPED"
+    assert "Pipeline stopped by user" in state["error"]
+
+
+def test_launch_pipeline_with_scrapers(tmp_path, monkeypatch):
+    captured_env = {}
+
+    def mock_popen(cmd, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        mock = MagicMock()
+        mock.pid = 7777
+        return mock
+
+    monkeypatch.setattr("subprocess.Popen", mock_popen)
+    monkeypatch.setattr(pipeline_monitor, "resolve_pipeline_python", lambda repo: "/fake/python")
+    monkeypatch.setattr(pipeline_monitor, "is_pid_alive", lambda pid: pid == 7777)
+
+    # Pre-existing state has an existing task
+    pipeline_monitor.update_pipeline_state(
+        tmp_path,
+        tasks={"search_jobs_ats.py": {"status": "done", "row_count": 4000}},
+    )
+
+    proc = pipeline_monitor.launch_pipeline(tmp_path, scrapers=["remote", "seattle"])
+    assert proc.pid == 7777
+    assert captured_env.get("JOBSPY_SCRAPERS") == "remote,seattle"
+
+    state = pipeline_monitor.get_pipeline_state(tmp_path)
+    # ats task should still be preserved
+    assert "search_jobs_ats.py" in state["tasks"]
+
+
+def test_cli_pipeline_stop_and_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr("cockpit.cli.REPO_ROOT", tmp_path)
+    runner = CliRunner()
+
+    # 1. Stop when no pipeline is running
+    res_stop_idle = runner.invoke(cli_app, ["pipeline", "stop"])
+    assert res_stop_idle.exit_code == 0
+    assert "No active pipeline is currently running" in res_stop_idle.stdout
+
+    # 2. Retry when no scrapers failed
+    pipeline_monitor.update_pipeline_state(
+        tmp_path,
+        tasks={"search_jobs_ats.py": {"status": "done", "row_count": 100}},
+    )
+    res_retry_clean = runner.invoke(cli_app, ["pipeline", "retry", "--no-watch"])
+    assert res_retry_clean.exit_code == 0
+    assert "No failed scrapers found to retry" in res_retry_clean.stdout
+
+    # 3. Retry when failed scraper exists
+    pipeline_monitor.update_pipeline_state(
+        tmp_path,
+        tasks={
+            "search_jobs_ats.py": {"status": "done", "row_count": 100},
+            "search_jobs_remote.py": {"status": "failed", "row_count": 0},
+        },
+    )
+    launched_scrapers = []
+    mock_p = MagicMock()
+    mock_p.pid = 8888
+    monkeypatch.setattr(
+        pipeline_monitor,
+        "launch_pipeline",
+        lambda repo, scrapers=None: launched_scrapers.append(scrapers) or mock_p,
+    )
+
+    res_retry_failed = runner.invoke(cli_app, ["pipeline", "retry", "--no-watch"])
+    assert res_retry_failed.exit_code == 0
+    assert "Retrying scrapers: search_jobs_remote.py" in res_retry_failed.stdout
+    assert launched_scrapers == [["search_jobs_remote.py"]]
+
+    # 4. Explicit retry targets
+    launched_scrapers.clear()
+    res_retry_explicit = runner.invoke(cli_app, ["retry", "west", "--no-watch"])
+    assert res_retry_explicit.exit_code == 0
+    assert "Retrying scrapers: west" in res_retry_explicit.stdout
+    assert launched_scrapers == [["west"]]
+
