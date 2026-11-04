@@ -36,7 +36,7 @@ from cockpit.imap_sync import sync_gmail_statuses
 from cockpit.models import FunnelState
 from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "REFERRAL_HOLD", "APPLIED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
