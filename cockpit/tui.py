@@ -296,6 +296,8 @@ class JobCockpitApp(App[None]):
             b = scoreboard(con)
         self._apply_sort()
         table = self.query_one(CockpitTable)
+        saved_x = table.scroll_x
+        saved_y = table.scroll_y
         table.clear()
         table.highlighted_row_keys.clear()
         self._update_column_headers()
@@ -333,10 +335,13 @@ class JobCockpitApp(App[None]):
                 key=r["dedup_key"],
             )
         if self.rows:
-            if target_row is not None:
-                table.move_cursor(row=min(target_row, len(self.rows) - 1))
-            elif row is not None:
-                table.move_cursor(row=min(row, len(self.rows) - 1))
+            target_idx = min(target_row if target_row is not None else 0, len(self.rows) - 1)
+            if row == 0 and preserve_key is None:
+                table.move_cursor(row=0)
+            else:
+                table.move_cursor(row=target_idx, scroll=False)
+                table.scroll_to(x=saved_x, y=saved_y, animate=False)
+                table._scroll_cursor_into_view(animate=False)
         label = FILTERS[self.filter_idx] or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         self.query_one("#score", Static).update(
@@ -698,8 +703,13 @@ class JobCockpitApp(App[None]):
         except Exception as e:
             self.call_from_thread(self.notify, str(e), severity="error")
             return
-        self.call_from_thread(self.notify, f"Mail sync: {len(changes)} status change(s)")
-        self.call_from_thread(self._reload, self.query_one(DataTable).cursor_row)
+        self.call_from_thread(self._on_sync_finished, len(changes))
+
+    def _on_sync_finished(self, changes_count: int) -> None:
+        self.notify(f"Mail sync: {changes_count} status change(s)")
+        cur_job = self._job()
+        cur_key = cur_job.get("dedup_key") if cur_job else None
+        self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur_key)
 
     def _kick_intel(self) -> None:
         self.run_worker(self._run_intel_worker, thread=True, exclusive=True, exit_on_error=False)
@@ -722,9 +732,13 @@ class JobCockpitApp(App[None]):
         try:
             processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
             if processed:
-                self.call_from_thread(self._reload, self.query_one(DataTable).cursor_row)
+                self.call_from_thread(self._on_intel_finished)
         except intel.IntelUnavailable as e:
             self.call_from_thread(self.notify, f"Intel unavailable: {e}", severity="warning")
         except Exception as e:
             self.call_from_thread(self.notify, f"Intel background error: {e}", severity="warning")
 
+    def _on_intel_finished(self) -> None:
+        cur_job = self._job()
+        cur_key = cur_job.get("dedup_key") if cur_job else None
+        self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur_key)
