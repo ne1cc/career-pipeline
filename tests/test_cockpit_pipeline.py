@@ -179,6 +179,10 @@ def test_title_decides_archetype_over_default():
     assert score_job("Software Engineer I", "marketing analytics dashboards", rules).archetype.value == "swe_backend"
     assert score_job("Analytics Engineer, Associate", "", rules).archetype.value == "data_eng"
     assert score_job("Business Analyst I", "", rules).archetype.value == "analytics_msba"
+    assert score_job("Operations Coordinator", "", rules).archetype.value == "analytics_msba"
+    assert score_job("Rotational Analyst", "", rules).archetype.value == "analytics_msba"
+    assert score_job("Data Operations Specialist", "", rules).archetype.value == "data_eng"
+    assert score_job("Technical Support Engineer", "", rules).archetype.value == "swe_backend"
 
 
 def test_location_boost_tiers():

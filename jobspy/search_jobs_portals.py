@@ -88,6 +88,11 @@ DEFAULT_SEARCH_TERMS = [
     # Product & Operations
     "Associate Product Manager",
     "Business Operations Associate",
+    "Operations Coordinator",
+    "Associate Analyst",
+    "Rotational Analyst",
+    "Solutions Analyst",
+    "Data Operations Specialist",
     # Early Career & Junior Roles
     "New Grad Software Engineer",
     "Junior Data Analyst",
