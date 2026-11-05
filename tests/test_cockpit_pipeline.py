@@ -1396,6 +1396,50 @@ def test_anchor_repo_path_heals_stale_username_symlink(tmp_path, monkeypatch):
     assert symlink_path.resolve() == real_target.resolve()
 
 
+def test_action_rerun_intel_preserves_table_scroll_and_cursor(db_path, tmp_path):
+    rows = [
+        {
+            "id": f"scroll_job_{i}",
+            "company": f"Company {i:02d}",
+            "title": f"Software Engineer {i}",
+            "job_url": f"https://example.com/job_{i}",
+            "location": "Seattle, WA",
+        }
+        for i in range(50)
+    ]
+    df = frame(*rows)
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, df)
+        con.execute("UPDATE jobs_master SET priority_score = 30.0")
+
+    fake = FakeGemini()
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path, fake=fake)
+        async with app.run_test(size=(100, 30)) as pilot:
+            table = app.query_one("CockpitTable")
+            for _ in range(25):
+                await pilot.press("j")
+            await pilot.pause()
+            table.scroll_to(y=15, animate=False)
+            await pilot.pause()
+            assert table.cursor_row == 25 and table.scroll_y == 15
+
+            # Re-evaluate with 'I': view must not reframe or force row to bottom
+            await pilot.press("I")
+            await pilot.pause()
+            assert table.cursor_row == 25
+            assert table.scroll_y == 15
+
+            # Worker finish reload must also preserve scroll and cursor
+            app._on_intel_finished()
+            await pilot.pause()
+            assert table.cursor_row == 25
+            assert table.scroll_y == 15
+
+    asyncio.run(drive())
+
+
 def test_anchor_repo_path_removes_unresolvable_broken_symlink(tmp_path):
     symlink_path = tmp_path / "dead_symlink"
     symlink_path.symlink_to("/nonexistent/bogus/path/that/cannot/exist")
