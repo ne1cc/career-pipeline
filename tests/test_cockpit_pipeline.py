@@ -29,6 +29,13 @@ def db_path(tmp_path, monkeypatch) -> Path:
     return tmp_path / "funnel.duckdb"
 
 
+@pytest.fixture(autouse=True)
+def no_jd_backfill(monkeypatch):
+    """Fixture JDs are short on purpose; skip the network backfill unless a test opts in."""
+    monkeypatch.setattr(intel, "MIN_JD_CHARS", 0)
+    monkeypatch.setattr(intel, "fetch_jd", lambda url: pytest.fail(f"unexpected JD fetch: {url}"))
+
+
 @pytest.fixture
 def calls(monkeypatch) -> list[dict]:
     """Capture every subprocess.run the macOS layer makes instead of touching pbcopy/open."""
@@ -403,6 +410,39 @@ def test_process_batch_records_failures(db_path, career_ops, tmp_path):
         status, error, path = con.execute("SELECT intel_status, intel_error, intel_path FROM jobs_master").fetchone()
     assert status == "failed" and "SCORE_SUMMARY" in error
     assert "SCORE_SUMMARY" in Path(path).read_text()  # the dossier still exists and says what went wrong
+
+
+def test_process_batch_backfills_stub_jd_from_posting(db_path, career_ops, tmp_path, monkeypatch):
+    real_jd = "Own dbt models and Airflow DAGs. " * 20
+    fetched: list[str] = []
+    monkeypatch.setattr(intel, "MIN_JD_CHARS", 250)
+    monkeypatch.setattr(intel, "fetch_jd", lambda url: fetched.append(url) or (real_jd if "linkedin" in url else None))
+    fake, ctx = FakeGemini(), intel.load_context(career_ops)
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({"id": "li-4012345678", "description": "Data Analyst Intern - Summer 2027"}))
+        key = _key(con)
+        db.toggle_saved(con, key)
+    assert intel.process_batch(db_path, ctx, fake, tmp_path) == [key]
+    assert fetched == ["https://l/1", "https://www.linkedin.com/jobs/view/4012345678"]  # ATS URL first, LinkedIn guest second
+    assert "Own dbt models" in fake.calls[0][1]
+    with db.session(db_path) as con:
+        desc, path = con.execute("SELECT description, intel_path FROM jobs_master").fetchone()
+    assert desc == real_jd.strip()
+    assert "Own dbt models" in (Path(path).parent / "00_job_posting.md").read_text()
+
+
+def test_process_batch_fails_when_no_real_jd(db_path, career_ops, tmp_path, monkeypatch):
+    monkeypatch.setattr(intel, "MIN_JD_CHARS", 250)
+    monkeypatch.setattr(intel, "fetch_jd", lambda url: None)
+    fake, ctx = FakeGemini(), intel.load_context(career_ops)
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({"description": None}))
+        db.toggle_saved(con, _key(con))
+    assert intel.process_batch(db_path, ctx, fake, tmp_path) == []
+    assert fake.calls == []  # never ask the LLM to evaluate a title alone
+    with db.session(db_path) as con:
+        status, error = con.execute("SELECT intel_status, intel_error FROM jobs_master").fetchone()
+    assert status == "failed" and error.startswith("JD unavailable")
 
 
 def test_undo_restores_previous_state(db_path):
