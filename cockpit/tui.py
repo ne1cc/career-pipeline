@@ -14,6 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Static
+from textual.worker import Worker, WorkerState
 
 from cockpit import intel, macos
 from cockpit.db import (
@@ -22,6 +23,7 @@ from cockpit.db import (
     expire_stale_referral_holds,
     fetch_jobs,
     finish_intel,
+    list_ingest_dates,
     list_segments,
     min_score,
     restore_job_state,
@@ -36,7 +38,7 @@ from cockpit.imap_sync import sync_gmail_statuses
 from cockpit.models import FunnelState
 from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "REFERRAL_HOLD", "APPLIED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -86,6 +88,21 @@ class CockpitTable(DataTable):
         super().__init__(*args, **kwargs)
         self.highlighted_row_keys: set[Any] = set()
 
+    def on_resize(self, event: Any) -> None:
+        self.adjust_title_width(event.size.width)
+
+    def adjust_title_width(self, total_width: int) -> None:
+        if not self.columns or "title" not in self.columns:
+            return
+        fixed_sum = sum(width for key, _, width in COLUMNS if key != "title")
+        padding_total = (len(self.columns) * 2) + 2
+        avail = total_width - fixed_sum - padding_total
+        new_width = max(34, avail)
+        col = self.columns["title"]
+        if col.width != new_width:
+            col.width = new_width
+            self.refresh(layout=True)
+
     def _get_row_style(self, row_index: int, base_style: Style) -> Style:
         style = super()._get_row_style(row_index, base_style)
         if 0 <= row_index < len(self.ordered_rows):
@@ -130,6 +147,7 @@ class JobCockpitApp(App[None]):
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
         Binding("question_mark", "search", "Search"),
+        Binding("K", "filter_jd_keywords", "JD Words"),
         Binding("r", "referrals", "Referrals"),
         Binding("o", "stage(False)", "Open"),
         Binding("O", "stage(True)", "Open bg"),
@@ -147,6 +165,7 @@ class JobCockpitApp(App[None]):
         Binding("f", "cycle_filter", "Filter"),
         Binding("g", "segment", "Sheet"),
         Binding("slash", "location", "Location"),
+        Binding("D", "filter_date", "Date"),
         Binding("R", "sync", "Sync mail"),
         Binding("q", "quit", "Quit"),
     ]
@@ -174,6 +193,8 @@ class JobCockpitApp(App[None]):
         self.segment: str | None = None
         self.loc_query: str | None = None
         self.search_query: str | None = None
+        self.jd_keywords: str | None = None
+        self.date_filter: str | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
 
     def compose(self) -> ComposeResult:
@@ -185,9 +206,10 @@ class JobCockpitApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one(DataTable)
+        table = self.query_one(CockpitTable)
         for key, label, width in COLUMNS:
             table.add_column(label, width=width, key=key)
+        table.adjust_title_width(table.size.width)
         with session(self.db_path) as con:
             expire_stale_referral_holds(con)
             intel.reconcile_saved_jobs(con, self.export_dir)
@@ -275,10 +297,14 @@ class JobCockpitApp(App[None]):
                 self.segment,
                 self.loc_query,
                 query=self.search_query,
+                jd_keywords=self.jd_keywords,
+                date_filter=self.date_filter,
             )
             b = scoreboard(con)
         self._apply_sort()
         table = self.query_one(CockpitTable)
+        saved_x = table.scroll_x
+        saved_y = table.scroll_y
         table.clear()
         table.highlighted_row_keys.clear()
         self._update_column_headers()
@@ -316,16 +342,21 @@ class JobCockpitApp(App[None]):
                 key=r["dedup_key"],
             )
         if self.rows:
-            if target_row is not None:
-                table.move_cursor(row=min(target_row, len(self.rows) - 1))
-            elif row is not None:
-                table.move_cursor(row=min(row, len(self.rows) - 1))
+            target_idx = min(target_row if target_row is not None else 0, len(self.rows) - 1)
+            if row == 0 and preserve_key is None:
+                table.move_cursor(row=0)
+            else:
+                table.move_cursor(row=target_idx, scroll=False)
+                table.scroll_to(x=saved_x, y=saved_y, animate=False)
+                table._scroll_cursor_into_view(animate=False)
         label = FILTERS[self.filter_idx] or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
+        jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
+        date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
         self.query_one("#score", Static).update(
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
-            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}{sort_indicator}]"
+            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'}{date_indicator} | q:{self.search_query or 'none'}{jd_indicator}{sort_indicator}]"
         )
         self._show(table.cursor_row)
 
@@ -346,15 +377,22 @@ class JobCockpitApp(App[None]):
         notes_line = f"\n[b]Notes:[/b] {escape(r['notes'])}\n" if r.get("notes") else ""
         fit_line = f" · [b]Fit:[/b] {r['fit_score']:.1f}/5.0" if r.get("fit_score") is not None else ""
         posted_str = r.get("date_posted") or "—"
-        disc_str = (r.get("discovered_at") or "")[:16]
+        raw_disc = str(r.get("discovered_at") or "")
+        disc_str = raw_disc.split(".")[0].replace("T", " ") if raw_disc else ""
+        source_folder = ""
+        if len(raw_disc) >= 10 and raw_disc[:4].isdigit():
+            ymd = raw_disc[:10].replace("-", "_")
+            source_folder = f"results/{ymd[:7]}/{ymd}/"
+
         timing_line = f"[b]Posted:[/b] {escape(posted_str)}" + (f" · [b]Discovered:[/b] {escape(disc_str)}" if disc_str else "")
+        source_line = f" · [b]Source:[/b] {escape(source_folder)}" if source_folder else ""
         yoe_str = f" · [b]YOE:[/b] {scored.required_yoe}+ yrs" if scored.required_yoe else ""
         disq_badge = f" [bold red]({scored.disqualified_reason})[/bold red]" if scored.disqualified_reason else ""
         dossier_line = f"\n[b]Dossier:[/b] {escape(r['intel_path'])}" if r.get("intel_path") else ""
 
         detail.update(
             f"[b]{escape(r['title'])}[/b]{disq_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
-            f"{timing_line}{yoe_str}\n"
+            f"{timing_line}{source_line}{yoe_str}\n"
             f"{notes_line}"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"
             f"[b]URL:[/b] {escape(r['apply_url'])}\n"
@@ -546,7 +584,11 @@ class JobCockpitApp(App[None]):
                 now_saved = toggle_saved(con, key, intel_path=str(out_file), folder_path=str(job_folder))
             if now_saved:
                 # Write initial stub posting and dossier immediately
-                job_folder.mkdir(parents=True, exist_ok=True)
+                try:
+                    job_folder.mkdir(parents=True, exist_ok=True)
+                except (PermissionError, OSError) as e:
+                    self.notify(f"Cannot create job folder: {e}", severity="error")
+                    return
                 posting_file = job_folder / "00_job_posting.md"
                 if not posting_file.exists():
                     posting_file.write_text(
@@ -655,17 +697,41 @@ class JobCockpitApp(App[None]):
 
         self.push_screen(NoteModal("Filter by location, e.g. wa, seattle, remote (blank clears)"), done)
 
+    def action_filter_date(self) -> None:
+        with session(self.db_path) as con:
+            recent_dates = list_ingest_dates(con)[:7]
+        hint = f"e.g. {', '.join(recent_dates[:3])}" if recent_dates else "e.g. 2026_11_02 or 11/02"
+
+        def done(value: str | None) -> None:
+            if value is not None:
+                self.date_filter = value.strip() or None
+                self._reload(0)
+
+        self.push_screen(NoteModal(f"Filter by ingest date ({hint}; blank clears)"), done)
+
     def action_search(self) -> None:
         def done(value: str | None) -> None:
             if value is not None:
                 self.search_query = value.strip().lower() or None
                 self._reload(0)
 
-        self.push_screen(NoteModal("Search company, title, or keywords (blank clears)"), done)
+        self.push_screen(NoteModal("Search company, title, or keywords (e.g. 'analyst' or 'aws, python'; blank clears)"), done)
+
+    def action_filter_jd_keywords(self) -> None:
+        def done(value: str | None) -> None:
+            if value is not None:
+                self.jd_keywords = value.strip().lower() or None
+                self._reload(0)
+
+        self.push_screen(NoteModal("Filter by JD text keywords, comma-separated (e.g. 'master, business analytics'; blank clears)"), done)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.state == WorkerState.ERROR and event.worker.error:
+            self.notify(f"Background worker error: {event.worker.error}", severity="warning")
 
     def action_sync(self) -> None:
         self.notify("Syncing Gmail…")
-        self.run_worker(self._sync, thread=True, exclusive=True)
+        self.run_worker(self._sync, thread=True, exclusive=True, exit_on_error=False)
 
     def _sync(self) -> None:
         try:
@@ -673,18 +739,23 @@ class JobCockpitApp(App[None]):
         except Exception as e:
             self.call_from_thread(self.notify, str(e), severity="error")
             return
-        self.call_from_thread(self.notify, f"Mail sync: {len(changes)} status change(s)")
-        self.call_from_thread(self._reload, self.query_one(DataTable).cursor_row)
+        self.call_from_thread(self._on_sync_finished, len(changes))
+
+    def _on_sync_finished(self, changes_count: int) -> None:
+        self.notify(f"Mail sync: {changes_count} status change(s)")
+        cur_job = self._job()
+        cur_key = cur_job.get("dedup_key") if cur_job else None
+        self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur_key)
 
     def _kick_intel(self) -> None:
-        self.run_worker(self._run_intel_worker, thread=True, exclusive=True)
+        self.run_worker(self._run_intel_worker, thread=True, exclusive=True, exit_on_error=False)
 
     def _run_intel_worker(self) -> None:
         try:
             ctx = intel.load_context(self.career_ops_root, model=self.model)
-        except intel.IntelUnavailable as e:
+        except intel.IntelUnavailable:
             return
-        except Exception as e:
+        except Exception:
             return
 
         generator = self.generate
@@ -694,6 +765,16 @@ class JobCockpitApp(App[None]):
             except intel.IntelUnavailable:
                 return
 
-        processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
-        if processed:
-            self.call_from_thread(self._reload, self.query_one(DataTable).cursor_row)
+        try:
+            processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
+            if processed:
+                self.call_from_thread(self._on_intel_finished)
+        except intel.IntelUnavailable as e:
+            self.call_from_thread(self.notify, f"Intel unavailable: {e}", severity="warning")
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Intel background error: {e}", severity="warning")
+
+    def _on_intel_finished(self) -> None:
+        cur_job = self._job()
+        cur_key = cur_job.get("dedup_key") if cur_job else None
+        self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur_key)

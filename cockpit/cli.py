@@ -5,8 +5,9 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -44,19 +45,321 @@ AGENT_LABEL = "com.jobcockpit.sync"
 AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
 
 
+def _list_candidate_result_dirs() -> list[tuple[str, int, Path]]:
+    """List all date directories with *_jobs.csv files, sorted by date descending."""
+    results_root = REPO_ROOT / "jobspy" / "scraped jobs" / "results"
+    if not results_root.exists():
+        return []
+
+    month_dirs = sorted(
+        [d for d in results_root.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}$", d.name)],
+        reverse=True,
+    )
+    candidates: list[tuple[str, int, Path]] = []
+    for md in month_dirs:
+        for sd in sorted(md.iterdir(), reverse=True):
+            if sd.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", sd.name):
+                csv_count = len(list(sd.glob("*_jobs.csv")))
+                if csv_count > 0:
+                    candidates.append((sd.name, csv_count, sd))
+    # Sort primarily by date descending
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates
+
+
+def _fuzzy_score(query: str, target: str) -> int:
+    """Compute fuzzy match score between query and target string. Higher is better, -1 if no match."""
+    q = query.lower().replace("/", "_").replace("-", "_")
+    t = target.lower()
+    if not q:
+        return 0
+    if q in t:
+        return 1000 - t.index(q)
+    ti = 0
+    score = 0
+    consecutive = 0
+    for ch in q:
+        idx = t.find(ch, ti)
+        if idx == -1:
+            return -1
+        if idx == ti:
+            consecutive += 1
+            score += 10 + (consecutive * 5)
+        else:
+            consecutive = 0
+            score += 5
+        ti = idx + 1
+    return score
+
+
+def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None:
+    """Built-in curses interactive fuzzy finder for terminal environments."""
+    import curses
+
+    def _menu(stdscr: curses.window) -> Path | None:
+        curses.curs_set(1)
+        curses.use_default_colors()
+        query = ""
+        selected_idx = 0
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            # Filter candidates based on query
+            if not query.strip():
+                # Default order: date descending
+                matched = candidates[:]
+            else:
+                scored = []
+                for item in candidates:
+                    label = f"{item[0]} {item[1]} csv"
+                    s = _fuzzy_score(query, label)
+                    if s >= 0:
+                        scored.append((s, item))
+                # Sort by score descending, then date descending
+                scored.sort(key=lambda x: (x[0], x[1][0]), reverse=True)
+                matched = [item for _, item in scored]
+
+            if selected_idx >= len(matched):
+                selected_idx = max(0, len(matched) - 1)
+
+            # Header
+            header = f"Select Results Directory | Total: {len(candidates)} dirs (↑/↓: navigate, Enter: select, Esc/q: cancel)"
+            stdscr.addnstr(0, 0, header[:max_x], max_x, curses.A_BOLD)
+            search_line = f"Search: {query}"
+            stdscr.addnstr(1, 0, search_line[:max_x], max_x, curses.A_UNDERLINE)
+
+            # Column legend
+            legend = "  DATE         SCRAPED CSVS   PATH"
+            stdscr.addnstr(3, 0, legend[:max_x], max_x, curses.A_DIM)
+
+            # Candidate rows
+            list_y = 4
+            available_rows = max_y - list_y - 1
+
+            start_row = 0
+            if selected_idx >= available_rows:
+                start_row = selected_idx - available_rows + 1
+
+            for display_i, i in enumerate(range(start_row, min(len(matched), start_row + available_rows))):
+                date_str, count, path = matched[i]
+                rel_path = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+                line_str = f"  {date_str:<12} {count:>2} CSV(s)       {rel_path}"
+                is_selected = (i == selected_idx)
+                attr = curses.A_REVERSE | curses.A_BOLD if is_selected else curses.A_NORMAL
+                marker = "▶" if is_selected else " "
+                stdscr.addnstr(list_y + display_i, 0, f"{marker}{line_str[1:]}"[:max_x], max_x, attr)
+
+            stdscr.refresh()
+            stdscr.move(1, min(len(search_line), max_x - 1))
+
+            ch = stdscr.getch()
+            if ch in (27,):  # ESC
+                return None
+            elif ch in (curses.KEY_ENTER, 10, 13):
+                if matched and 0 <= selected_idx < len(matched):
+                    return matched[selected_idx][2]
+                return None
+            elif ch in (curses.KEY_UP, 65):  # Up arrow
+                selected_idx = max(0, selected_idx - 1)
+            elif ch in (curses.KEY_DOWN, 66):  # Down arrow
+                if matched:
+                    selected_idx = min(len(matched) - 1, selected_idx + 1)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                query = query[:-1]
+                selected_idx = 0
+            elif 32 <= ch <= 126:
+                query += chr(ch)
+                selected_idx = 0
+
+    return curses.wrapper(_menu)
+
+
+def _interactive_fuzzy_select_dir() -> Path | None:
+    """Prompt user to select a results directory using fzf (if available) or an interactive curses fuzzy menu."""
+    candidates = _list_candidate_result_dirs()
+    if not candidates:
+        return None
+
+    # Check for fzf binary
+    fzf_bin = shutil.which("fzf") or (Path("/opt/homebrew/bin/fzf") if Path("/opt/homebrew/bin/fzf").is_file() else None)
+    if fzf_bin and sys.stdin.isatty():
+        # Lines formatted for fzf: DATE | CSV COUNT | PATH
+        lines = [f"{date_str}  │  {count:>2} CSV(s)  │  {path}" for date_str, count, path in candidates]
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(fzf_bin),
+                    "--height=40%",
+                    "--reverse",
+                    "--prompt=Select results date > ",
+                    "--header=Use fuzzy search (e.g. '10/27', '8 csv'). Enter to select, Esc to cancel.",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, _ = proc.communicate(input="\n".join(lines))
+            if proc.returncode == 0 and stdout.strip():
+                # Extract path from line
+                parts = stdout.strip().split("│")
+                if len(parts) >= 3:
+                    selected_path = Path(parts[-1].strip())
+                    return selected_path
+        except Exception:
+            pass
+
+    # Fallback to curses-based interactive fuzzy finder
+    if sys.stdin.isatty():
+        try:
+            return _curses_fuzzy_select(candidates)
+        except Exception:
+            pass
+
+    # Fallback if non-interactive: pick the most recent date with maximum CSV count
+    best = sorted(candidates, key=lambda item: (item[1], item[0]), reverse=True)
+    return best[0][2] if best else None
+
+
+def _resolve_results_date_dir(date_query: str) -> Path:
+    """Resolve a user-provided date string (e.g. '10/27', '2026-10-27', '2026_10_27', 'latest') to a results dir."""
+    results_root = REPO_ROOT / "jobspy" / "scraped jobs" / "results"
+    cleaned = date_query.strip().lower()
+
+    if cleaned in ("latest", "today"):
+        return _default_results_dir()
+
+    # Parse month and day components
+    # Supports: MM/DD, MM-DD, MM_DD, YYYY/MM/DD, YYYY-MM-DD, YYYY_MM_DD
+    m = re.match(r"^(?:(\d{4})[_\-\/])?(\d{1,2})[_\-\/](\d{1,2})$", cleaned)
+    if not m:
+        raise typer.BadParameter(f"Unrecognized date format '{date_query}'. Use MM/DD (e.g. 10/27) or YYYY_MM_DD.")
+
+    year_str, month_str, day_str = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
+
+    # If year is omitted, look in results directory for matching year_month/year_month_day
+    if not year_str:
+        if results_root.exists():
+            candidate_dirs = sorted(
+                [d for d in results_root.glob(f"????_{month_str}/????_{month_str}_{day_str}") if d.is_dir()],
+                reverse=True,
+            )
+            if candidate_dirs:
+                return candidate_dirs[0]
+        year_str = str(datetime.now().year)
+
+    target_dir = results_root / f"{year_str}_{month_str}" / f"{year_str}_{month_str}_{day_str}"
+    return target_dir
+
+
+def _collect_recent_days_inputs(days: int = 5) -> list[Path]:
+    """Collect all *_jobs.csv from results directories within the most recent N days."""
+    candidates = _list_candidate_result_dirs()
+    if not candidates:
+        return []
+
+    # Filter directories whose date is within `days` of either now or the latest available directory date
+    latest_dt: datetime | None = None
+    dir_dates: list[tuple[datetime, Path]] = []
+    for date_str, _, path in candidates:
+        try:
+            dt = datetime.strptime(date_str, "%Y_%m_%d")
+            dir_dates.append((dt, path))
+            if latest_dt is None or dt > latest_dt:
+                latest_dt = dt
+        except ValueError:
+            continue
+
+    if not dir_dates or latest_dt is None:
+        return []
+
+    # Take directories within `days` of latest date, or take top `days` directories
+    cutoff = latest_dt - timedelta(days=days - 1)
+    matched_dirs = [path for dt, path in dir_dates if dt >= cutoff]
+    if not matched_dirs:
+        # Fallback to top N most recent date directories
+        matched_dirs = [path for _, path in dir_dates[:days]]
+
+    all_csvs: list[Path] = []
+    for d in matched_dirs:
+        all_csvs.extend(sorted(d.glob("*_jobs.csv")))
+    return all_csvs
+
+
+def _expand_inputs(inputs: list[Path] | None, date_str: str | None = None, select: bool = False, days: int | None = None) -> list[Path]:
+    if days is not None:
+        csvs = _collect_recent_days_inputs(days=days)
+        if not csvs:
+            raise typer.BadParameter(f"No *_jobs.csv found in results directories from the last {days} days.")
+        return csvs
+
+    if select:
+        selected_dir = _interactive_fuzzy_select_dir()
+        if not selected_dir:
+            raise typer.BadParameter("Selection cancelled or no results directory available.")
+        csvs = sorted(selected_dir.glob("*_jobs.csv"))
+        if not csvs:
+            raise typer.BadParameter(f"No *_jobs.csv found in selected directory: {selected_dir}")
+        return csvs
+
+    if date_str:
+        target_dir = _resolve_results_date_dir(date_str)
+        if not target_dir.exists():
+            raise typer.BadParameter(f"Results directory for date '{date_str}' does not exist: {target_dir}")
+        csvs = sorted(target_dir.glob("*_jobs.csv"))
+        if not csvs:
+            raise typer.BadParameter(f"No *_jobs.csv found in date directory: {target_dir}")
+        return csvs
+
+    if not inputs:
+        return _find_default_inputs()
+
+    expanded: list[Path] = []
+    for p in inputs:
+        # Check if the argument is a date specification (e.g. '10/27' or '2026_10_27')
+        if not p.exists() and re.match(r"^(?:\d{4}[_\-\/])?\d{1,2}[_\-\/]\d{1,2}$", str(p)):
+            expanded.extend(_expand_inputs(None, date_str=str(p)))
+        elif p.is_dir():
+            csvs = sorted(p.glob("*_jobs.csv"))
+            if not csvs:
+                raise typer.BadParameter(f"No *_jobs.csv found in directory: {p}")
+            expanded.extend(csvs)
+        else:
+            expanded.append(p)
+    return expanded
+
+
 def _default_results_dir() -> Path:
     now = datetime.now()
     month_str = now.strftime("%Y_%m")
     day_str = now.strftime("%Y_%m_%d")
     today_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "results" / month_str / day_str
-    if today_dir.exists() and any(today_dir.glob("*_jobs.csv")):
+    results_root = REPO_ROOT / "jobspy" / "scraped jobs" / "results"
+
+    if not results_root.exists():
         return today_dir
-    month_dir = REPO_ROOT / "jobspy" / "scraped jobs" / "results" / month_str
-    if month_dir.exists():
-        subdirs = sorted([d for d in month_dir.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", d.name)], reverse=True)
-        for sd in subdirs:
-            if any(sd.glob("*_jobs.csv")):
-                return sd
+
+    # Inspect the most recent month directories (current and previous)
+    month_dirs = sorted(
+        [d for d in results_root.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}$", d.name)],
+        reverse=True,
+    )
+    candidates: list[tuple[int, str, Path]] = []
+    for md in month_dirs[:2]:
+        for sd in md.iterdir():
+            if sd.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", sd.name):
+                csv_count = len(list(sd.glob("*_jobs.csv")))
+                if csv_count > 0:
+                    candidates.append((csv_count, sd.name, sd))
+
+    if candidates:
+        # Prefer maximum CSV count first, then most recent directory date
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
+    month_dir = results_root / month_str
     return today_dir if today_dir.exists() else month_dir
 
 
@@ -103,7 +406,10 @@ def _load_input_frame(p: Path, sheet: str | None = None) -> "pd.DataFrame":
 
 @app.command()
 def ingest(
-    inputs: Annotated[Optional[list[Path]], typer.Argument(help="JobSpy CSVs or Excel workbooks; default: results dir or ~/Downloads/Job_Report_*.xlsx")] = None,
+    inputs: Annotated[Optional[list[Path]], typer.Argument(help="JobSpy CSVs, directory, date (e.g. 10/27, 2026_10_27), or Excel workbooks; default: latest results dir or ~/Downloads/Job_Report_*.xlsx")] = None,
+    select: Annotated[bool, typer.Option("--select", "-s", help="Open an interactive fuzzy finder (fzf) to choose which results date directory to ingest")] = False,
+    days: Annotated[Optional[int], typer.Option("--days", help="Bulk ingest CSVs from results directories across the last N days (default for bulk: 5)")] = None,
+    date: Annotated[Optional[str], typer.Option("--date", "-d", help="Ingest from specific date directory under results/ (e.g. '10/27', '2026_10_27', '2026-10-27')")] = None,
     sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
 ) -> None:
     """Dedupe, score and upsert scraped jobs into DuckDB."""
@@ -120,9 +426,16 @@ def ingest(
     )
     from cockpit import intel as intel_module
 
-    paths = inputs or _find_default_inputs()
+    paths = _expand_inputs(inputs, date_str=date, select=select, days=days)
     if not paths:
         raise typer.BadParameter(f"No CSVs found in {_default_results_dir()} and no Job_Report_*.xlsx found in ~/Downloads; pass paths explicitly.")
+
+    # Determine common directory or source label for user clarity
+    try:
+        common_parent = Path(os.path.commonpath([str(p.resolve()) for p in paths]))
+        source_label = common_parent.relative_to(REPO_ROOT) if common_parent.is_relative_to(REPO_ROOT) else common_parent
+    except Exception:
+        source_label = paths[0].parent.name
 
     with Progress(
         SpinnerColumn(),
@@ -134,14 +447,14 @@ def ingest(
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        load_task = progress.add_task("[cyan]Loading input files...", total=len(paths))
+        load_task = progress.add_task(f"[cyan]Loading input files from {source_label}...", total=len(paths))
         loaded_frames = []
         for p in paths:
             progress.update(load_task, description=f"[cyan]Loading {p.name}...")
             loaded_frames.append(_load_input_frame(p, sheet=sheet))
             progress.advance(load_task)
         frame = pd.concat(loaded_frames, ignore_index=True)
-        progress.update(load_task, description=f"[green]✔ Loaded {len(paths)} file(s) ({len(frame):,} rows)")
+        progress.update(load_task, description=f"[green]✔ Loaded {len(paths)} file(s) ({len(frame):,} rows) from {source_label}")
 
         score_task = progress.add_task("[yellow]Scoring and deduping postings...", total=len(frame))
 
@@ -158,9 +471,18 @@ def ingest(
             progress.update(db_task, description="[green]✔ Reconciled holds and saved jobs", completed=1, total=1)
 
     console.print(
-        f"[bold green]✔ Ingest complete:[/bold green] [cyan]{len(paths)} file(s)[/cyan] "
+        f"[bold green]✔ Ingest complete:[/bold green] [cyan]{len(paths)} file(s)[/cyan] from [yellow]{source_label}[/yellow] "
         f"({', '.join(p.name for p in paths)}) {stats} | stale holds flagged: {expired}"
     )
+
+
+@app.command("bulk-ingest")
+def bulk_ingest(
+    days: Annotated[int, typer.Option("--days", "-n", help="Number of recent days of results directories to ingest")] = 5,
+    sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
+) -> None:
+    """Bulk ingest all scraped CSVs across the last N days (default: 5 days)."""
+    ingest(inputs=None, select=False, days=days, date=None, sheet=sheet)
 
 
 @app.command()
@@ -299,17 +621,250 @@ def sync_saved(
     )
 
 
+@app.command("verify-open")
+def verify_open_cmd(
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Maximum postings to verify")] = 50,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Check status without writing to DuckDB")] = False,
+) -> None:
+    """Verify whether apply URLs for queued internships are still active/open."""
+    from cockpit import internships as intern_module
+    import requests
+
+    with db.session() as con:
+        jobs = con.execute(
+            """SELECT dedup_key, company, title, apply_url
+               FROM jobs_master
+               WHERE is_internship = TRUE
+                 AND (is_open IS NULL OR is_open = TRUE)
+               ORDER BY priority_score DESC
+               LIMIT ?""",
+            [limit],
+        ).fetchall()
+
+    if not jobs:
+        console.print("[yellow]No active internship postings found to verify.[/yellow]")
+        return
+
+    console.print(f"[cyan]Verifying {len(jobs)} internship postings{' (DRY RUN)' if dry_run else ''}...[/cyan]")
+    session = requests.Session()
+    counts = {"open": 0, "closed": 0, "unknown": 0}
+
+    for idx, (key, company, title, apply_url) in enumerate(jobs, 1):
+        is_open = intern_module.check_url_open(apply_url, session=session)
+        if is_open is True:
+            counts["open"] += 1
+            status_desc = "[green]LIVE[/green]"
+        elif is_open is False:
+            counts["closed"] += 1
+            status_desc = "[red]CLOSED[/red]"
+        else:
+            counts["unknown"] += 1
+            status_desc = "[yellow]UNKNOWN[/yellow]"
+
+        console.print(f"[{idx}/{len(jobs)}] {company} — {title[:35]}: {status_desc}")
+
+        if not dry_run:
+            with db.session() as con:
+                con.execute(
+                    """UPDATE jobs_master
+                       SET is_open = ?, last_verified_at = CURRENT_TIMESTAMP
+                       WHERE dedup_key = ?""",
+                    [is_open, key],
+                )
+
+        delay = getattr(intern_module, "HOST_DELAY_S", 0.5)
+        if delay > 0 and idx < len(jobs):
+            time.sleep(delay)
+
+    console.print(
+        f"\n[bold green]Verification complete:[/bold green] "
+        f"[green]{counts['open']} live[/green] · [red]{counts['closed']} closed[/red] · [yellow]{counts['unknown']} unknown[/yellow]"
+    )
+
+
+def _list_candidate_dossiers(root: Path) -> list[dict[str, Any]]:
+    """List all saved dossier folders with parsed fit score, mtime, and apply URL."""
+    if not root.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        p = d / "05_interview_dossier.md"
+        if not p.is_file():
+            mds = sorted(d.glob("*dossier*.md"))
+            p = mds[0] if mds else None
+
+        fit_score = "—"
+        apply_url = ""
+        archetype = ""
+        if p and p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="replace")
+                m_fit = re.search(r"fit_score:\s*([\d\.]+)|Score:\s*([\d\.]+)", txt)
+                if m_fit:
+                    fit_score = m_fit.group(1) or m_fit.group(2)
+                m_url = re.search(r"apply_url:\s*\"([^\"]+)\"|URL:\s*(https?://\S+)", txt)
+                if m_url:
+                    apply_url = m_url.group(1) or m_url.group(2)
+                m_arch = re.search(r"archetype:\s*\"?([^\n\"]+)\"?", txt)
+                if m_arch:
+                    archetype = m_arch.group(1).strip()
+            except Exception:
+                pass
+
+        mtime = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d")
+        items.append({
+            "folder": d,
+            "dossier": p,
+            "name": d.name,
+            "fit_score": fit_score,
+            "mtime": mtime,
+            "apply_url": apply_url,
+            "archetype": archetype,
+        })
+    # Sort by mtime descending
+    items.sort(key=lambda x: x["folder"].stat().st_mtime, reverse=True)
+    return items
+
+
+def _curses_fuzzy_select_dossier(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Curses interactive fuzzy finder for dossiers."""
+    import curses
+
+    def _menu(stdscr: curses.window) -> dict[str, Any] | None:
+        curses.curs_set(1)
+        curses.use_default_colors()
+        query = ""
+        selected_idx = 0
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            if not query.strip():
+                matched = candidates[:]
+            else:
+                scored = []
+                for item in candidates:
+                    label = f"{item['name']} {item['fit_score']} {item['archetype']} {item['mtime']}"
+                    s = _fuzzy_score(query, label)
+                    if s >= 0:
+                        scored.append((s, item))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                matched = [item for _, item in scored]
+
+            if selected_idx >= len(matched):
+                selected_idx = max(0, len(matched) - 1)
+
+            header = f"Select Job Dossier | Total: {len(candidates)} dossiers (↑/↓: navigate, Enter: select, Esc/q: cancel)"
+            stdscr.addnstr(0, 0, header[:max_x], max_x, curses.A_BOLD)
+            search_line = f"Search: {query}"
+            stdscr.addnstr(1, 0, search_line[:max_x], max_x, curses.A_UNDERLINE)
+
+            legend = "  FIT    DATE         ROLE / COMPANY"
+            stdscr.addnstr(3, 0, legend[:max_x], max_x, curses.A_DIM)
+
+            list_y = 4
+            available_rows = max_y - list_y - 1
+
+            start_row = 0
+            if selected_idx >= available_rows:
+                start_row = selected_idx - available_rows + 1
+
+            for display_i, i in enumerate(range(start_row, min(len(matched), start_row + available_rows))):
+                item = matched[i]
+                fit_str = f"{item['fit_score']:>3}★" if item['fit_score'] != "—" else "   — "
+                line_str = f"  {fit_str}  {item['mtime']}   {item['name']}"
+                is_selected = (i == selected_idx)
+                attr = curses.A_REVERSE | curses.A_BOLD if is_selected else curses.A_NORMAL
+                marker = "▶" if is_selected else " "
+                stdscr.addnstr(list_y + display_i, 0, f"{marker}{line_str[1:]}"[:max_x], max_x, attr)
+
+            stdscr.refresh()
+            stdscr.move(1, min(len(search_line), max_x - 1))
+
+            ch = stdscr.getch()
+            if ch in (27,):  # ESC
+                return None
+            elif ch in (curses.KEY_ENTER, 10, 13):
+                if matched and 0 <= selected_idx < len(matched):
+                    return matched[selected_idx]
+                return None
+            elif ch in (curses.KEY_UP, 65):
+                selected_idx = max(0, selected_idx - 1)
+            elif ch in (curses.KEY_DOWN, 66):
+                if matched:
+                    selected_idx = min(len(matched) - 1, selected_idx + 1)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                query = query[:-1]
+                selected_idx = 0
+            elif 32 <= ch <= 126:
+                query += chr(ch)
+                selected_idx = 0
+
+    return curses.wrapper(_menu)
+
+
+def _interactive_fuzzy_select_dossier(root: Path) -> dict[str, Any] | None:
+    """Prompt user to select a dossier using fzf or curses."""
+    candidates = _list_candidate_dossiers(root)
+    if not candidates:
+        return None
+
+    fzf_bin = shutil.which("fzf") or (Path("/opt/homebrew/bin/fzf") if Path("/opt/homebrew/bin/fzf").is_file() else None)
+    if fzf_bin and sys.stdin.isatty():
+        lines = []
+        for c in candidates:
+            fit = f"{c['fit_score']:>3}★" if c['fit_score'] != "—" else "   — "
+            lines.append(f"{fit}  │  {c['mtime']}  │  {c['name']}  │  {c['folder']}")
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(fzf_bin),
+                    "--height=40%",
+                    "--reverse",
+                    "--prompt=Select Job Dossier > ",
+                    "--header=Enter: select, Esc: cancel. Search by company, role, or score.",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, _ = proc.communicate(input="\n".join(lines))
+            if proc.returncode == 0 and stdout.strip():
+                parts = stdout.strip().split("│")
+                if len(parts) >= 4:
+                    chosen_folder = Path(parts[-1].strip())
+                    for c in candidates:
+                        if c["folder"] == chosen_folder:
+                            return c
+        except Exception:
+            pass
+
+    if sys.stdin.isatty():
+        try:
+            return _curses_fuzzy_select_dossier(candidates)
+        except Exception:
+            pass
+
+    return candidates[0] if candidates else None
+
+
 @app.command("dossier")
 def dossier_cmd(
     query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
+    select: Annotated[bool, typer.Option("--select", "-s", help="Open an interactive fuzzy finder (fzf) to select and action a dossier")] = False,
     cat: Annotated[bool, typer.Option("--cat", "-c", help="Render dossier in terminal with rich markdown formatting")] = False,
     nvim: Annotated[bool, typer.Option("--nvim", "-v", help="Open dossier directly in Neovim")] = False,
     edit: Annotated[bool, typer.Option("--edit", "-e", help="Open dossier in Neovim / $EDITOR")] = False,
+    one_markdown: Annotated[bool, typer.Option("--one-markdown", "-m", help="Open dossier directly in One Markdown")] = False,
     open_in_editor: Annotated[bool, typer.Option("--open", "-o", help="Open dossier in default macOS editor/app")] = False,
     latest: Annotated[bool, typer.Option("--latest", "-l", help="Open/view the most recently modified dossier")] = False,
     export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
 ) -> None:
-    """View an interview dossier in terminal or open it in default editor / Neovim."""
+    """View an interview dossier in terminal or open it in default editor / Neovim / One Markdown."""
     from cockpit import intel as intel_module
     from rich.markdown import Markdown
 
@@ -333,8 +888,53 @@ def dossier_cmd(
     use_nvim = nvim or edit
     target_dossier: Path | None = None
     target_folder: Path | None = None
+    target_apply_url: str = ""
 
-    if latest:
+    if select:
+        chosen = _interactive_fuzzy_select_dossier(root)
+        if not chosen:
+            console.print("[yellow]Selection cancelled.[/yellow]")
+            return
+        target_folder = chosen["folder"]
+        target_dossier = chosen["dossier"]
+        target_apply_url = chosen.get("apply_url", "")
+
+        # Interactive quick-action prompt if no specific action flag passed
+        if not (cat or use_nvim or open_in_editor or one_markdown):
+            console.print(f"\n[bold cyan]Selected:[/bold cyan] [bright_white]{chosen['name']}[/bright_white] "
+                          f"([yellow]{chosen['fit_score']}★[/yellow])")
+            actions_msg = (
+                "[1] View in terminal    [2] Open in One Markdown  [3] Open in Neovim\n"
+                "[4] Open Folder/Finder  [5] Open Apply URL        [6] Copy Path  [q] Cancel"
+            )
+            console.print(Panel(actions_msg, title="Choose Action", border_style="cyan"))
+            choice = typer.prompt("Select action", default="2").strip().lower()
+
+            if choice in ("1", "view", "cat"):
+                cat = True
+            elif choice in ("2", "m", "onemarkdown", "one"):
+                one_markdown = True
+            elif choice in ("3", "v", "nvim", "edit"):
+                use_nvim = True
+            elif choice in ("4", "f", "finder", "folder"):
+                macos.open_file(target_folder)
+                console.print(f"Opened folder in Finder: [cyan]{target_folder}[/cyan]")
+                return
+            elif choice in ("5", "a", "url", "apply"):
+                if target_apply_url:
+                    macos.open_url(target_apply_url)
+                    console.print(f"Opened apply URL: [cyan]{target_apply_url}[/cyan]")
+                else:
+                    console.print("[yellow]No apply URL found in dossier.[/yellow]")
+                return
+            elif choice in ("6", "c", "copy"):
+                macos.copy_to_clipboard(str(target_dossier or target_folder))
+                console.print(f"Copied path to clipboard: [green]{target_dossier or target_folder}[/green]")
+                return
+            else:
+                return
+
+    elif latest:
         valid_folders = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
         if not valid_folders:
             console.print(f"[yellow]No dossiers found in {root}[/yellow]")
@@ -357,6 +957,10 @@ def dossier_cmd(
         editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
         subprocess.run([editor, str(root)])
         return
+    elif one_markdown:
+        # No query + one_markdown -> open the artifacts root folder in One Markdown
+        macos.open_file(root, app="One Markdown")
+        return
     else:
         valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
         if not valid:
@@ -377,19 +981,33 @@ def dossier_cmd(
             table.add_row(folder.name, mtime, artifacts_str)
 
         console.print(table)
-        console.print("\n[dim]Usage: 'cockpit dossier <query>' (or 'cockpit edit <query>' / 'cjn' for Neovim), add '--cat' to read in terminal[/dim]")
+        console.print("\n[dim]Tip: Use 'cockpit dossier -s' (or 'cockpit md <query>') to open in One Markdown.[/dim]")
         return
 
     if target_dossier:
         if cat:
             console.print(f"[bold cyan]─── Dossier: {target_dossier.parent.name} ───[/bold cyan]\n")
             console.print(Markdown(target_dossier.read_text(encoding="utf-8", errors="replace")))
+        elif one_markdown:
+            macos.open_file(target_dossier, app="One Markdown")
+            console.print(f"Opened dossier in One Markdown: [cyan]{target_dossier}[/cyan]")
         elif use_nvim:
             editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
             subprocess.run([editor, str(target_dossier)])
         else:
             macos.open_file(target_dossier)
             console.print(f"Opened dossier: [cyan]{target_dossier}[/cyan]")
+
+
+@app.command("md")
+@app.command("onemarkdown")
+def onemarkdown_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,
+    latest: Annotated[bool, typer.Option("--latest", "-l", help="Open the most recently modified dossier in One Markdown")] = False,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Open an interview dossier (or artifacts root) directly in One Markdown."""
+    dossier_cmd(query=query, one_markdown=True, latest=latest, export_dir=export_dir)
 
 
 @app.command("edit")
@@ -689,6 +1307,71 @@ def pipeline_logs(
         console.print(f"[red]Error reading log: {e}[/red]")
 
 
+@app.command("stop", help="Stop the currently running scraper pipeline, if active.")
+@pipeline_app.command("stop")
+def pipeline_stop() -> None:
+    """Stop the currently running pipeline, if any."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if not state.get("is_active"):
+        console.print("[yellow]No active pipeline is currently running.[/yellow]")
+        return
+    stopped = pipeline_monitor.stop_pipeline(REPO_ROOT)
+    if stopped:
+        console.print("[green]Active pipeline process terminated.[/green]")
+    else:
+        console.print("[yellow]Marked pipeline as stopped (process was no longer alive).[/yellow]")
+
+
+@app.command("retry", help="Selectively re-run failed scrapers without destroying successful outputs.")
+@pipeline_app.command("retry")
+def pipeline_retry(
+    targets: Annotated[
+        Optional[list[str]],
+        typer.Argument(help="Specific scrapers to retry (e.g. remote seattle); default: all failed"),
+    ] = None,
+    watch: Annotated[
+        bool,
+        typer.Option("--watch/--no-watch", "-w", help="Keep monitor active in terminal"),
+    ] = True,
+    kill_active: Annotated[
+        bool,
+        typer.Option("--kill-active", "-k", help="Stop any active pipeline before retrying"),
+    ] = False,
+) -> None:
+    """Selectively re-run failed scrapers without wiping existing successful CSV outputs."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if state.get("is_active"):
+        if not kill_active:
+            if not typer.confirm("A pipeline is currently active. Stop it and launch retry?", default=True):
+                console.print("[yellow]Aborted retry.[/yellow]")
+                raise typer.Exit(0)
+        console.print("[yellow]Stopping active pipeline...[/yellow]")
+        pipeline_monitor.stop_pipeline(REPO_ROOT)
+        time.sleep(1)
+
+    if targets:
+        target_list = list(targets)
+    else:
+        target_list = pipeline_monitor.get_failed_scrapers(REPO_ROOT)
+        if not target_list:
+            console.print("[green]No failed scrapers found to retry! (All scrapers succeeded or state is clean)[/green]")
+            raise typer.Exit(0)
+
+    console.print(f"[cyan]Retrying scrapers: {', '.join(target_list)}[/cyan]")
+    p = pipeline_monitor.launch_pipeline(REPO_ROOT, scrapers=target_list)
+    console.print(f"[dim]Master pipeline spawned for retry (PID: {p.pid})[/dim]")
+    time.sleep(0.5)
+
+    if watch:
+        pipeline_monitor.monitor_loop(REPO_ROOT, once=False)
+    else:
+        console.print("[green]Pipeline retry launched in background. Run 'cockpit pipeline status' to monitor.[/green]")
+
+
 @app.command("init")
 def init_cmd() -> None:
     """Initialize the local DuckDB database and schema."""
@@ -808,6 +1491,66 @@ def onboard_cmd(
     if not from_resumes:
         compiled = onboard.build_base_resumes()
         console.print(f"[green]Compiled {len(compiled)} base resume file(s) in resumes/[/green]")
+
+
+@app.command("import-resume")
+def import_resume_cmd(
+    resume_path: Annotated[Path, typer.Argument(help="Path to resume file (.pdf, .docx, .md, .txt)")],
+    name: Annotated[Optional[str], typer.Option("--name", help="Candidate full name override")] = None,
+    email: Annotated[Optional[str], typer.Option("--email", help="Candidate email override")] = None,
+    phone: Annotated[Optional[str], typer.Option("--phone", help="Candidate phone override")] = None,
+    location: Annotated[Optional[str], typer.Option("--location", help="Primary city/location override")] = None,
+    linkedin: Annotated[Optional[str], typer.Option("--linkedin", help="LinkedIn URL override")] = None,
+    github: Annotated[Optional[str], typer.Option("--github", help="GitHub URL override")] = None,
+    roles: Annotated[Optional[str], typer.Option("--roles", help="Comma-separated target roles")] = None,
+    locations: Annotated[Optional[str], typer.Option("--locations", help="Comma-separated target locations")] = None,
+    sync_home: Annotated[bool, typer.Option("--sync-home/--no-sync-home", help="Mirror resume to ~/resumes/")] = True,
+    update_duckdb: Annotated[bool, typer.Option("--update-duckdb/--no-update-duckdb", help="Update resume_path in DuckDB queued jobs")] = True,
+) -> None:
+    """Turnkey resume importer: stages authentic binary, updates configs/cv.md, syncs DuckDB, and audits ATS."""
+    from cockpit import onboard
+
+    if not resume_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Resume file not found: {resume_path}")
+        raise typer.Exit(1)
+
+    role_list = [r.strip() for r in (roles or "").split(",") if r.strip()] or None
+    loc_list = [l.strip() for l in (locations or "").split(",") if l.strip()] or None
+
+    active_repo = Path(os.environ.get("COCKPIT_REPO_ROOT", str(REPO_ROOT)))
+    try:
+        res = onboard.execute_resume_import(
+            resume_path,
+            repo_root=active_repo,
+            name=name,
+            email=email,
+            phone=phone,
+            location=location,
+            linkedin=linkedin,
+            github=github,
+            roles=role_list,
+            locations=loc_list,
+            sync_home=sync_home,
+            update_duckdb=update_duckdb,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Import failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    table = Table(title="Resume Import & System Staging Report")
+    table.add_column("Component", style="bold cyan")
+    table.add_column("Status / Path", style="green")
+
+    table.add_row("Staged Resume", res["dest_resume"])
+    table.add_row("AI Prompt CV", res["cv_path"])
+    table.add_row("Candidate Profile", res["profile_path"])
+    table.add_row("Scoring Overrides", res["local_rules_path"])
+    table.add_row("DuckDB Queued Jobs Updated", f"{res['duckdb_updated_rows']} jobs")
+    table.add_row("ATS Parseability Score", f"{res['ats_score']}/100 (Grade {res['ats_grade']})")
+    table.add_row("Home Directory Mirrored", "~/resumes/" if res["home_synced"] else "Skipped")
+
+    console.print(table)
+    console.print(f"[bold green]✔ Successfully imported and staged resume:[/bold green] {resume_path.name}")
 
 
 @app.command("prefill")

@@ -18,6 +18,7 @@ proxies.txt
 *.log
 .worktrees/
 .superpowers/
+.scratch/
 docs/superpowers/
 superpowers/
 jobspy/results/

@@ -127,7 +127,74 @@ def recruits_msba_graduates(title: str, description: str) -> bool:
     return False
 
 
+def filter_msba_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter raw scraped dataframe to entry-to-mid level roles recruiting MSBA grads."""
+    if df.empty:
+        return df
+    filtered_rows = []
+    today = date.today()
+    two_days_ago = today - timedelta(days=2)
+    for idx, row in df.iterrows():
+        title = str(row.get("title")) if pd.notna(row.get("title")) else ""
+        description = str(row.get("description")) if pd.notna(row.get("description")) else ""
+        date_posted = row.get("date_posted")
+
+        is_recent = True
+        if pd.notna(date_posted):
+            if isinstance(date_posted, str):
+                try:
+                    job_date = datetime.strptime(date_posted, "%Y-%m-%d").date()
+                except ValueError:
+                    job_date = None
+            elif isinstance(date_posted, (date, datetime)):
+                job_date = date_posted if isinstance(date_posted, date) else date_posted.date()
+            else:
+                job_date = None
+
+            if job_date and job_date < two_days_ago:
+                is_recent = False
+
+        if not is_recent:
+            continue
+
+        if not is_entry_to_mid_level(title, description):
+            continue
+
+        if not recruits_msba_graduates(title, description):
+            continue
+
+        filtered_rows.append(row)
+
+    return pd.DataFrame(filtered_rows) if filtered_rows else pd.DataFrame()
+
+
+def flush_jobs_to_csv(jobs_list: list[pd.DataFrame], output_path: Path) -> int:
+    """Atomically write collected job dataframes to CSV with deduplication."""
+    if not jobs_list:
+        return 0
+    combined = pd.concat(jobs_list, ignore_index=True)
+    combined.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
+    if "title" in combined.columns:
+        combined.sort_values(
+            by="title",
+            key=lambda col: col.astype(str).str.lower(),
+            ascending=True,
+            na_position="last",
+            inplace=True,
+        )
+    tmp_path = output_path.with_suffix(".tmp")
+    combined.to_csv(
+        tmp_path,
+        quoting=csv.QUOTE_NONNUMERIC,
+        escapechar="\\",
+        index=False,
+    )
+    tmp_path.replace(output_path)
+    return len(combined)
+
+
 if __name__ == "__main__":
+    output_path = OUTPUT_DIR / "seattle_msba_jobs.csv"
     all_jobs_list = []
     had_errors = False
 
@@ -145,8 +212,6 @@ if __name__ == "__main__":
                     site_name=[
                         "indeed",
                         "linkedin",
-                        "zip_recruiter",
-                        "glassdoor",
                         "google",
                     ],
                     search_term=term,
@@ -156,14 +221,19 @@ if __name__ == "__main__":
                     hours_old=48,
                     linkedin_fetch_description=False,
                 )
-                
+
                 if jobs.attrs.get("scrape_errors"):
                     had_errors = True
                 if not jobs.empty:
                     jobs["search_keyword"] = term
                     jobs["search_city"] = loc
-                    all_jobs_list.append(jobs)
-                    print(f"    Found {len(jobs)} jobs (raw)")
+                    filtered = filter_msba_dataframe(jobs)
+                    if not filtered.empty:
+                        all_jobs_list.append(filtered)
+                        total_unique = flush_jobs_to_csv(all_jobs_list, output_path)
+                        print(f"    Found {len(jobs)} jobs (raw) -> {len(filtered)} MSBA ({total_unique} unique saved)")
+                    else:
+                        print(f"    Found {len(jobs)} jobs (raw) -> 0 MSBA")
                 else:
                     print("    Found 0 jobs")
             except Exception as e:
@@ -171,76 +241,11 @@ if __name__ == "__main__":
                 print(f"    Error scraping {term} in {loc}: {e}")
 
     if all_jobs_list:
-        combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
-        combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
-        
-        raw_count = len(combined_jobs)
-        print(f"\nScraped {raw_count} unique raw jobs. Applying filters...")
-        
-        # Apply entry-to-mid level and MSBA recruitment filters
-        filtered_rows = []
-        today = date.today()
-        two_days_ago = today - timedelta(days=2)
-        
-        for idx, row in combined_jobs.iterrows():
-            title = str(row.get("title")) if pd.notna(row.get("title")) else ""
-            description = str(row.get("description")) if pd.notna(row.get("description")) else ""
-            date_posted = row.get("date_posted")
-            
-            # 1. Double check date if present (must be within last 48 hours / 2 days)
-            # Convert date_posted string/date object if necessary
-            is_recent = True
-            if pd.notna(date_posted):
-                if isinstance(date_posted, str):
-                    try:
-                        job_date = datetime.strptime(date_posted, "%Y-%m-%d").date()
-                    except ValueError:
-                        job_date = None
-                elif isinstance(date_posted, (date, datetime)):
-                    job_date = date_posted if isinstance(date_posted, date) else date_posted.date()
-                else:
-                    job_date = None
-                    
-                if job_date and job_date < two_days_ago:
-                    is_recent = False
-                    
-            if not is_recent:
-                continue
-                
-            # 2. Check level (Entry to Mid)
-            if not is_entry_to_mid_level(title, description):
-                continue
-                
-            # 3. Check if role recruits MSBA / Business Analytics grads
-            if not recruits_msba_graduates(title, description):
-                continue
-                
-            filtered_rows.append(row)
-            
-        if filtered_rows:
-            final_jobs = pd.DataFrame(filtered_rows)
-            if "title" in final_jobs.columns:
-                final_jobs.sort_values(
-                    by="title",
-                    key=lambda col: col.astype(str).str.lower(),
-                    ascending=True,
-                    na_position="last",
-                    inplace=True,
-                )
-            print(f"Filters complete. Kept {len(final_jobs)} of {raw_count} jobs.")
-            
-            output_path = OUTPUT_DIR / "seattle_msba_jobs.csv"
-            final_jobs.to_csv(
-                output_path,
-                quoting=csv.QUOTE_NONNUMERIC,
-                escapechar="\\",
-                index=False,
-            )
-            print(f"Saved results to {output_path}")
-        else:
-            print("No jobs matched the level and MSBA graduation recruitment criteria.")
+        total_unique = flush_jobs_to_csv(all_jobs_list, output_path)
+        print(f"\nTotal unique MSBA jobs: {total_unique}")
+        print(f"Saved results to {output_path}")
     else:
-        print("No jobs found in the initial scrape.")
+        print("No jobs matched the level and MSBA graduation recruitment criteria.")
 
     if had_errors:
         print("Some queries failed; any collected partial results were retained.")

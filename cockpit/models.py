@@ -38,3 +38,9 @@ class JobRow(BaseModel):
     priority_score: float
     resume_archetype: ResumeArchetype
     resume_path: str
+    is_internship: bool = False
+    mentions_2027: bool = False
+    wrong_season: bool = False
+    needs_return_to_school: bool = False
+    undergrad_only: bool = False
+

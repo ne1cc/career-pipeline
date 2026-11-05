@@ -63,7 +63,12 @@ search_terms = [
     "Business Operations Associate",
     "BizOps Analyst",
     "Project Coordinator",
+    "Operations Coordinator",
     "Strategy & Operations Associate",
+    "Solutions Analyst",
+    "Associate Analyst",
+    "Rotational Analyst",
+    "Data Operations Specialist",
 
     # Junior Software Engineering & Developer Roles
     "Associate Software Engineer",
@@ -91,7 +96,33 @@ search_terms = [
     "SOC Analyst",
 ]
 
+def flush_jobs_to_csv(jobs_list: list[pd.DataFrame], output_path: Path) -> int:
+    """Atomically write collected job dataframes to CSV with deduplication."""
+    if not jobs_list:
+        return 0
+    combined = pd.concat(jobs_list, ignore_index=True)
+    combined.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
+    if "title" in combined.columns:
+        combined.sort_values(
+            by="title",
+            key=lambda col: col.astype(str).str.lower(),
+            ascending=True,
+            na_position="last",
+            inplace=True,
+        )
+    tmp_path = output_path.with_suffix(".tmp")
+    combined.to_csv(
+        tmp_path,
+        quoting=csv.QUOTE_NONNUMERIC,
+        escapechar="\\",
+        index=False,
+    )
+    tmp_path.replace(output_path)
+    return len(combined)
+
+
 if __name__ == "__main__":
+    output_path = OUTPUT_DIR / "all_city_remote_jobs.csv"
     all_jobs_list = []
     had_errors = False
 
@@ -104,16 +135,14 @@ if __name__ == "__main__":
                 site_name=[
                     "indeed",
                     "linkedin",
-                    "zip_recruiter",
-                    "glassdoor",
                     "google",
-                ],  # all supported major US boards
+                ],
                 search_term=term,
                 location="United States",
                 google_search_term=f"{term} remote jobs united states since yesterday",
                 country_indeed="USA",
                 results_wanted=9999,
-                is_remote=True,  # fixes Glassdoor location parsing for nationwide searches
+                is_remote=True,  # nationwide remote searches
                 hours_old=48,
                 linkedin_fetch_description=True,
             )
@@ -125,7 +154,8 @@ if __name__ == "__main__":
             if not jobs.empty:
                 jobs["search_keyword"] = term
                 all_jobs_list.append(jobs)
-                print(f"    Found {len(jobs)} jobs")
+                total_unique = flush_jobs_to_csv(all_jobs_list, output_path)
+                print(f"    Found {len(jobs)} jobs ({total_unique} unique saved)")
             else:
                 print("    Found 0 jobs")
 
@@ -134,24 +164,8 @@ if __name__ == "__main__":
             print(f"    Error scraping {term}: {e}")
 
     if all_jobs_list:
-        combined_jobs = pd.concat(all_jobs_list, ignore_index=True)
-        combined_jobs.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
-        if "title" in combined_jobs.columns:
-            combined_jobs.sort_values(
-                by="title",
-                key=lambda col: col.astype(str).str.lower(),
-                ascending=True,
-                na_position="last",
-                inplace=True,
-            )
-        print(f"\nTotal unique jobs: {len(combined_jobs)}")
-        output_path = OUTPUT_DIR / "all_city_remote_jobs.csv"
-        combined_jobs.to_csv(
-            output_path,
-            quoting=csv.QUOTE_NONNUMERIC,
-            escapechar="\\",
-            index=False,
-        )
+        total_unique = flush_jobs_to_csv(all_jobs_list, output_path)
+        print(f"\nTotal unique jobs: {total_unique}")
         print(f"Saved to {output_path}")
     else:
         print("No jobs found.")

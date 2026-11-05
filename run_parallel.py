@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from cockpit.pipeline_monitor import update_pipeline_state
+from cockpit.pipeline_monitor import get_pipeline_state, update_pipeline_state
 
 try:
     csv.field_size_limit(10 * 1024 * 1024)
@@ -43,6 +43,42 @@ EXPECTED_OUTPUTS = {
 }
 
 IMMEDIATE_SCRAPERS = {"search_jobs_ats.py", "search_jobs_portals.py"}
+
+
+def resolve_target_scripts(
+    base_dir: Path,
+    requested: list[str] | None = None,
+    available_scripts: list[Path] | None = None,
+) -> list[Path]:
+    """Resolve which scraper scripts to run, filtering if specific targets were requested."""
+    all_scripts = (
+        list(available_scripts)
+        if available_scripts is not None
+        else [base_dir / "jobspy" / name for name in EXPECTED_OUTPUTS.keys()]
+    )
+    if requested is None:
+        env_val = os.environ.get("JOBSPY_SCRAPERS")
+        if env_val:
+            requested = [s.strip() for s in env_val.split(",") if s.strip()]
+
+    if not requested:
+        return all_scripts
+
+    resolved: list[Path] = []
+    for req in requested:
+        clean = req.lower().removesuffix(".py").removesuffix(".log")
+        matched = False
+        for s in all_scripts:
+            if s.name.lower() == req.lower() or s.stem.lower() == req.lower() or clean in s.stem.lower():
+                if s not in resolved:
+                    resolved.append(s)
+                matched = True
+        if not matched:
+            candidate = base_dir / "jobspy" / (req if req.endswith(".py") else f"{req}.py")
+            if candidate.is_file() and candidate not in resolved:
+                resolved.append(candidate)
+
+    return resolved or all_scripts
 
 
 def count_csv_rows(csv_path: Path) -> int:
@@ -131,7 +167,10 @@ def main():
     task_timeout = float(os.environ.get("JOBSPY_TASK_TIMEOUT_SEC", "7200"))
     if not math.isfinite(task_timeout) or task_timeout <= 0:
         raise ValueError("JOBSPY_TASK_TIMEOUT_SEC must be a positive finite number")
-    for script in SCRIPTS:
+
+    scripts = resolve_target_scripts(BASE_DIR, available_scripts=SCRIPTS)
+
+    for script in scripts:
         if not script.is_file():
             raise FileNotFoundError(f"Scraper script not found: {script}")
 
@@ -157,7 +196,8 @@ def main():
     # 2. Preserve prior daily CSVs outside the paths consumed by report/ingest.
     run_dir = Path(tempfile.mkdtemp(prefix=".run-", dir=results_dir))
     archive_dir = run_dir / "previous"
-    for name in EXPECTED_OUTPUTS.values():
+    targeted_outputs = {s.name: EXPECTED_OUTPUTS[s.name] for s in scripts if s.name in EXPECTED_OUTPUTS}
+    for name in targeted_outputs.values():
         previous = results_dir / name
         if previous.is_file():
             archive_dir.mkdir(exist_ok=True)
@@ -167,14 +207,13 @@ def main():
     print(f"Results directory: {results_dir}")
     print(f"Attempt directory: {run_dir}")
     print(f"Per-attempt deadline: {task_timeout:g}s")
-    task_states = {
-        script.name: {
+    task_states = dict(get_pipeline_state(BASE_DIR).get("tasks", {}))
+    for script in scripts:
+        task_states[script.name] = {
             "status": "pending",
             "row_count": 0,
             "output_csv": str(results_dir / EXPECTED_OUTPUTS[script.name]),
         }
-        for script in SCRIPTS
-    }
     update_pipeline_state(BASE_DIR, phase="SCRAPING", tasks=task_states)
     attempts = []
 
@@ -242,9 +281,8 @@ def main():
         previous_complete = previous_rows > 0 and task.get("error") is None
         if (
             rows > 0
-            and not timed_out
             and rows >= previous_rows
-            and (process.returncode == 0 or not previous_complete)
+            and (process.returncode == 0 or not previous_complete or timed_out)
         ):
             attempt["csv"].replace(results_dir / EXPECTED_OUTPUTS[name])
             task.update(row_count=rows, error=error)
@@ -274,8 +312,8 @@ def main():
     }
     try:
         # 4. Stagger board launches; each process owns its own monotonic deadline.
-        ordered = [s for s in SCRIPTS if s.name in IMMEDIATE_SCRAPERS] + [
-            s for s in SCRIPTS if s.name not in IMMEDIATE_SCRAPERS
+        ordered = [s for s in scripts if s.name in IMMEDIATE_SCRAPERS] + [
+            s for s in scripts if s.name not in IMMEDIATE_SCRAPERS
         ]
         stagger = float(os.environ.get("JOBSPY_STAGGER_SEC", "2.5"))
         board_count = 0
@@ -302,7 +340,7 @@ def main():
         min_rows = int(os.environ.get("JOBSPY_MIN_ROWS", "5"))
         retry_scripts = [
             s
-            for s in SCRIPTS
+            for s in scripts
             if task_states[s.name]["status"] == "failed"
             or task_states[s.name]["row_count"] < min_rows
         ]
@@ -319,7 +357,7 @@ def main():
                 else:
                     finish_attempt(attempt)
 
-        if not any(t.get("row_count", 0) > 0 for t in task_states.values()):
+        if not any((t.get("row_count") or 0) > 0 for t in task_states.values()):
             raise SystemExit(1)
         print("All scrape tasks finished; current outputs published for health audit.")
     except BaseException as exc:
