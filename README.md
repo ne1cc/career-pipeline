@@ -199,6 +199,8 @@ bind-key -n M-j run-shell "~/bin/tmux-jobcockpit '#{client_tty}'"
 | `z` | **Undo** | Reverts the most recent status transition |
 | `?` | **Keyword Search** | Filters table rows by company, title, or description |
 | `/` | **Location Filter** | Filters jobs by location substring |
+| `D` | **Ingest Date Filter** | Filters jobs by discovered/ingested date (e.g. `2026_11_02`, `11/02`) |
+| `K` | **JD Keyword Filter** | Filters jobs by comma-separated keywords in job description |
 | `f` | **Cycle Status View** | Cycles through `QUEUED` → `SAVED` → `HOLD_REFERRAL` → `APPLIED` → `SKIPPED` → `ALL` |
 | `g` | **Cycle Scraper Sheet** | Filters by scraper source segment |
 | `t` | **Toggle 72h Filter** | Toggles between all queued jobs and postings discovered within the last 72 hours |
