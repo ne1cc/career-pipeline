@@ -525,6 +525,29 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
     assert len(fake.calls) == 1 and list((tmp_path / "dossiers").glob("Software Engineer I - * - Seattle, WA - */05_interview_dossier.md"))
 
 
+def test_B_batch_saves_view_and_drains_all_dossiers(db_path, career_ops, tmp_path, calls):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame(*[
+            {"company": f"Co{i}", "title": "Software Engineer I", "job_url": f"https://l/{i}"} for i in range(7)
+        ]))
+    fake = FakeGemini()
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path, career_ops, fake)
+        async with app.run_test() as pilot:
+            await pilot.press("B", "n", "enter")  # anything but y cancels
+            await pilot.pause()
+            assert fake.calls == []
+            await pilot.press("B", "y", "enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    asyncio.run(drive())
+    assert len(fake.calls) == 7  # more than one process_batch chunk of 5
+    with db.session(db_path) as con:
+        assert con.execute("SELECT count(*) FROM jobs_master WHERE is_saved AND intel_status = 'done'").fetchone()[0] == 7
+
+
 def test_cockpit_table_highlight_cursor_has_black_text(db_path, tmp_path):
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame({"company": "Acme Corp", "title": "Software Engineer"}))

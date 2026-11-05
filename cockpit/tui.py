@@ -14,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Static
-from textual.worker import Worker, WorkerState
+from textual.worker import Worker, WorkerState, get_current_worker
 
 from cockpit import intel, macos
 from cockpit.db import (
@@ -138,6 +138,7 @@ class JobCockpitApp(App[None]):
         Binding("u", "page_jd(-0.5)", "JD ½PgUp"),
         Binding("ctrl+u", "page_jd(-0.5)", "JD ½PgUp", show=False),
         Binding("b", "toggle_save", "Save/MD"),
+        Binding("B", "save_view", "Save view"),
         Binding("i", "open_dossier", "Dossier"),
         Binding("e", "edit_dossier", "Edit (nvim)"),
         Binding("v", "edit_dossier", "Nvim", show=False),
@@ -147,26 +148,27 @@ class JobCockpitApp(App[None]):
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
         Binding("question_mark", "search", "Search"),
-        Binding("K", "filter_jd_keywords", "JD Words"),
+        Binding("w", "filter_jd_keywords", "JD Words"),
         Binding("r", "referrals", "Referrals"),
         Binding("o", "stage(False)", "Open"),
-        Binding("O", "stage(True)", "Open bg"),
+        Binding("O", "stage(True)", "Open bg", show=False),
         Binding("p", "preview", "Preview"),
         Binding("P", "prefill", "Prefill"),
         Binding("shift+p", "prefill", "Prefill", show=False),
         Binding("a", "mark('APPLIED')", "Applied"),
         Binding("s", "mark('SKIPPED')", "Skip"),
         Binding("h", "hold", "Hold"),
-        Binding("1", "archetype('swe_backend')", "swe"),
-        Binding("2", "archetype('data_eng')", "data"),
-        Binding("3", "archetype('analytics_msba')", "analytics"),
+        Binding("1", "archetype('swe_backend')", "swe", show=False),
+        Binding("2", "archetype('data_eng')", "data", show=False),
+        Binding("3", "archetype('analytics_msba')", "analytics", show=False),
         Binding("y", "yank", "Outreach"),
         Binding("t", "toggle_72h", "72h"),
         Binding("f", "cycle_filter", "Filter"),
         Binding("g", "segment", "Sheet"),
         Binding("slash", "location", "Location"),
-        Binding("D", "filter_date", "Date"),
-        Binding("R", "sync", "Sync mail"),
+        Binding("D", "filter_date", "Date", show=False),
+        Binding("R", "sync", "Sync mail", show=False),
+        Binding("f1", "show_help_panel", "All keys"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -389,10 +391,17 @@ class JobCockpitApp(App[None]):
         yoe_str = f" · [b]YOE:[/b] {scored.required_yoe}+ yrs" if scored.required_yoe else ""
         disq_badge = f" [bold red]({scored.disqualified_reason})[/bold red]" if scored.disqualified_reason else ""
         dossier_line = f"\n[b]Dossier:[/b] {escape(r['intel_path'])}" if r.get("intel_path") else ""
+        jd_len = len((r["description"] or "").strip())
+        # Stub JDs get fetched from the posting when saved; flag them so it's no surprise.
+        jd_badge = (
+            f" · [b]JD:[/b] {jd_len / 1000:.1f}k chars"
+            if jd_len >= intel.MIN_JD_CHARS
+            else " · [bold red]JD: missing (fetched on save)[/bold red]"
+        )
 
         detail.update(
             f"[b]{escape(r['title'])}[/b]{disq_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
-            f"{timing_line}{source_line}{yoe_str}\n"
+            f"{timing_line}{source_line}{yoe_str}{jd_badge}\n"
             f"{notes_line}"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"
             f"[b]URL:[/b] {escape(r['apply_url'])}\n"
@@ -574,45 +583,92 @@ class JobCockpitApp(App[None]):
             else:
                 self.notify("Dossier not found on disk yet.", severity="warning")
 
+    def _write_job_stubs(self, job: dict[str, Any]) -> bool:
+        """Create a freshly saved job's folder with its posting and placeholder dossier.
+
+        Contract:
+        - Returns True when the folder exists afterwards; existing files are left untouched.
+        - Returns False (and shows an error toast) when the folder cannot be created.
+        """
+        key = job["dedup_key"]
+        job_folder = intel.job_folder_path(job, self.export_dir)
+        out_file = job_folder / "05_interview_dossier.md"
+        try:
+            job_folder.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            self.notify(f"Cannot create job folder: {e}", severity="error")
+            return False
+        posting_file = job_folder / "00_job_posting.md"
+        if not posting_file.exists():
+            posting_file.write_text(
+                f"---\ndedup_key: {key}\ncompany: \"{job.get('company')}\"\ntitle: \"{job.get('title')}\"\n"
+                f"location: \"{job.get('location') or ''}\"\napply_url: \"{job.get('apply_url')}\"\n"
+                f"priority_score: {job.get('priority_score', 0):.0f}\nfit_score: pending\n---\n\n"
+                f"# {job.get('company')} — {job.get('title')}\n\n## Original Job Description\n\n{job.get('description') or 'No description provided.'}\n",
+                "utf-8",
+            )
+        if not out_file.exists():
+            out_file.write_text(intel.render_dossier(job), "utf-8")
+        return True
+
+    def _save_jobs(self, jobs: list[dict[str, Any]]) -> int:
+        """Save every not-yet-saved job, write its stubs, and queue its dossier; returns how many were saved.
+
+        Limits: never unsaves; one index rebuild for the whole batch.
+        """
+        saved = 0
+        for job in jobs:
+            if job.get("is_saved"):
+                continue
+            job_folder = intel.job_folder_path(job, self.export_dir)
+            with session(self.db_path) as con:
+                toggle_saved(con, job["dedup_key"], intel_path=str(job_folder / "05_interview_dossier.md"), folder_path=str(job_folder))
+            if not self._write_job_stubs(job):
+                break
+            saved += 1
+        if saved:
+            with session(self.db_path) as con:
+                intel.rebuild_index(con, self.export_dir)
+            self._kick_intel()
+        return saved
+
     def action_toggle_save(self) -> None:
         if job := self._job():
             row = self.query_one(DataTable).cursor_row
             key = job["dedup_key"]
-            job_folder = intel.job_folder_path(job, self.export_dir)
-            out_file = job_folder / "05_interview_dossier.md"
-            with session(self.db_path) as con:
-                now_saved = toggle_saved(con, key, intel_path=str(out_file), folder_path=str(job_folder))
-            if now_saved:
-                # Write initial stub posting and dossier immediately
-                try:
-                    job_folder.mkdir(parents=True, exist_ok=True)
-                except (PermissionError, OSError) as e:
-                    self.notify(f"Cannot create job folder: {e}", severity="error")
-                    return
-                posting_file = job_folder / "00_job_posting.md"
-                if not posting_file.exists():
-                    posting_file.write_text(
-                        f"---\ndedup_key: {key}\ncompany: \"{job.get('company')}\"\ntitle: \"{job.get('title')}\"\n"
-                        f"location: \"{job.get('location') or ''}\"\napply_url: \"{job.get('apply_url')}\"\n"
-                        f"priority_score: {job.get('priority_score', 0):.0f}\nfit_score: pending\n---\n\n"
-                        f"# {job.get('company')} — {job.get('title')}\n\n## Original Job Description\n\n{job.get('description') or 'No description provided.'}\n",
-                        "utf-8",
-                    )
-                if not out_file.exists():
-                    out_file.write_text(intel.render_dossier(job), "utf-8")
+            if job.get("is_saved"):
+                job_folder = intel.job_folder_path(job, self.export_dir)
                 with session(self.db_path) as con:
-                    intel.rebuild_index(con, self.export_dir)
-                self.notify(f"Saved job to {job_folder.name}")
-                self._kick_intel()
-            else:
+                    toggle_saved(con, key, intel_path=str(job_folder / "05_interview_dossier.md"), folder_path=str(job_folder))
                 self.notify(f"Unsaved {job['company']}")
+            elif self._save_jobs([job]):
+                self.notify(f"Saved job to {intel.job_folder_path(job, self.export_dir).name}")
             self._reload(row, preserve_key=key)
+
+    def action_save_view(self) -> None:
+        """Batch-save every job in the current filtered view and generate their dossiers."""
+        todo = [r for r in self.rows if not r.get("is_saved")]
+        if not todo:
+            self.notify("Every job in this view is already saved.", severity="warning")
+            return
+        cur = self._job()
+
+        # Each save costs one LLM run, so make the batch size explicit before committing to it.
+        def done(answer: str | None) -> None:
+            if (answer or "").strip().lower() not in ("y", "yes"):
+                self.notify("Batch save cancelled.")
+                return
+            n = self._save_jobs(todo)
+            self.notify(f"Saved {n} job(s); generating dossiers in the background…")
+            self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur["dedup_key"] if cur else None)
+
+        self.push_screen(NoteModal(f"Save {len(todo)} job(s) in this view and generate {len(todo)} dossier(s)? (y/N)"), done)
 
     def action_rerun_intel(self) -> None:
         if job := self._job():
             key = job["dedup_key"]
             with session(self.db_path) as con:
-                con.execute("UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL WHERE dedup_key = ?", [key])
+                con.execute("UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL, intel_error = NULL WHERE dedup_key = ?", [key])
             self.notify(f"Re-queued intel for {job['company']}")
             self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
             self._kick_intel()
@@ -751,6 +807,15 @@ class JobCockpitApp(App[None]):
         self.run_worker(self._run_intel_worker, thread=True, exclusive=True, exit_on_error=False)
 
     def _run_intel_worker(self) -> None:
+        """Drain the intel queue in chunks of 5, refreshing the table after each chunk.
+
+        Contract:
+        - Returns silently when intel is not configured (no career-ops context or LLM client).
+        - Surfaces runtime errors as warning toasts; never raises into Textual.
+
+        Limits: stops early when the worker is cancelled (a newer kick replaced it); a chunk
+        whose jobs all fail still counts as progress because failed jobs leave the queue.
+        """
         try:
             ctx = intel.load_context(self.career_ops_root, model=self.model)
         except intel.IntelUnavailable:
@@ -765,14 +830,31 @@ class JobCockpitApp(App[None]):
             except intel.IntelUnavailable:
                 return
 
+        worker = get_current_worker()
+        done = 0
         try:
-            processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
-            if processed:
+            # 1. Keep claiming until nothing is pending → process_batch returns only successes,
+            #    so loop on the queue, not on its return value
+            while not worker.is_cancelled and self._pending_intel() > 0:
+                processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
+                done += len(processed)
+                remaining = self._pending_intel()
                 self.call_from_thread(self._on_intel_finished)
+                if remaining:
+                    self.call_from_thread(self.notify, f"Dossiers: {done} done, {remaining} to go")
+                elif done:
+                    self.call_from_thread(self.notify, f"Dossiers: {done} done")
         except intel.IntelUnavailable as e:
             self.call_from_thread(self.notify, f"Intel unavailable: {e}", severity="warning")
         except Exception as e:
             self.call_from_thread(self.notify, f"Intel background error: {e}", severity="warning")
+
+    def _pending_intel(self) -> int:
+        """Count saved jobs still waiting for a dossier."""
+        with session(self.db_path) as con:
+            return con.execute(
+                "SELECT count(*) FROM jobs_master WHERE is_saved = TRUE AND intel_status = 'pending'"
+            ).fetchone()[0]
 
     def _on_intel_finished(self) -> None:
         cur_job = self._job()
