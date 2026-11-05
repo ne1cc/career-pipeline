@@ -44,6 +44,7 @@ from cockpit.models import FunnelState
 from cockpit.normalizer import REPO_ROOT, highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
 
 DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pending")
+BULK_CONFIRM_OVER = 10  # marked jobs above this need a second G press
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
 
 FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", "DISMISSED", None]
@@ -328,6 +329,8 @@ class JobCockpitApp(App[None]):
         Binding("t", "toggle_72h", "72h"),
         Binding("f", "cycle_filter", "Filter"),
         Binding("g", "segment", "Sheet"),
+        Binding("G", "generate_marked", "Dossiers"),
+        Binding("shift+g", "generate_marked", "Dossiers", show=False),
         Binding("slash", "location", "Location"),
         Binding("D", "filter_date", "Date"),
         Binding("R", "sync", "Sync mail"),
@@ -379,6 +382,7 @@ class JobCockpitApp(App[None]):
         self._titles_cancel: intel.CancelScope | None = None  # set while a grouping runs
         self._titles_regroup = False  # next grouping ignores the saved title -> role map
         self.marked: set[str] = set()
+        self._bulk_confirm: frozenset[str] | None = None  # marked set awaiting a second G press
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -618,6 +622,8 @@ class JobCockpitApp(App[None]):
         the job behind it. Pop-ups own their keys through their own BINDINGS."""
         if action == "cancel_titles":
             return self._titles_cancel is not None
+        if action == "clear_marks" and self._titles_cancel is not None:
+            return False  # Esc belongs to the grouping cancel while it runs
         return len(self.screen_stack) == 1 or action == "quit"
 
     # ---- Titles view: AI role breakdown of the current view ----
@@ -1238,6 +1244,34 @@ class JobCockpitApp(App[None]):
         self.marked.clear()
         self.notify(f"Skipped {len(targets)} jobs (z undoes one at a time)")
         self._reload(row)
+
+    def action_generate_marked(self) -> None:
+        """Queue dossiers for every marked row (or the cursor row when none are marked).
+
+        Contract: stars each job and queues its dossier via `queue_intel` (done ones are left
+        alone); the 3-wide background worker does the generating. More than BULK_CONFIRM_OVER
+        jobs needs a second G press with the same marks, since each is a model call on the
+        owner's account. Marks are cleared once queued.
+        """
+        targets = self._targets()
+        if not targets:
+            return
+        keys = frozenset(j["dedup_key"] for j in targets)
+        # 1. Big batches: first press only warns.
+        if len(keys) > BULK_CONFIRM_OVER and self._bulk_confirm != keys:
+            self._bulk_confirm = keys
+            self.notify(f"{len(keys)} dossiers = {len(keys)} model calls. Press G again to confirm.", severity="warning")
+            return
+        self._bulk_confirm = None
+        # 2. Queue each; count the ones that already had a dossier.
+        with session(self.db_path) as con:
+            statuses = [queue_intel(con, k) for k in keys]
+        have = statuses.count("done")
+        row = self.query_one(DataTable).cursor_row
+        self.marked.clear()
+        self.notify(f"Queued {len(keys) - have} dossiers ({have} already done). Generating 3 at a time.")
+        self._reload(row)
+        self._kick_intel()
 
     def action_edit_note(self) -> None:
         job = self._job()

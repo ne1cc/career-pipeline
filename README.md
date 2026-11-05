@@ -44,6 +44,188 @@ flowchart TD
 
 ---
 
+## Command Cheat Sheet
+
+Every command, key and script in this repo, grouped by what you are trying to do. Use your browser's find (`Cmd+F`) to jump to a command.
+
+**Contents:** [Daily routine](#daily-routine) · [Cockpit keys](#cockpit-keys-inside-the-tui) · [`cockpit` commands](#cockpit-commands-in-the-terminal) · [Shell shortcuts](#shell-shortcuts) · [Scrapers](#scraper-scripts) · [Setup scripts](#setup-and-helper-scripts)
+
+### Daily routine
+
+1. Scrape and load jobs: `cockpit pipeline run`, then `cockpit ingest`.
+2. Open the cockpit: `cockpit` (or `Alt+j` in tmux). Move with `j`/`k`.
+3. See what is out there: `T` shows how many jobs exist per role in your current view.
+4. Mark the jobs you like: `space` on each row.
+5. Generate their dossiers: `G` (3 at a time, in the background).
+6. Apply: `A` fills the form for you to review (it generates the dossier first if needed). You press Submit.
+7. Record it: `a` = applied, `s` = skip, `h` = hold for a referral.
+
+### Cockpit keys (inside the TUI)
+
+Open it with `cockpit`. Keys are case sensitive: `G` means Shift+g.
+
+#### Move around
+
+| Key | What it does |
+|---|---|
+| `j` / `k` (or `↓` / `↑`) | Next / previous job (dismissed jobs are skipped) |
+| `J` / `K` | Scroll the job description down / up |
+| `d` / `u` | Scroll the job description half a page down / up |
+| `q` | Quit |
+
+#### Choose which jobs you see
+
+| Key | What it does |
+|---|---|
+| `f` | Cycle the view: QUEUED → 72H → NEW_GRAD → SAVED → INTERN → REFERRAL_HOLD → APPLIED → DISMISSED → All |
+| `t` | Toggle last-72-hours / all queued |
+| `g` | Cycle the scraper sheet (all → seattle → west → remote …) |
+| `/` | Filter by location text (`wa`, `seattle`, `remote`). Blank clears |
+| `D` | Filter by ingest date (`2026_11_02` or `11/02`). Blank clears |
+| `w` | Filter by words in the job description (comma separated). Blank clears |
+| `?` | Search company, title and description |
+| `T` | Titles view: AI groups titles into roles and counts jobs per role in this view. Press `T` or `Esc` to cancel while it runs |
+
+Inside the Titles view: `Enter` shows only that role's jobs, `x` cycles the tier filter, `a` asks the AI a question about the breakdown, `r` regroups, `Esc` closes.
+
+#### Pick several jobs at once
+
+| Key | What it does |
+|---|---|
+| `space` | Mark / unmark the row (shown with `●`) and move down |
+| `Esc` | Clear all marks |
+| `G` | **Generate dossiers** for every marked job (or the cursor job if none are marked). Runs 3 at a time on your own claude/agy account. More than 10 marked asks you to press `G` again to confirm |
+| `o` / `O` | With marks: open every marked apply page in background tabs |
+| `I` | With marks: re-run the AI evaluation for each marked job |
+| `x` | With marks: dismiss all marked jobs |
+| `S` | Skip all marked jobs (`z` undoes one at a time) |
+
+#### Dossiers (AI application packages)
+
+| Key | What it does |
+|---|---|
+| `b` | Save one job and generate its dossier in the background |
+| `G` | Same, for all marked jobs (see above) |
+| `I` | Re-run the AI evaluation for this job |
+| `i` | Open the interview dossier |
+| `e` / `v` | Edit the dossier files in Neovim |
+| `F` | Open the job's folder in Finder |
+| `c` | Copy the cover letter |
+| `y` | Copy the outreach note |
+
+#### Apply
+
+| Key | What it does |
+|---|---|
+| `A` | **Autofill**: open the form in a separate browser and fill it. Queues the dossier first if needed. Never submits |
+| `o` / `Enter` | Open the apply page and copy the resume path (`Cmd+Shift+G`, `Cmd+V`, `Enter` in the file picker) |
+| `O` | Same, in a background tab |
+| `P` | Copy ATS prefill text (Greenhouse / Ashby / Lever) |
+| `p` | Preview the staged resume (QuickLook) |
+| `1` / `2` / `3` | Switch resume type: swe_backend / data_eng / analytics_msba |
+
+#### Record what happened
+
+| Key | What it does |
+|---|---|
+| `a` | Mark **Applied** |
+| `s` | Mark **Skipped** |
+| `h` | **Hold** for a referral (asks for a note) |
+| `x` | **Dismiss** a job you are not exploring (press again in the DISMISSED view to restore) |
+| `z` | Undo the last status change |
+| `n` | Edit your note on the job |
+| `r` | Open a LinkedIn people search for the company |
+| `R` | Sync Gmail to detect interview / rejection emails |
+
+### `cockpit` commands (in the terminal)
+
+Run `cockpit <command> --help` for every option. `[query]` means a company or role name.
+
+#### Setup and health
+
+| Command | What it does |
+|---|---|
+| `cockpit onboard` | Set up your resumes and profile (`--from-resumes PATH`, `--seed-defaults`, or flags such as `--name`, `--email`) |
+| `cockpit import-resume FILE` | Import one resume (.pdf/.docx/.md) into your config |
+| `cockpit build-resumes` | Build the base resumes into .docx and .pdf |
+| `cockpit init` | Create the local database |
+| `cockpit doctor` | Check the database, prompts, resumes and AI setup |
+| `cockpit keychain-setup` | Store a Gmail app password or Gemini key in the macOS Keychain (`--service gmail\|gemini`) |
+| `cockpit install-agent` | Install the 08:30 / 13:30 background sync |
+
+#### Find and load jobs
+
+| Command | What it does |
+|---|---|
+| `cockpit pipeline` | Show the live scraper monitor (`--run` start, `--watch` keep open, `--once` one snapshot) |
+| `cockpit run` | Start the scrapers in the background and attach the monitor |
+| `cockpit stop` | Stop a running scrape |
+| `cockpit retry [scrapers]` | Re-run only the scrapers that failed |
+| `cockpit ingest` | Load scraped results into the database (`--latest`, `--all-uningested`, `--date 11/02`, `--days N`, `--status`) |
+| `cockpit bulk-ingest` | Load the last N days of results (`--days N`) |
+| `cockpit rescore` | Re-score queued jobs with `scoring_rules.toml` (`--audit` shows why jobs were dropped) |
+| `cockpit enrich` | Fetch full descriptions for the top short postings and re-score them |
+| `cockpit verify-open` | Check whether apply links are still open (`--limit N`, `--all-queued`, `--dry-run`) |
+| `cockpit stats` | Funnel numbers by resume type and job board |
+| `cockpit tui` | Open the cockpit (same as `cockpit`) |
+| `cockpit tmux-status` | Print the status line for the tmux bar |
+
+#### Dossiers and applying
+
+| Command | What it does |
+|---|---|
+| `cockpit intel` | Generate dossiers for saved jobs (`--limit N`, `--retry-failed`, `--provider claude-cli\|agy\|gemini`, `--stale-hours N`) |
+| `cockpit sync-saved` | Match saved jobs to the dossier folders on disk |
+| `cockpit dossier [query]` | List dossiers, or open one (`--cat` print, `-v` Neovim, `-m` One Markdown, `--latest`, `--select` fzf picker) |
+| `cockpit edit [query]` / `nvim` | Open a dossier in Neovim |
+| `cockpit md [query]` / `onemarkdown` | Open a dossier in One Markdown |
+| `cockpit folder [query]` / `artifacts` | Open the dossier folder in Finder |
+| `cockpit autofill URL\|KEY` | Fill one application form (`--pdf FILE`, `--cover FILE`). You submit. No AI-drafted answers here |
+| `cockpit prefill URL\|KEY` | Print ATS prefill text (`--copy`, `--open`, `--json`) |
+| `cockpit sprint` | Step through top jobs one by one in the terminal (`--limit`, `--recent`, `--segment`, `--location`) |
+| `cockpit sync-mail` | Update APPLIED jobs from ATS emails in Gmail |
+| `cockpit verify-ats FILE` | Score a resume for ATS parsing, 0-100 (`--all`, `--keywords`, `--role`, `--json`) |
+
+### Shell shortcuts
+
+Added to your shell by `./setup.sh` (from `shell/cockpit.sh`).
+
+| Command | What it does |
+|---|---|
+| `cjd [query]` | `cd` into a job's dossier folder (no query: the root) |
+| `cjn [query]` | Open a job's dossier files in Neovim |
+| `cjf [query]` | Show a job's folder in Finder |
+| `cjp [url\|query]` | Copy ATS prefill text |
+| `cjv [resume]` | Check a resume for ATS parsing |
+| `jobspy-pipeline` | Run the whole scrape → Excel → ingest pipeline |
+| `jobspy-parallel` | Run only the parallel scrapers |
+| `Alt+j` (tmux) | Open or close the cockpit popup, once `bin/tmux-jobcockpit` is bound (see section 4) |
+
+### Scraper scripts
+
+Run with `uv run python <script>`.
+
+| Script | What it does |
+|---|---|
+| `run_pipeline.py` | Full pipeline: scrape, Excel report, optional email, ingest |
+| `run_parallel.py` | All scrapers at once with automatic retry |
+| `jobspy/search_jobs_seattle.py`, `_seattle_entry_level.py`, `_seattle_msba.py`, `_west.py`, `_msba_west.py`, `_remote.py` | One search sheet each (the names say the area or target) |
+| `jobspy/search_jobs_ats.py` | Company career pages (Greenhouse, Lever, Ashby, …) |
+| `jobspy/search_jobs_campus.py` | New-grad and campus lists |
+| `jobspy/search_jobs_internships.py` | Internship sweep (`--smoke-test`, `--no-jobspy`, `--no-ats`, `--no-curated`) |
+| `jobspy/search_jobs_portals.py` | Tech job portals (`--watch`, `--poll-interval SECONDS`, `--hours-old N`, `--smoke-test`) |
+
+### Setup and helper scripts
+
+| Command | What it does |
+|---|---|
+| `./setup.sh` | Full install (`--onboard`, `--from-resumes PATH`, `--no-browser`, `--no-shell`) |
+| `bin/import-resume FILE` | Same as `cockpit import-resume` |
+| `bin/tmux-jobcockpit` | The tmux popup launcher |
+| `python -m pytest tests/` | Run the tests |
+
+---
+
 ## 1. Quickstart (Clone & Run)
 
 ```bash
@@ -183,34 +365,7 @@ bind-key -n M-j run-shell "~/bin/tmux-jobcockpit '#{client_tty}'"
 
 ### TUI Keyboard Bindings
 
-| Key | Action | Description |
-| :---: | :--- | :--- |
-| `Enter` / `o` | **Apply & Stage Resume** | Opens `apply_url` in browser and copies the tailored `.pdf` (or archetype `.pdf`) path to clipboard for `Cmd+Shift+G` upload |
-| `b` | **Bookmark & Generate Package** | Saves the job (`is_saved = TRUE`) and triggers background `cockpit intel` 8-file dossier + `.docx`/`.pdf` generation |
-| `a` | **Mark Applied** | Transitions job state to `APPLIED` and updates daily velocity counter |
-| `s` | **Skip Job** | Transitions job state to `SKIPPED` |
-| `h` | **Hold for Referral** | Places job in `HOLD_REFERRAL` (24h hold) and opens LinkedIn people search for the company |
-| `c` | **Copy Cover Letter** | Copies the tailored cover letter `.pdf` path (or Markdown text) to clipboard |
-| `p` | **Preview Resume** | Previews the staged resume PDF via macOS QuickLook |
-| `P` | **ATS Form Prefill** | Generates ATS prefill field mappings (Greenhouse/Ashby/Lever) and copies to clipboard |
-| `A` | **Autofill** | Opens the application form in a separate Chromium window and fills it (see below) |
-| `i` | **Open Interview Dossier** | Opens `05_interview_dossier.md` in default Markdown viewer |
-| `e` | **Edit in Neovim** | Suspends TUI and opens the job's 4 core Markdown artifacts in `$EDITOR` / `nvim -p` |
-| `F` | **Open Folder** | Reveals the job's generated artifact folder in Finder / file manager |
-| `r` | **QuickLook Resume** | Previews the staged resume PDF via macOS QuickLook (`qlmanage -p`) |
-| `y` | **Copy Outreach Note** | Copies the tailored LinkedIn outreach note (or template fallback) to clipboard |
-| `l` | **LinkedIn Referral Search** | Opens LinkedIn people search for the selected company in background |
-| `n` | **Edit Notes** | Opens inline modal to attach custom notes to the job |
-| `z` | **Undo** | Reverts the most recent status transition |
-| `?` | **Keyword Search** | Filters table rows by company, title, or description |
-| `/` | **Location Filter** | Filters jobs by location substring |
-| `D` | **Ingest Date Filter** | Filters jobs by discovered/ingested date (e.g. `2026_11_02`, `11/02`) |
-| `K` | **JD Keyword Filter** | Filters jobs by comma-separated keywords in job description |
-| `f` | **Cycle Status View** | Cycles through `QUEUED` → `SAVED` → `HOLD_REFERRAL` → `INTERN` → `APPLIED` → `SKIPPED` → `ALL` |
-| `g` | **Cycle Scraper Sheet** | Filters by scraper source segment |
-| `t` | **Toggle 72h Filter** | Toggles between all queued jobs and postings discovered within the last 72 hours |
-| `R` | **Sync Gmail Statuses** | Runs IMAP status sync to detect ATS confirmation, interview, or rejection emails |
-| `q` | **Quit** | Closes the Cockpit TUI |
+See the [Cockpit keys](#cockpit-keys-inside-the-tui) tables in the Command Cheat Sheet above.
 
 ---
 
@@ -220,15 +375,7 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 
 ### Shell Jump Functions (`shell/cockpit.sh`)
 
-| Function | Equivalent CLI | Description |
-| :--- | :--- | :--- |
-| `cjd [query]` | `cd "$(cockpit folder [query])"` | `cd` directly into the matching job's dossier folder (or root export dir) |
-| `cjn [query]` | `cockpit edit [query]` | Open the job's 4 core dossier Markdown files in Neovim tabs (`nvim -p`) |
-| `cjf [query]` | `cockpit folder [query]` | Reveal the job's dossier folder in Finder / system file manager |
-| `cjp [url\|query]` | `cockpit prefill [query] --copy` | Generate ATS form prefill mappings and copy to clipboard |
-| `cjv [resume]` | `cockpit verify-ats [resume]` | Audit resume for ATS parseability (0-100) and keyword coverage |
-| `jobspy-pipeline` | `python run_pipeline.py` | Run the full parallel scraping + Excel workbook + Cockpit ingest pipeline |
-| `jobspy-parallel` | `python run_parallel.py` | Run the 8 parallel scrapers standalone |
+See [Shell shortcuts](#shell-shortcuts) in the Command Cheat Sheet above.
 
 ### Autofill (`A`)
 
@@ -246,29 +393,7 @@ Press `A` on a job to open its application form in a separate Chromium window wi
 
 ### `cockpit` CLI Commands
 
-| Command | Description |
-| :--- | :--- |
-| `cockpit` / `cockpit tui` | Launch the interactive Textual TUI |
-| `cockpit onboard [OPTIONS]` | Import user resumes (`--from-resumes`), run interactive profile wizard, or `--seed-defaults` |
-| `cockpit build-resumes` | Compile `config/evidence/base_resumes/*.md` into `.docx` and `.pdf` in `resumes/` |
-| `cockpit doctor` | Audit DuckDB, vendored `career-ops` prompts, user profile/CV, archetype resumes, LLM, and tmux |
-| `cockpit init` | Initialize `data/job_funnel.duckdb` schema and tmux status cache |
-| `cockpit ingest [PATHS...]` | Ingest JobSpy CSVs or Excel workbooks into DuckDB (launches interactive date/uningested fuzzy finder in terminal, or pass `--all-uningested` / `--latest` / `--cumulative`) |
-| `cockpit sprint [--limit N] [--recent]` | Launch sequential interactive CLI application sprint for top-scored queued jobs |
-| `cockpit verify-open [--limit N] [--dry-run]` | Verify whether apply URLs for queued internships are still active/open (HTTP status check) |
-| `cockpit prefill [URL\|KEY] [--copy] [--open]` | Format ATS application form fields for Greenhouse, Ashby, Lever, or generic jobs |
-| `cockpit autofill [URL\|KEY] [--pdf F] [--cover F]` | Autofill one application form in a separate browser, then wait for you to review and submit |
-| `cockpit verify-ats [PATH] [--all] [-k "..."]` | Score resume ATS parseability (0-100), letter grade, and keyword match coverage |
-| `cockpit intel [--limit N] [--retry-failed]` | Generate 8-file dossiers and `.docx`/`.pdf` exports for bookmarked jobs |
-| `cockpit dossier [QUERY] [--cat] [-v]` | List saved dossiers, print to terminal (`--cat`), or open in Neovim (`-v`) |
-| `cockpit edit [QUERY]` | Open all core Markdown files for a saved job in `$EDITOR` / Neovim |
-| `cockpit folder [QUERY]` / `cockpit artifacts` | Open a job's dossier directory in Finder / file manager |
-| `cockpit pipeline [run\|status\|logs]` | Launch, monitor live progress, or inspect logs of the background scraper pipeline |
-| `cockpit stats` | Display funnel conversion tables by resume archetype and job board |
-| `cockpit sync-mail [--user EMAIL]` | Scan Gmail via IMAP to auto-update `APPLIED` → `INTERVIEW` / `REJECTED` / `OFFER` states |
-| `cockpit keychain-setup` | Store Gmail app password (`--service gmail`) or Gemini API key (`--service gemini`) in macOS Keychain |
-| `cockpit install-agent` | Install and bootstrap the macOS `launchd` scheduled sync agent |
-| `cockpit tmux-status` | Print cached funnel velocity status line for `tmux` status bar |
+See [`cockpit` commands](#cockpit-commands-in-the-terminal) in the Command Cheat Sheet above.
 
 ---
 

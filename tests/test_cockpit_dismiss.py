@@ -159,3 +159,54 @@ def test_batch_reeval_requeues_all_marked(db_path, tmp_path):
     asyncio.run(drive())
     with db.session(db_path) as con:
         assert con.execute("SELECT count(*) FROM jobs_master WHERE intel_status = 'pending'").fetchone()[0] == 2
+
+
+def _status(db_path, company):
+    with db.session(db_path) as con:
+        return con.execute("SELECT is_saved, intel_status FROM jobs_master WHERE company = ?", [company]).fetchone()
+
+
+def test_G_queues_dossiers_for_marked_rows_only(db_path, monkeypatch):
+    kicks = []
+    monkeypatch.setattr(JobCockpitApp, "_kick_intel", lambda self: kicks.append(1))
+
+    async def drive():
+        app = JobCockpitApp(db_path)
+        async with app.run_test() as pilot:
+            before = len(kicks)  # the app may kick the worker on start
+            await pilot.press("space", "j", "space", "G")
+            await pilot.pause()
+            assert not app.marked
+            assert len(kicks) == before + 1
+
+    asyncio.run(drive())
+    saved = [c for c in COMPANIES if _status(db_path, c)[0]]
+    assert len(saved) == 2 and all(_status(db_path, c)[1] == "pending" for c in saved)
+
+
+def test_G_without_marks_uses_cursor_row(db_path, monkeypatch):
+    monkeypatch.setattr(JobCockpitApp, "_kick_intel", lambda self: None)
+
+    async def drive():
+        async with JobCockpitApp(db_path).run_test() as pilot:
+            await pilot.press("G")
+            await pilot.pause()
+
+    asyncio.run(drive())
+    assert sum(bool(_status(db_path, c)[0]) for c in COMPANIES) == 1
+
+
+def test_G_big_batch_needs_second_press(db_path, monkeypatch):
+    monkeypatch.setattr(JobCockpitApp, "_kick_intel", lambda self: None)
+    monkeypatch.setattr("cockpit.tui.BULK_CONFIRM_OVER", 1)
+
+    async def drive():
+        async with JobCockpitApp(db_path).run_test() as pilot:
+            await pilot.press("space", "j", "space", "G")
+            await pilot.pause()
+            assert not any(_status(db_path, c)[0] for c in COMPANIES)  # warned only
+            await pilot.press("G")
+            await pilot.pause()
+
+    asyncio.run(drive())
+    assert sum(bool(_status(db_path, c)[0]) for c in COMPANIES) == 2

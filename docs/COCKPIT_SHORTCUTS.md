@@ -1,6 +1,6 @@
 # JobCockpit & Pipeline Shortcuts
 
-Quick reference for all keyboard shortcuts, shell aliases, fast jumps, and CLI commands for the JobCockpit and Career Pipeline ecosystem.
+Full, grouped reference: see the Command Cheat Sheet in the README. Quick reference for all keyboard shortcuts, shell aliases, fast jumps, and CLI commands for the JobCockpit and Career Pipeline ecosystem.
 
 ---
 
@@ -119,6 +119,7 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `o` / `O` | With marks: open every marked apply page in background tabs (no clipboard copy) |
 | `I` | With marks: re-queue AI intel for every marked job |
 | `x` | With marks: dismiss every marked job |
+| `G` (Shift+g) | Queue dossiers for every marked job (or the cursor job); 3 generate at a time; over 10 marked needs a second `G` |
 | `S` (Shift+s) | Skip every marked job (`SKIPPED`); `z` undoes one at a time |
 
 ---
