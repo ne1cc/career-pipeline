@@ -219,7 +219,7 @@ if __name__ == "__main__":
                     country_indeed="USA",
                     results_wanted=9999,
                     hours_old=48,
-                    linkedin_fetch_description=False,
+                    linkedin_fetch_description=True,
                 )
 
                 if jobs.attrs.get("scrape_errors"):

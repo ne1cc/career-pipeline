@@ -248,20 +248,22 @@ class LinkedIn(Scraper):
         :param job_page_url:
         :return: dict
         """
-        try:
-            response = self.session.get(
-                f"{self.base_url}/jobs/view/{job_id}", timeout=5
-            )
-            response.raise_for_status()
-        except:
-            return {}
-        if "linkedin.com/signup" in response.url:
+        # 1. Try the public job page, then the logged-out guest endpoint → the page often
+        #    redirects to signup or omits the markup, the guest endpoint does neither
+        soup = None
+        for url in (
+            f"{self.base_url}/jobs/view/{job_id}",
+            f"{self.base_url}/jobs-guest/jobs/api/jobPosting/{job_id}",
+        ):
+            page = self._fetch_job_page(url)
+            if page is not None:
+                soup = page
+                if self._description_markup(page) is not None:
+                    break
+        if soup is None:
             return {}
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        div_content = soup.find(
-            "div", class_=lambda x: x and "show-more-less-html__markup" in x
-        )
+        div_content = self._description_markup(soup)
         description = None
         if div_content is not None:
             div_content = remove_attributes(div_content)
@@ -296,6 +298,28 @@ class LinkedIn(Scraper):
             "company_logo": company_logo,
             "job_function": job_function,
         }
+
+    def _fetch_job_page(self, url: str) -> BeautifulSoup | None:
+        """
+        Fetches one job page; returns None on network errors, non-2xx, or a signup redirect
+        """
+        try:
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+        except Exception:
+            return None
+        if "linkedin.com/signup" in response.url:
+            return None
+        return BeautifulSoup(response.text, "html.parser")
+
+    @staticmethod
+    def _description_markup(soup: BeautifulSoup) -> Tag | None:
+        """
+        Returns the job description container, or None when the page has none
+        """
+        return soup.find(
+            "div", class_=lambda x: x and "show-more-less-html__markup" in x
+        )
 
     def _get_location(self, metadata_card: Optional[Tag]) -> Location:
         """
