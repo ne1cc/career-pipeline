@@ -82,7 +82,14 @@ CREATE TABLE IF NOT EXISTS jobs_master (
     status VARCHAR NOT NULL DEFAULT 'QUEUED',
     applied_at TIMESTAMPTZ,
     last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    notes VARCHAR
+    notes VARCHAR,
+    is_internship BOOLEAN DEFAULT FALSE,
+    mentions_2027 BOOLEAN DEFAULT FALSE,
+    wrong_season BOOLEAN DEFAULT FALSE,
+    needs_return_to_school BOOLEAN DEFAULT FALSE,
+    undergrad_only BOOLEAN DEFAULT FALSE,
+    is_open BOOLEAN,
+    last_verified_at TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS job_segments (
     dedup_key VARCHAR NOT NULL,
@@ -111,14 +118,22 @@ ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS folder_path VARCHAR;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS fit_category VARCHAR;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS tailored_resume_path VARCHAR;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS cover_letter_path VARCHAR;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_internship BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS mentions_2027 BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS wrong_season BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS needs_return_to_school BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS undergrad_only BOOLEAN DEFAULT FALSE;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_open BOOLEAN;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ;
 """
 
 _INSERT_COLS = (
     "dedup_key, jobspy_id, site, company, company_norm, title, location, is_remote, apply_url, "
-    "description, date_posted, priority_score, resume_archetype, resume_path"
+    "description, date_posted, priority_score, resume_archetype, resume_path, "
+    "is_internship, mentions_2027, wrong_season, needs_return_to_school, undergrad_only"
 )
 # TIMESTAMPTZ values come back as text so the driver never needs pytz.
-_TS_COLS = ("discovered_at", "applied_at", "last_updated_at", "saved_at", "intel_updated_at")
+_TS_COLS = ("discovered_at", "applied_at", "last_updated_at", "saved_at", "intel_updated_at", "last_verified_at")
 _TS_AS_TEXT = f"* EXCLUDE ({', '.join(_TS_COLS)}), " + ", ".join(f"{c}::VARCHAR AS {c}" for c in _TS_COLS)
 LOCK_RETRIES, LOCK_WAIT_S = 10, 0.2
 
@@ -237,6 +252,11 @@ def upsert_jobspy_frame(
             "priority_score": pl.Float64,
             "resume_archetype": pl.String,
             "resume_path": pl.String,
+            "is_internship": pl.Boolean,
+            "mentions_2027": pl.Boolean,
+            "wrong_season": pl.Boolean,
+            "needs_return_to_school": pl.Boolean,
+            "undergrad_only": pl.Boolean,
         }
         batch = (
             pl.DataFrame(rows, schema=schema)
@@ -248,7 +268,12 @@ def upsert_jobspy_frame(
         try:
             con.execute(
                 f"INSERT INTO jobs_master ({_INSERT_COLS}) SELECT {_INSERT_COLS} FROM incoming "
-                "ON CONFLICT (dedup_key) DO NOTHING"
+                "ON CONFLICT (dedup_key) DO UPDATE SET "
+                "is_internship = COALESCE(jobs_master.is_internship, EXCLUDED.is_internship), "
+                "mentions_2027 = COALESCE(jobs_master.mentions_2027, EXCLUDED.mentions_2027), "
+                "wrong_season = COALESCE(jobs_master.wrong_season, EXCLUDED.wrong_season), "
+                "needs_return_to_school = COALESCE(jobs_master.needs_return_to_school, EXCLUDED.needs_return_to_school), "
+                "undergrad_only = COALESCE(jobs_master.undergrad_only, EXCLUDED.undergrad_only)"
             )
         finally:
             con.unregister("incoming")
@@ -505,6 +530,8 @@ def fetch_jobs(
     if status == "SAVED":
         clauses.append("is_saved = TRUE")
         order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
+    elif status == "INTERN":
+        clauses.append("is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE) AND (undergrad_only IS NULL OR undergrad_only = FALSE)")
     elif status in ("72H", "QUEUED_72H"):
         clauses.append("status = 'QUEUED'")
         hours = hours or 72

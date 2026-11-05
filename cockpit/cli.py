@@ -621,6 +621,67 @@ def sync_saved(
     )
 
 
+@app.command("verify-open")
+def verify_open_cmd(
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Maximum postings to verify")] = 50,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Check status without writing to DuckDB")] = False,
+) -> None:
+    """Verify whether apply URLs for queued internships are still active/open."""
+    from cockpit import internships as intern_module
+    import requests
+
+    with db.session() as con:
+        jobs = con.execute(
+            """SELECT dedup_key, company, title, apply_url
+               FROM jobs_master
+               WHERE is_internship = TRUE
+                 AND (is_open IS NULL OR is_open = TRUE)
+               ORDER BY priority_score DESC
+               LIMIT ?""",
+            [limit],
+        ).fetchall()
+
+    if not jobs:
+        console.print("[yellow]No active internship postings found to verify.[/yellow]")
+        return
+
+    console.print(f"[cyan]Verifying {len(jobs)} internship postings{' (DRY RUN)' if dry_run else ''}...[/cyan]")
+    session = requests.Session()
+    counts = {"open": 0, "closed": 0, "unknown": 0}
+
+    for idx, (key, company, title, apply_url) in enumerate(jobs, 1):
+        is_open = intern_module.check_url_open(apply_url, session=session)
+        if is_open is True:
+            counts["open"] += 1
+            status_desc = "[green]LIVE[/green]"
+        elif is_open is False:
+            counts["closed"] += 1
+            status_desc = "[red]CLOSED[/red]"
+        else:
+            counts["unknown"] += 1
+            status_desc = "[yellow]UNKNOWN[/yellow]"
+
+        console.print(f"[{idx}/{len(jobs)}] {company} — {title[:35]}: {status_desc}")
+
+        if not dry_run:
+            with db.session() as con:
+                con.execute(
+                    """UPDATE jobs_master
+                       SET is_open = ?, last_verified_at = CURRENT_TIMESTAMP
+                       WHERE dedup_key = ?""",
+                    [is_open, key],
+                )
+
+        delay = getattr(intern_module, "HOST_DELAY_S", 0.5)
+        if delay > 0 and idx < len(jobs):
+            time.sleep(delay)
+
+    console.print(
+        f"\n[bold green]Verification complete:[/bold green] "
+        f"[green]{counts['open']} live[/green] · [red]{counts['closed']} closed[/red] · [yellow]{counts['unknown']} unknown[/yellow]"
+    )
+
+
 def _list_candidate_dossiers(root: Path) -> list[dict[str, Any]]:
     """List all saved dossier folders with parsed fit score, mtime, and apply URL."""
     if not root.exists():
@@ -1246,6 +1307,71 @@ def pipeline_logs(
         console.print(f"[red]Error reading log: {e}[/red]")
 
 
+@app.command("stop", help="Stop the currently running scraper pipeline, if active.")
+@pipeline_app.command("stop")
+def pipeline_stop() -> None:
+    """Stop the currently running pipeline, if any."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if not state.get("is_active"):
+        console.print("[yellow]No active pipeline is currently running.[/yellow]")
+        return
+    stopped = pipeline_monitor.stop_pipeline(REPO_ROOT)
+    if stopped:
+        console.print("[green]Active pipeline process terminated.[/green]")
+    else:
+        console.print("[yellow]Marked pipeline as stopped (process was no longer alive).[/yellow]")
+
+
+@app.command("retry", help="Selectively re-run failed scrapers without destroying successful outputs.")
+@pipeline_app.command("retry")
+def pipeline_retry(
+    targets: Annotated[
+        Optional[list[str]],
+        typer.Argument(help="Specific scrapers to retry (e.g. remote seattle); default: all failed"),
+    ] = None,
+    watch: Annotated[
+        bool,
+        typer.Option("--watch/--no-watch", "-w", help="Keep monitor active in terminal"),
+    ] = True,
+    kill_active: Annotated[
+        bool,
+        typer.Option("--kill-active", "-k", help="Stop any active pipeline before retrying"),
+    ] = False,
+) -> None:
+    """Selectively re-run failed scrapers without wiping existing successful CSV outputs."""
+    from cockpit import pipeline_monitor
+
+    state = pipeline_monitor.get_pipeline_state(REPO_ROOT)
+    if state.get("is_active"):
+        if not kill_active:
+            if not typer.confirm("A pipeline is currently active. Stop it and launch retry?", default=True):
+                console.print("[yellow]Aborted retry.[/yellow]")
+                raise typer.Exit(0)
+        console.print("[yellow]Stopping active pipeline...[/yellow]")
+        pipeline_monitor.stop_pipeline(REPO_ROOT)
+        time.sleep(1)
+
+    if targets:
+        target_list = list(targets)
+    else:
+        target_list = pipeline_monitor.get_failed_scrapers(REPO_ROOT)
+        if not target_list:
+            console.print("[green]No failed scrapers found to retry! (All scrapers succeeded or state is clean)[/green]")
+            raise typer.Exit(0)
+
+    console.print(f"[cyan]Retrying scrapers: {', '.join(target_list)}[/cyan]")
+    p = pipeline_monitor.launch_pipeline(REPO_ROOT, scrapers=target_list)
+    console.print(f"[dim]Master pipeline spawned for retry (PID: {p.pid})[/dim]")
+    time.sleep(0.5)
+
+    if watch:
+        pipeline_monitor.monitor_loop(REPO_ROOT, once=False)
+    else:
+        console.print("[green]Pipeline retry launched in background. Run 'cockpit pipeline status' to monitor.[/green]")
+
+
 @app.command("init")
 def init_cmd() -> None:
     """Initialize the local DuckDB database and schema."""
@@ -1365,6 +1491,66 @@ def onboard_cmd(
     if not from_resumes:
         compiled = onboard.build_base_resumes()
         console.print(f"[green]Compiled {len(compiled)} base resume file(s) in resumes/[/green]")
+
+
+@app.command("import-resume")
+def import_resume_cmd(
+    resume_path: Annotated[Path, typer.Argument(help="Path to resume file (.pdf, .docx, .md, .txt)")],
+    name: Annotated[Optional[str], typer.Option("--name", help="Candidate full name override")] = None,
+    email: Annotated[Optional[str], typer.Option("--email", help="Candidate email override")] = None,
+    phone: Annotated[Optional[str], typer.Option("--phone", help="Candidate phone override")] = None,
+    location: Annotated[Optional[str], typer.Option("--location", help="Primary city/location override")] = None,
+    linkedin: Annotated[Optional[str], typer.Option("--linkedin", help="LinkedIn URL override")] = None,
+    github: Annotated[Optional[str], typer.Option("--github", help="GitHub URL override")] = None,
+    roles: Annotated[Optional[str], typer.Option("--roles", help="Comma-separated target roles")] = None,
+    locations: Annotated[Optional[str], typer.Option("--locations", help="Comma-separated target locations")] = None,
+    sync_home: Annotated[bool, typer.Option("--sync-home/--no-sync-home", help="Mirror resume to ~/resumes/")] = True,
+    update_duckdb: Annotated[bool, typer.Option("--update-duckdb/--no-update-duckdb", help="Update resume_path in DuckDB queued jobs")] = True,
+) -> None:
+    """Turnkey resume importer: stages authentic binary, updates configs/cv.md, syncs DuckDB, and audits ATS."""
+    from cockpit import onboard
+
+    if not resume_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Resume file not found: {resume_path}")
+        raise typer.Exit(1)
+
+    role_list = [r.strip() for r in (roles or "").split(",") if r.strip()] or None
+    loc_list = [l.strip() for l in (locations or "").split(",") if l.strip()] or None
+
+    active_repo = Path(os.environ.get("COCKPIT_REPO_ROOT", str(REPO_ROOT)))
+    try:
+        res = onboard.execute_resume_import(
+            resume_path,
+            repo_root=active_repo,
+            name=name,
+            email=email,
+            phone=phone,
+            location=location,
+            linkedin=linkedin,
+            github=github,
+            roles=role_list,
+            locations=loc_list,
+            sync_home=sync_home,
+            update_duckdb=update_duckdb,
+        )
+    except Exception as e:
+        console.print(f"[bold red]Import failed:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    table = Table(title="Resume Import & System Staging Report")
+    table.add_column("Component", style="bold cyan")
+    table.add_column("Status / Path", style="green")
+
+    table.add_row("Staged Resume", res["dest_resume"])
+    table.add_row("AI Prompt CV", res["cv_path"])
+    table.add_row("Candidate Profile", res["profile_path"])
+    table.add_row("Scoring Overrides", res["local_rules_path"])
+    table.add_row("DuckDB Queued Jobs Updated", f"{res['duckdb_updated_rows']} jobs")
+    table.add_row("ATS Parseability Score", f"{res['ats_score']}/100 (Grade {res['ats_grade']})")
+    table.add_row("Home Directory Mirrored", "~/resumes/" if res["home_synced"] else "Skipped")
+
+    console.print(table)
+    console.print(f"[bold green]✔ Successfully imported and staged resume:[/bold green] {resume_path.name}")
 
 
 @app.command("prefill")

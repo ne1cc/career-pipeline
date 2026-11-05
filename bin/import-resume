@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# bin/import-resume — Turnkey Resume Importer for Career Pipeline & Cockpit
+#
+# Usage:
+#   ./bin/import-resume /path/to/resume.pdf
+#   ./bin/import-resume /path/to/resume.docx --name "Candidate Name"
+# ==============================================================================
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: $0 <path-to-resume.pdf|.docx|.md> [OPTIONS]" >&2
+    echo "Options are passed through to 'cockpit import-resume'." >&2
+    exit 1
+fi
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    exec "$REPO_ROOT/.venv/bin/python" -m cockpit.cli import-resume "$@"
+elif command -v uv >/dev/null 2>&1; then
+    exec uv run --no-project --python 3.12 --with-requirements "$REPO_ROOT/cockpit/requirements.txt" python -m cockpit.cli import-resume "$@"
+else
+    exec python3 -m cockpit.cli import-resume "$@"
+fi

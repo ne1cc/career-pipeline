@@ -201,7 +201,7 @@ bind-key -n M-j run-shell "~/bin/tmux-jobcockpit '#{client_tty}'"
 | `/` | **Location Filter** | Filters jobs by location substring |
 | `D` | **Ingest Date Filter** | Filters jobs by discovered/ingested date (e.g. `2026_11_02`, `11/02`) |
 | `K` | **JD Keyword Filter** | Filters jobs by comma-separated keywords in job description |
-| `f` | **Cycle Status View** | Cycles through `QUEUED` → `SAVED` → `HOLD_REFERRAL` → `APPLIED` → `SKIPPED` → `ALL` |
+| `f` | **Cycle Status View** | Cycles through `QUEUED` → `SAVED` → `HOLD_REFERRAL` → `INTERN` → `APPLIED` → `SKIPPED` → `ALL` |
 | `g` | **Cycle Scraper Sheet** | Filters by scraper source segment |
 | `t` | **Toggle 72h Filter** | Toggles between all queued jobs and postings discovered within the last 72 hours |
 | `R` | **Sync Gmail Statuses** | Runs IMAP status sync to detect ATS confirmation, interview, or rejection emails |
@@ -236,6 +236,7 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 | `cockpit init` | Initialize `data/job_funnel.duckdb` schema and tmux status cache |
 | `cockpit ingest [PATHS...]` | Ingest JobSpy CSVs or Excel workbooks into DuckDB (auto-discovers latest `Job_Report_*.xlsx` if omitted) |
 | `cockpit sprint [--limit N] [--recent]` | Launch sequential interactive CLI application sprint for top-scored queued jobs |
+| `cockpit verify-open [--limit N] [--dry-run]` | Verify whether apply URLs for queued internships are still active/open (HTTP status check) |
 | `cockpit prefill [URL\|KEY] [--copy] [--open]` | Format ATS application form fields for Greenhouse, Ashby, Lever, or generic jobs |
 | `cockpit verify-ats [PATH] [--all] [-k "..."]` | Score resume ATS parseability (0-100), letter grade, and keyword match coverage |
 | `cockpit intel [--limit N] [--retry-failed]` | Generate 8-file dossiers and `.docx`/`.pdf` exports for bookmarked jobs |
@@ -267,6 +268,24 @@ To poll fast-updating tech portals (We Work Remotely, Hacker News Jobs, Dice, Py
 ```bash
 .venv/bin/python jobspy/search_jobs_portals.py --watch --poll-interval 600
 ```
+
+### Dedicated Internship Scraper & Master's Eligibility Filter
+
+For students and recent grads targeting Summer 2027 internships (analytics, MSBA/MSPA, data science, BI, and SWE):
+
+```bash
+# Run full sweep across JobSpy boards, ATS targets, SimplifyJobs, and Jobright
+uv run python jobspy/search_jobs_internships.py
+
+# Ingest scraped internship results into DuckDB
+cockpit ingest
+
+# Verify active status of apply links and prune closed roles
+cockpit verify-open --limit 50
+```
+
+- **Undergraduate-Only Disqualification**: Postings specifying returning undergraduate requirements (e.g. rising juniors/seniors, bachelor's degrees only) are automatically flagged as `undergrad_only = True` and filtered out from the TUI `INTERN` view, surfacing graduate/master's-eligible roles.
+- **TUI Internship View**: Press `f` in `cockpit` to cycle to `INTERN` to view live, graduate-accessible internship postings.
 
 ---
 

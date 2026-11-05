@@ -79,7 +79,7 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | `s` | Skip |
 | `h` | Hold for a referral (type the contact, then Enter) |
 | `y` | Copy the outreach message for this job |
-| `f` | Cycle the view: Queued, Referral Hold, Applied, All |
+| `f` | Cycle the view: Queued, Referral Hold, Intern, Applied, All |
 | `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`) |
 | `/` | Filter by location |
 | `R` | Sync Gmail now |
@@ -97,6 +97,8 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 - Check the detail pane. If the archetype looks wrong (a data role scored as SWE), press `1`, `2` or `3` *before* uploading.
 - If a job is worth a referral, press `h` and write the contact. Holds older than 24 hours turn into `REFERRAL_STALE`. Check them with `f`.
 - Use `y` **after** you apply, to message a recruiter or an engineer. The message is generic, so add a personal line before sending.
+- **Internships**: Press `f` to cycle to the `INTERN` view. This filters for live, graduate/master's-eligible internship postings (excluding postings explicitly restricted to returning undergraduates).
+- **Verify Link Health**: Run `cockpit verify-open` to prune closed postings across your queued internships.
 - **No TUI?** `cockpit sprint --limit 15` runs the same flow as a plain prompt loop (`a` / `s` / `h` / `q`).
 
 ## Track what's working
