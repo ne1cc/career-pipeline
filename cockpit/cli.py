@@ -299,6 +299,67 @@ def sync_saved(
     )
 
 
+@app.command("verify-open")
+def verify_open_cmd(
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Maximum postings to verify")] = 50,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Check status without writing to DuckDB")] = False,
+) -> None:
+    """Verify whether apply URLs for queued internships are still active/open."""
+    from cockpit import internships as intern_module
+    import requests
+
+    with db.session() as con:
+        jobs = con.execute(
+            """SELECT dedup_key, company, title, apply_url
+               FROM jobs_master
+               WHERE is_internship = TRUE
+                 AND (is_open IS NULL OR is_open = TRUE)
+               ORDER BY priority_score DESC
+               LIMIT ?""",
+            [limit],
+        ).fetchall()
+
+    if not jobs:
+        console.print("[yellow]No active internship postings found to verify.[/yellow]")
+        return
+
+    console.print(f"[cyan]Verifying {len(jobs)} internship postings{' (DRY RUN)' if dry_run else ''}...[/cyan]")
+    session = requests.Session()
+    counts = {"open": 0, "closed": 0, "unknown": 0}
+
+    for idx, (key, company, title, apply_url) in enumerate(jobs, 1):
+        is_open = intern_module.check_url_open(apply_url, session=session)
+        if is_open is True:
+            counts["open"] += 1
+            status_desc = "[green]LIVE[/green]"
+        elif is_open is False:
+            counts["closed"] += 1
+            status_desc = "[red]CLOSED[/red]"
+        else:
+            counts["unknown"] += 1
+            status_desc = "[yellow]UNKNOWN[/yellow]"
+
+        console.print(f"[{idx}/{len(jobs)}] {company} — {title[:35]}: {status_desc}")
+
+        if not dry_run:
+            with db.session() as con:
+                con.execute(
+                    """UPDATE jobs_master
+                       SET is_open = ?, last_verified_at = CURRENT_TIMESTAMP
+                       WHERE dedup_key = ?""",
+                    [is_open, key],
+                )
+
+        delay = getattr(intern_module, "HOST_DELAY_S", 0.5)
+        if delay > 0 and idx < len(jobs):
+            time.sleep(delay)
+
+    console.print(
+        f"\n[bold green]Verification complete:[/bold green] "
+        f"[green]{counts['open']} live[/green] · [red]{counts['closed']} closed[/red] · [yellow]{counts['unknown']} unknown[/yellow]"
+    )
+
+
 @app.command("dossier")
 def dossier_cmd(
     query: Annotated[Optional[str], typer.Argument(help="Company name, role title, or search term (e.g. 'nintendo', 'stripe')")] = None,

@@ -251,6 +251,41 @@ def normalize_row(row: Mapping[str, Any], rules: Mapping[str, Any]) -> JobRow | 
     is_remote = row.get("is_remote") in (True, "True", "true", 1)
     scored = score_job(title, description, rules, location or "", is_remote)
     posted = row.get("date_posted")
+
+    from cockpit.internships import internship_flags
+
+    flags = internship_flags(
+        title,
+        description,
+        job_type=row.get("job_type"),
+        degrees=row.get("degrees"),
+    )
+    is_internship = (
+        bool(row["is_internship"])
+        if row.get("is_internship") is not None and row.get("is_internship") == row.get("is_internship")
+        else flags["is_internship"]
+    )
+    mentions_2027 = (
+        bool(row["mentions_2027"])
+        if row.get("mentions_2027") is not None and row.get("mentions_2027") == row.get("mentions_2027")
+        else flags["mentions_2027"]
+    )
+    wrong_season = (
+        bool(row["wrong_season"])
+        if row.get("wrong_season") is not None and row.get("wrong_season") == row.get("wrong_season")
+        else flags["wrong_season"]
+    )
+    needs_return = (
+        bool(row["needs_return_to_school"])
+        if row.get("needs_return_to_school") is not None and row.get("needs_return_to_school") == row.get("needs_return_to_school")
+        else flags["needs_return_to_school"]
+    )
+    undergrad_only = (
+        bool(row["undergrad_only"])
+        if row.get("undergrad_only") is not None and row.get("undergrad_only") == row.get("undergrad_only")
+        else flags["undergrad_only"]
+    )
+
     return JobRow(
         dedup_key=dedup_key(c_norm, norm_title(title)),
         jobspy_id=_text(row.get("id")),
@@ -266,6 +301,11 @@ def normalize_row(row: Mapping[str, Any], rules: Mapping[str, Any]) -> JobRow | 
         priority_score=scored.score,
         resume_archetype=scored.archetype,
         resume_path=scored.resume_path,
+        is_internship=is_internship,
+        mentions_2027=mentions_2027,
+        wrong_season=wrong_season,
+        needs_return_to_school=needs_return,
+        undergrad_only=undergrad_only,
     )
 
 
