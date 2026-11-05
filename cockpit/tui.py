@@ -29,6 +29,7 @@ from cockpit.db import (
     restore_job_state,
     scoreboard,
     session,
+    set_dismissed,
     set_job_note,
     set_resume_archetype,
     toggle_saved,
@@ -38,7 +39,7 @@ from cockpit.imap_sync import sync_gmail_statuses
 from cockpit.models import FunnelState
 from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", "DISMISSED", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -87,6 +88,25 @@ class CockpitTable(DataTable):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.highlighted_row_keys: set[Any] = set()
+        self.marked_row_keys: set[str] = set()
+        self.skipped_row_keys: set[str] = set()
+
+    def _next_live_row(self, step: int) -> int | None:
+        """Nearest row in `step` direction whose key is not skipped (dismissed); None at the edge."""
+        i = self.cursor_row + step
+        while 0 <= i < self.row_count:
+            if self.ordered_rows[i].key.value not in self.skipped_row_keys:
+                return i
+            i += step
+        return None
+
+    def action_cursor_down(self) -> None:
+        if (i := self._next_live_row(1)) is not None:
+            self.move_cursor(row=i)
+
+    def action_cursor_up(self) -> None:
+        if (i := self._next_live_row(-1)) is not None:
+            self.move_cursor(row=i)
 
     def on_resize(self, event: Any) -> None:
         self.adjust_title_width(event.size.width)
@@ -107,6 +127,8 @@ class CockpitTable(DataTable):
         style = super()._get_row_style(row_index, base_style)
         if 0 <= row_index < len(self.ordered_rows):
             row_key = self.ordered_rows[row_index].key
+            if row_key.value in self.marked_row_keys:
+                return style + Style(bgcolor="dark_blue")
             if row_key in self.highlighted_row_keys or getattr(row_key, "value", None) in self.highlighted_row_keys:
                 return style + Style(bgcolor="grey23")
         return style
@@ -156,6 +178,11 @@ class JobCockpitApp(App[None]):
         Binding("shift+p", "prefill", "Prefill", show=False),
         Binding("a", "mark('APPLIED')", "Applied"),
         Binding("s", "mark('SKIPPED')", "Skip"),
+        Binding("x", "dismiss", "Dismiss"),
+        Binding("space", "toggle_mark", "Mark"),
+        Binding("escape", "clear_marks", "Clear marks", show=False),
+        Binding("S", "skip_marked", "Skip marked"),
+        Binding("shift+s", "skip_marked", "Skip marked", show=False),
         Binding("h", "hold", "Hold"),
         Binding("1", "archetype('swe_backend')", "swe"),
         Binding("2", "archetype('data_eng')", "data"),
@@ -196,6 +223,7 @@ class JobCockpitApp(App[None]):
         self.jd_keywords: str | None = None
         self.date_filter: str | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
+        self.marked: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -307,6 +335,11 @@ class JobCockpitApp(App[None]):
         saved_y = table.scroll_y
         table.clear()
         table.highlighted_row_keys.clear()
+        in_dismissed_view = FILTERS[self.filter_idx] == "DISMISSED"
+        self.marked &= {r["dedup_key"] for r in self.rows}
+        table.marked_row_keys = set(self.marked)
+        # Dismissed rows are skipped by the cursor everywhere except the DISMISSED view, where they are the content.
+        table.skipped_row_keys = set() if in_dismissed_view else {r["dedup_key"] for r in self.rows if r.get("dismissed")}
         self._update_column_headers()
         is_saved_filter = FILTERS[self.filter_idx] == "SAVED"
         target_row = row
@@ -329,18 +362,16 @@ class JobCockpitApp(App[None]):
                 fit_str = "—"
 
             score_str = f"★ {r['priority_score']:.0f}" if is_saved else f"{r['priority_score']:.0f}"
+            if r["dedup_key"] in self.marked:
+                score_str = f"● {score_str}"  # glyph so marks are not colour-only
 
-            table.add_row(
-                fit_str,
-                score_str,
-                r["company"],
-                r["title"],
-                r["location"] or "",
-                r["site"] or "",
-                r["resume_archetype"],
-                r["status"],
-                key=r["dedup_key"],
+            cells = (
+                fit_str, score_str, r["company"], r["title"], r["location"] or "",
+                r["site"] or "", r["resume_archetype"], r["status"],
             )
+            if r["dedup_key"] in table.skipped_row_keys:
+                cells = tuple(Text(c, style="dim") for c in cells)
+            table.add_row(*cells, key=r["dedup_key"])
         if self.rows:
             target_idx = min(target_row if target_row is not None else 0, len(self.rows) - 1)
             if row == 0 and preserve_key is None:
@@ -406,7 +437,8 @@ class JobCockpitApp(App[None]):
         self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        self.action_stage(False)
+        if job := self._job():
+            self._stage_one(job, False)
 
     def action_down(self) -> None:
         self.query_one(DataTable).action_cursor_down()
@@ -424,8 +456,38 @@ class JobCockpitApp(App[None]):
         lines = magnitude if fraction > 0 else -magnitude
         pane.scroll_relative(y=lines, animate=False)
 
+    def _targets(self) -> list[dict[str, Any]]:
+        """Marked rows in table order, or just the cursor row when nothing is marked."""
+        if self.marked:
+            return [r for r in self.rows if r["dedup_key"] in self.marked]
+        job = self._job()
+        return [job] if job else []
+
+    @staticmethod
+    def _apply_target(job: dict[str, Any]) -> str:
+        url = job["apply_url"]
+        try:
+            from cockpit import prefill as prefill_mod
+
+            ats_target = prefill_mod.detect_ats(url)
+            if ats_target:
+                url = prefill_mod.build_prefill_url(ats_target, prefill_mod.read_candidate_profile())
+        except Exception:
+            pass
+        return url
+
     def action_stage(self, background: bool) -> None:
-        if job := self._job():
+        if self.marked:
+            # shortcut: batch skips the resume-to-clipboard step (one clipboard slot), always opens background tabs
+            targets = self._targets()
+            for job in targets:
+                macos.open_url(self._apply_target(job), background=True)
+            self.notify(f"Opened {len(targets)} apply pages in background tabs")
+        elif job := self._job():
+            self._stage_one(job, background)
+
+    def _stage_one(self, job: dict[str, Any], background: bool) -> None:
+        if job:
             tailored = job.get("tailored_resume_path")
             resume_to_copy = job["resume_path"]
             label = "Resume"
@@ -441,18 +503,7 @@ class JobCockpitApp(App[None]):
                         label = "Tailored resume"
 
             macos.copy_resume_path(resume_to_copy)
-            url_to_open = job["apply_url"]
-            try:
-                from cockpit import prefill as prefill_mod
-
-                ats_target = prefill_mod.detect_ats(url_to_open)
-                if ats_target:
-                    prof = prefill_mod.read_candidate_profile()
-                    url_to_open = prefill_mod.build_prefill_url(ats_target, prof)
-            except Exception:
-                pass
-
-            macos.open_url(url_to_open, background=background)
+            macos.open_url(self._apply_target(job), background=background)
             self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
 
     def action_preview(self) -> None:
@@ -609,13 +660,56 @@ class JobCockpitApp(App[None]):
             self._reload(row, preserve_key=key)
 
     def action_rerun_intel(self) -> None:
+        targets = self._targets()
+        if not targets:
+            return
+        keys = [j["dedup_key"] for j in targets]
+        marks = ", ".join("?" for _ in keys)
+        with session(self.db_path) as con:
+            con.execute(f"UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL WHERE dedup_key IN ({marks})", keys)
+        label = targets[0]["company"] if len(targets) == 1 else f"{len(targets)} jobs"
+        self.notify(f"Re-queued intel for {label}")
+        cur = self._job()
+        self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur["dedup_key"] if cur else None)
+        self._kick_intel()
+
+    def action_toggle_mark(self) -> None:
         if job := self._job():
-            key = job["dedup_key"]
-            with session(self.db_path) as con:
-                con.execute("UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL WHERE dedup_key = ?", [key])
-            self.notify(f"Re-queued intel for {job['company']}")
-            self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
-            self._kick_intel()
+            self.marked ^= {job["dedup_key"]}
+            self._reload(preserve_key=job["dedup_key"])
+            self.query_one(CockpitTable).action_cursor_down()
+
+    def action_clear_marks(self) -> None:
+        if self.marked:
+            self.marked.clear()
+            cur = self._job()
+            self._reload(preserve_key=cur["dedup_key"] if cur else None)
+
+    def action_dismiss(self) -> None:
+        """Marked rows (or the cursor row) become dismissed; if all already are, they are restored instead."""
+        targets = self._targets()
+        if not targets:
+            return
+        row = self.query_one(DataTable).cursor_row
+        dismiss = not all(j.get("dismissed") for j in targets)
+        with session(self.db_path) as con:
+            set_dismissed(con, [j["dedup_key"] for j in targets], dismiss)
+        self.marked.clear()
+        self._reload(row)
+        self.query_one(CockpitTable).action_cursor_down()
+
+    def action_skip_marked(self) -> None:
+        targets = self._targets() if self.marked else []
+        if not targets:
+            self.notify("Nothing marked — use space to mark rows, or s to skip one.", severity="warning")
+            return
+        row = self.query_one(DataTable).cursor_row
+        with session(self.db_path) as con:
+            for job in targets:
+                self.undo_stack.append((job["dedup_key"], transition_job_state(con, job["dedup_key"], FunnelState.SKIPPED, "tui")))
+        self.marked.clear()
+        self.notify(f"Skipped {len(targets)} jobs (z undoes one at a time)")
+        self._reload(row)
 
     def action_edit_note(self) -> None:
         job = self._job()
