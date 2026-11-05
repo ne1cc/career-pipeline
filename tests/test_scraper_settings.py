@@ -47,8 +47,12 @@ def test_scraper_hours_old_and_fetch_description(script_path: Path):
         assert 50 <= results_wanted <= 200, (
             f"{script_path.name} results_wanted={results_wanted} must be bounded (50..200) to avoid 7200s timeouts"
         )
-        # Only focused single-city entry-level scrape fetches full LinkedIn descriptions per job
-        should_fetch_description = script_path.name == "search_jobs_seattle_entry_level.py"
+        # Focused entry-level and MSBA scrapes fetch full LinkedIn descriptions per job
+        should_fetch_description = script_path.name in {
+            "search_jobs_seattle_entry_level.py",
+            "search_jobs_seattle_msba.py",
+            "search_jobs_msba_west.py",
+        }
         assert kwargs.get("linkedin_fetch_description", False) is should_fetch_description
 
 
