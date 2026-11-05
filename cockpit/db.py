@@ -125,6 +125,7 @@ ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS needs_return_to_school BOOLEAN 
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS undergrad_only BOOLEAN DEFAULT FALSE;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_open BOOLEAN;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ;
+ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS dismissed BOOLEAN DEFAULT FALSE;
 """
 
 _INSERT_COLS = (
@@ -390,6 +391,14 @@ def toggle_saved(
     return now_saved
 
 
+def set_dismissed(con: duckdb.DuckDBPyConnection, dedup_keys: list[str], dismissed: bool) -> None:
+    """Flags jobs as not worth exploring; status is untouched so funnel counts and undo are unaffected."""
+    if not dedup_keys:
+        return
+    marks = ", ".join("?" for _ in dedup_keys)
+    con.execute(f"UPDATE jobs_master SET dismissed = ? WHERE dedup_key IN ({marks})", [dismissed, *dedup_keys])
+
+
 def set_job_note(con: duckdb.DuckDBPyConnection, dedup_key: str, note: str | None) -> None:
     con.execute(
         "UPDATE jobs_master SET notes = ?, last_updated_at = CURRENT_TIMESTAMP WHERE dedup_key = ?",
@@ -530,6 +539,8 @@ def fetch_jobs(
     if status == "SAVED":
         clauses.append("is_saved = TRUE")
         order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
+    elif status == "DISMISSED":
+        clauses.append("dismissed = TRUE")
     elif status == "INTERN":
         clauses.append("is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE) AND (undergrad_only IS NULL OR undergrad_only = FALSE)")
     elif status in ("72H", "QUEUED_72H"):
