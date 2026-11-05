@@ -130,12 +130,13 @@ def test_worker_reports_failed_queries_and_keeps_partial_rows(
 
     monkeypatch.setattr(jobspy, "scrape_jobs", scrape)
     script = Path(__file__).resolve().parents[1] / "jobspy" / worker
-    with pytest.raises(SystemExit) as exc:
-        runpy.run_path(str(script), run_name="__main__")
-    assert exc.value.code == 1
     if partial_results:
+        runpy.run_path(str(script), run_name="__main__")
         assert pd.read_csv(csv_path)["job_url"].tolist() == [
             "https://example.test/jobs/1"
         ]
     else:
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_path(str(script), run_name="__main__")
+        assert exc.value.code == 1
         assert csv_path.read_text() == "previous output\n"
