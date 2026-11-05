@@ -71,6 +71,18 @@ def _anchor_repo_path(path_val: Path | str) -> Path:
     p = Path(path_val).expanduser()
     if not p.is_absolute():
         p = REPO_ROOT / p
+    if p.is_symlink() and not p.exists():
+        try:
+            target_str = os.readlink(p)
+            home = Path.home()
+            candidate = Path(re.sub(r"^/Users/[^/]+", str(home), target_str))
+            if candidate.exists():
+                p.unlink()
+                p.symlink_to(candidate)
+                return candidate.resolve()
+            p.unlink()
+        except OSError:
+            pass
     return p.resolve()
 
 
@@ -111,7 +123,8 @@ def resolve_export_dir(given: Path | str | None = None) -> Path:
             return _anchor_repo_path(path_val)
     except Exception:
         pass
-    return DEFAULT_EXPORT_DIR.resolve()
+    return _anchor_repo_path(DEFAULT_EXPORT_DIR)
+
 
 
 def resolve_evidence_dir(given: Path | str | None = None) -> Path:
@@ -840,7 +853,10 @@ def reconcile_saved_jobs(
 
 
 def rebuild_index(con: Any, export_dir: Path = DEFAULT_EXPORT_DIR) -> None:
-    export_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        export_dir.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError):
+        return
     jobs = db.fetch_jobs(con, status="SAVED")
     lines = [
         "# Job Cockpit — Saved Application Packages\n",
@@ -998,7 +1014,10 @@ def process_batch(
     limit: int = 5,
 ) -> list[str]:
     """Process up to `limit` pending intel jobs, creating full per-job application packages."""
-    export_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        export_dir.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        raise IntelUnavailable(f"Cannot create artifacts directory '{export_dir}': {e}") from e
     with db.session(db_path) as con:
         db.requeue_stale_intel(con, minutes=15)
         jobs = db.claim_intel(con, limit=limit)

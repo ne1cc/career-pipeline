@@ -1377,5 +1377,69 @@ def test_macos_helpers_survive_missing_binaries_on_linux(monkeypatch):
     macos.open_file("/tmp/test.txt")
 
 
+def test_anchor_repo_path_heals_stale_username_symlink(tmp_path, monkeypatch):
+    fake_home = tmp_path / "alexandersun"
+    real_target = fake_home / "Documents" / "Apps" / "jobspy-cockpit"
+    real_target.mkdir(parents=True, exist_ok=True)
 
+    fake_docs = tmp_path / "docs"
+    fake_docs.mkdir(parents=True, exist_ok=True)
+    symlink_path = fake_docs / "jobspy-cockpit"
+    # Point symlink to non-existent /Users/alex path
+    symlink_path.symlink_to("/Users/alex/Documents/Apps/jobspy-cockpit")
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    resolved = intel._anchor_repo_path(symlink_path)
+    assert resolved == real_target.resolve()
+    assert symlink_path.exists()
+    assert symlink_path.resolve() == real_target.resolve()
+
+
+def test_anchor_repo_path_removes_unresolvable_broken_symlink(tmp_path):
+    symlink_path = tmp_path / "dead_symlink"
+    symlink_path.symlink_to("/nonexistent/bogus/path/that/cannot/exist")
+
+    assert symlink_path.is_symlink()
+    assert not symlink_path.exists()
+
+    resolved = intel._anchor_repo_path(symlink_path)
+    # The dangling symlink should be unlinked so mkdir can succeed
+    assert not symlink_path.is_symlink()
+    assert not symlink_path.exists()
+
+
+def test_tui_worker_resilience_on_background_intel_error(db_path, tmp_path, career_ops, monkeypatch):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        con.execute("UPDATE jobs_master SET intel_status = 'pending'")
+
+    def fail_process_batch(*args, **kwargs):
+        raise PermissionError(13, "Permission denied: '/Users/alex'")
+
+    monkeypatch.setattr(intel, "process_batch", fail_process_batch)
+
+    fake = FakeGemini()
+
+    async def drive() -> None:
+        app = JobCockpitApp(
+            db_path,
+            export_dir=tmp_path / "dossiers",
+            career_ops_root=career_ops,
+            generate=fake,
+        )
+        async with app.run_test() as pilot:
+            # Wait for background worker to execute and hit the failure
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+
+            # Press keys: should NOT crash or auto-exit
+            await pilot.press("j")
+            await pilot.press("k")
+            await pilot.press("t")
+            await pilot.pause()
+
+            assert app.is_running
+
+    asyncio.run(drive())
 
