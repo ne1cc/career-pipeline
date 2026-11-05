@@ -80,7 +80,9 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `f` | Cycle view filter: `QUEUED` → `72H` → `SAVED` → `REFERRAL_HOLD` → `APPLIED` → `All` |
 | `g` | Cycle scraper segment: `all` → `seattle` → `west_coast` → `remote` → … |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`); blank clears |
-| `?` | Search jobs by keyword |
+| `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`); blank clears |
+| `K` | Filter by JD text keywords (comma-separated, e.g. `polars, dbt`); blank clears |
+| `?` | Search jobs by keyword (company, title, description) |
 
 ### Dossiers, Artifacts & Application
 | Key | Does |

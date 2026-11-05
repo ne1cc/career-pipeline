@@ -80,6 +80,8 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | `h` | Hold for a referral (type the contact, then Enter) |
 | `y` | Copy the outreach message for this job |
 | `f` | Cycle the view: Queued, Referral Hold, Intern, Applied, All |
+| `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`) |
+| `/` | Filter by location |
 | `R` | Sync Gmail now |
 | `q` | Quit |
 

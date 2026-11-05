@@ -23,6 +23,7 @@ from cockpit.db import (
     expire_stale_referral_holds,
     fetch_jobs,
     finish_intel,
+    list_ingest_dates,
     list_segments,
     min_score,
     restore_job_state,
@@ -146,6 +147,7 @@ class JobCockpitApp(App[None]):
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
         Binding("question_mark", "search", "Search"),
+        Binding("K", "filter_jd_keywords", "JD Words"),
         Binding("r", "referrals", "Referrals"),
         Binding("o", "stage(False)", "Open"),
         Binding("O", "stage(True)", "Open bg"),
@@ -163,6 +165,7 @@ class JobCockpitApp(App[None]):
         Binding("f", "cycle_filter", "Filter"),
         Binding("g", "segment", "Sheet"),
         Binding("slash", "location", "Location"),
+        Binding("D", "filter_date", "Date"),
         Binding("R", "sync", "Sync mail"),
         Binding("q", "quit", "Quit"),
     ]
@@ -190,6 +193,8 @@ class JobCockpitApp(App[None]):
         self.segment: str | None = None
         self.loc_query: str | None = None
         self.search_query: str | None = None
+        self.jd_keywords: str | None = None
+        self.date_filter: str | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
 
     def compose(self) -> ComposeResult:
@@ -292,6 +297,8 @@ class JobCockpitApp(App[None]):
                 self.segment,
                 self.loc_query,
                 query=self.search_query,
+                jd_keywords=self.jd_keywords,
+                date_filter=self.date_filter,
             )
             b = scoreboard(con)
         self._apply_sort()
@@ -344,10 +351,12 @@ class JobCockpitApp(App[None]):
                 table._scroll_cursor_into_view(animate=False)
         label = FILTERS[self.filter_idx] or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
+        jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
+        date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
         self.query_one("#score", Static).update(
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
-            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'} | q:{self.search_query or 'none'}{sort_indicator}]"
+            f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'}{date_indicator} | q:{self.search_query or 'none'}{jd_indicator}{sort_indicator}]"
         )
         self._show(table.cursor_row)
 
@@ -368,15 +377,22 @@ class JobCockpitApp(App[None]):
         notes_line = f"\n[b]Notes:[/b] {escape(r['notes'])}\n" if r.get("notes") else ""
         fit_line = f" · [b]Fit:[/b] {r['fit_score']:.1f}/5.0" if r.get("fit_score") is not None else ""
         posted_str = r.get("date_posted") or "—"
-        disc_str = (r.get("discovered_at") or "")[:16]
+        raw_disc = str(r.get("discovered_at") or "")
+        disc_str = raw_disc.split(".")[0].replace("T", " ") if raw_disc else ""
+        source_folder = ""
+        if len(raw_disc) >= 10 and raw_disc[:4].isdigit():
+            ymd = raw_disc[:10].replace("-", "_")
+            source_folder = f"results/{ymd[:7]}/{ymd}/"
+
         timing_line = f"[b]Posted:[/b] {escape(posted_str)}" + (f" · [b]Discovered:[/b] {escape(disc_str)}" if disc_str else "")
+        source_line = f" · [b]Source:[/b] {escape(source_folder)}" if source_folder else ""
         yoe_str = f" · [b]YOE:[/b] {scored.required_yoe}+ yrs" if scored.required_yoe else ""
         disq_badge = f" [bold red]({scored.disqualified_reason})[/bold red]" if scored.disqualified_reason else ""
         dossier_line = f"\n[b]Dossier:[/b] {escape(r['intel_path'])}" if r.get("intel_path") else ""
 
         detail.update(
             f"[b]{escape(r['title'])}[/b]{disq_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
-            f"{timing_line}{yoe_str}\n"
+            f"{timing_line}{source_line}{yoe_str}\n"
             f"{notes_line}"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"
             f"[b]URL:[/b] {escape(r['apply_url'])}\n"
@@ -681,13 +697,33 @@ class JobCockpitApp(App[None]):
 
         self.push_screen(NoteModal("Filter by location, e.g. wa, seattle, remote (blank clears)"), done)
 
+    def action_filter_date(self) -> None:
+        with session(self.db_path) as con:
+            recent_dates = list_ingest_dates(con)[:7]
+        hint = f"e.g. {', '.join(recent_dates[:3])}" if recent_dates else "e.g. 2026_11_02 or 11/02"
+
+        def done(value: str | None) -> None:
+            if value is not None:
+                self.date_filter = value.strip() or None
+                self._reload(0)
+
+        self.push_screen(NoteModal(f"Filter by ingest date ({hint}; blank clears)"), done)
+
     def action_search(self) -> None:
         def done(value: str | None) -> None:
             if value is not None:
                 self.search_query = value.strip().lower() or None
                 self._reload(0)
 
-        self.push_screen(NoteModal("Search company, title, or keywords (blank clears)"), done)
+        self.push_screen(NoteModal("Search company, title, or keywords (e.g. 'analyst' or 'aws, python'; blank clears)"), done)
+
+    def action_filter_jd_keywords(self) -> None:
+        def done(value: str | None) -> None:
+            if value is not None:
+                self.jd_keywords = value.strip().lower() or None
+                self._reload(0)
+
+        self.push_screen(NoteModal("Filter by JD text keywords, comma-separated (e.g. 'master, business analytics'; blank clears)"), done)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state == WorkerState.ERROR and event.worker.error:
