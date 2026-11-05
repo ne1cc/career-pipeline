@@ -397,6 +397,14 @@ def set_job_note(con: duckdb.DuckDBPyConnection, dedup_key: str, note: str | Non
     )
 
 
+def set_description(con: duckdb.DuckDBPyConnection, dedup_key: str, description: str) -> None:
+    """Store a backfilled job description (fetched from the posting URL) for one job."""
+    con.execute(
+        "UPDATE jobs_master SET description = ?, last_updated_at = CURRENT_TIMESTAMP WHERE dedup_key = ?",
+        [description, dedup_key],
+    )
+
+
 def claim_intel(con: duckdb.DuckDBPyConnection, limit: int = 2) -> list[dict[str, Any]]:
     """Atomically claim pending jobs for intel processing, marking them running."""
     con.begin()
