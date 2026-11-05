@@ -9,7 +9,7 @@ from cockpit import db, macos
 from cockpit.imap_sync import classify
 from cockpit.models import FunnelState as S
 from cockpit.tui import TABS, FunnelModal, StageMoveModal
-from tests.test_cockpit_pipeline import FakeGemini, _app, calls, career_ops, db_path, frame  # noqa: F401  (fixtures)
+from tests.test_cockpit_pipeline import FakeGemini, _app, calls, career_ops, db_path, frame, no_jd_backfill  # noqa: F401  (fixtures)
 
 
 def _seed(con, *companies: str) -> dict[str, str]:
