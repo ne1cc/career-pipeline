@@ -32,6 +32,7 @@ SCRIPTS = [
     JOBSPY_DIR / "search_jobs_campus.py",
     JOBSPY_DIR / "search_jobs_internships.py",
     JOBSPY_DIR / "search_jobs_landoffer.py",
+    JOBSPY_DIR / "search_jobs_feeds.py",
 ]
 
 EXPECTED_OUTPUTS = {
@@ -46,9 +47,15 @@ EXPECTED_OUTPUTS = {
     "search_jobs_campus.py": "campus_early_career_jobs.csv",
     "search_jobs_internships.py": "internship_jobs.csv",
     "search_jobs_landoffer.py": "landoffer_jobs.csv",
+    "search_jobs_feeds.py": "open_feeds_jobs.csv",
 }
 
-IMMEDIATE_SCRAPERS = {"search_jobs_ats.py", "search_jobs_portals.py", "search_jobs_campus.py"}
+IMMEDIATE_SCRAPERS = {
+    "search_jobs_ats.py",
+    "search_jobs_portals.py",
+    "search_jobs_campus.py",
+    "search_jobs_feeds.py",
+}
 
 
 def resolve_target_scripts(
