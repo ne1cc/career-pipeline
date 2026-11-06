@@ -22,6 +22,7 @@ EXPECTED_OUTPUTS: dict[str, str] = {
     "search_jobs_msba_west.py": "west_coast_msba_jobs.csv",
     "search_jobs_ats.py": "ats_direct_jobs.csv",
     "search_jobs_portals.py": "tech_portals_jobs.csv",
+    "search_jobs_feeds.py": "open_feeds_jobs.csv",
 }
 
 SCRAPER_NAMES: list[str] = list(EXPECTED_OUTPUTS.keys())
