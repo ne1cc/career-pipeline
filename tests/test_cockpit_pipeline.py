@@ -1745,3 +1745,16 @@ def test_cumulative_date_inputs(tmp_path, monkeypatch):
     res = cli._expand_inputs(None, date_str="11/02", cumulative=True)
     assert sorted(res) == sorted([files["2026_11_01"], files["2026_11_02"]])
 
+
+def test_tui_note_modal_initial_value_and_keybinding_distinction(db_path, tmp_path):
+    from cockpit.tui import NoteModal, JobCockpitApp
+    modal = NoteModal("Edit note", initial_value="Existing note content")
+    assert modal.initial_value == "Existing note content"
+
+    app = JobCockpitApp(db_path, export_dir=tmp_path / "dossiers")
+    bindings = {b.key: b.action for b in app.BINDINGS}
+    # K must be preserved for scrolling JD up; w must be used for JD Words
+    assert bindings.get("K") == "scroll_jd(-3)"
+    assert bindings.get("w") == "filter_jd_keywords"
+
+
