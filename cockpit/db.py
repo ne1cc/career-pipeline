@@ -184,10 +184,10 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
             "SELECT count(*) FROM jobs_master WHERE applied_at >= CAST(? AS TIMESTAMPTZ)", [midnight.isoformat()]
         ),
         "queued": one(
-            "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND priority_score >= ?", [min_score()]
+            "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE) AND priority_score >= ?", [min_score()]
         ),
         "queued_72h": one(
-            "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND priority_score >= ? "
+            "SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE) AND priority_score >= ? "
             "AND (epoch(discovered_at) >= epoch(now()) - 72 * 3600 "
             "OR (date_posted IS NOT NULL AND try_cast(date_posted as DATE) >= CURRENT_DATE - INTERVAL 3 DAY))",
             [min_score()],
@@ -541,8 +541,10 @@ def fetch_jobs(
     elif status == "INTERN":
         clauses.append("is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE) AND (undergrad_only IS NULL OR undergrad_only = FALSE)")
     elif status in ("72H", "QUEUED_72H"):
-        clauses.append("status = 'QUEUED'")
+        clauses.append("status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE)")
         hours = hours or 72
+    elif status == "QUEUED":
+        clauses.append("status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE)")
     elif status:
         clauses.append("status = ?")
         params.append(status)

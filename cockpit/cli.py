@@ -766,28 +766,42 @@ def sync_saved(
 @app.command("verify-open")
 def verify_open_cmd(
     limit: Annotated[int, typer.Option("--limit", "-l", help="Maximum postings to verify")] = 50,
+    recent: Annotated[bool, typer.Option("--recent", "-r", help="Verify recent/72h queued postings instead of only internships")] = False,
+    all_queued: Annotated[bool, typer.Option("--all-queued", "-a", help="Verify all queued postings")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Check status without writing to DuckDB")] = False,
 ) -> None:
-    """Verify whether apply URLs for queued internships are still active/open."""
+    """Verify whether apply URLs for queued postings are still active/open."""
     from cockpit import internships as intern_module
     import requests
 
+    where_clause = "WHERE is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE)"
+    desc = "internship"
+    if recent:
+        where_clause = (
+            "WHERE status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE) "
+            "AND (epoch(discovered_at) >= epoch(now()) - 72 * 3600 "
+            "OR (date_posted IS NOT NULL AND try_cast(date_posted as DATE) >= CURRENT_DATE - INTERVAL 3 DAY))"
+        )
+        desc = "72h fresh queued"
+    elif all_queued:
+        where_clause = "WHERE status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE)"
+        desc = "queued"
+
     with db.session() as con:
         jobs = con.execute(
-            """SELECT dedup_key, company, title, apply_url
+            f"""SELECT dedup_key, company, title, apply_url
                FROM jobs_master
-               WHERE is_internship = TRUE
-                 AND (is_open IS NULL OR is_open = TRUE)
+               {where_clause}
                ORDER BY priority_score DESC
                LIMIT ?""",
             [limit],
         ).fetchall()
 
     if not jobs:
-        console.print("[yellow]No active internship postings found to verify.[/yellow]")
+        console.print(f"[yellow]No active {desc} postings found to verify.[/yellow]")
         return
 
-    console.print(f"[cyan]Verifying {len(jobs)} internship postings{' (DRY RUN)' if dry_run else ''}...[/cyan]")
+    console.print(f"[cyan]Verifying {len(jobs)} {desc} postings{' (DRY RUN)' if dry_run else ''}...[/cyan]")
     session = requests.Session()
     counts = {"open": 0, "closed": 0, "unknown": 0}
 
