@@ -56,14 +56,15 @@ class NoteModal(ModalScreen[str | None]):
     BINDINGS = [("escape", "cancel", "Cancel")]
     DEFAULT_CSS = "NoteModal { align: center middle; } #note-box { width: 60; height: auto; border: round $accent; padding: 1 2; background: $surface; }"
 
-    def __init__(self, prompt: str = "Referral contact / note") -> None:
+    def __init__(self, prompt: str = "Referral contact / note", initial_value: str | None = None) -> None:
         super().__init__()
         self.prompt = prompt
+        self.initial_value = initial_value or ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="note-box"):
             yield Label(f"{self.prompt} (Enter to save, Esc to cancel)")
-            yield Input(id="note")
+            yield Input(value=self.initial_value, id="note")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
@@ -147,7 +148,7 @@ class JobCockpitApp(App[None]):
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
         Binding("question_mark", "search", "Search"),
-        Binding("K", "filter_jd_keywords", "JD Words"),
+        Binding("w", "filter_jd_keywords", "JD Words"),
         Binding("r", "referrals", "Referrals"),
         Binding("o", "stage(False)", "Open"),
         Binding("O", "stage(True)", "Open bg"),
@@ -621,14 +622,18 @@ class JobCockpitApp(App[None]):
         job = self._job()
         if not job:
             return
+        key = job["dedup_key"]
 
         def done(note: str | None) -> None:
             if note is not None:
                 with session(self.db_path) as con:
-                    set_job_note(con, job["dedup_key"], note.strip() or None)
-                self._reload(self.query_one(DataTable).cursor_row)
+                    set_job_note(con, key, note.strip() or None)
+                self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
 
-        self.push_screen(NoteModal(f"Edit note for {job['company']} (blank clears)"), done)
+        self.push_screen(
+            NoteModal(f"Edit note for {job['company']} (blank clears)", initial_value=job.get("notes")),
+            done,
+        )
 
     def _mark(self, key: str, status: FunnelState, note: str | None = None) -> None:
         row = self.query_one(DataTable).cursor_row
@@ -661,15 +666,16 @@ class JobCockpitApp(App[None]):
         with session(self.db_path) as con:
             restore_job_state(con, key, snapshot)
         self.notify(f"Restored status to {snapshot['status']}")
-        self._reload(self.query_one(DataTable).cursor_row)
+        self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
 
     def action_archetype(self, name: str) -> None:
         if job := self._job():
+            key = job["dedup_key"]
             path = resolve_resume(self.rules["resumes"][name])
             with session(self.db_path) as con:
-                set_resume_archetype(con, job["dedup_key"], name, path)
+                set_resume_archetype(con, key, name, path)
             macos.copy_resume_path(path)
-            self._reload(self.query_one(DataTable).cursor_row)
+            self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
 
     def action_toggle_72h(self) -> None:
         if FILTERS[self.filter_idx] == "72H":
@@ -768,13 +774,13 @@ class JobCockpitApp(App[None]):
         try:
             processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
             if processed:
-                self.call_from_thread(self._on_intel_finished)
+                self.call_from_thread(self._on_intel_finished, processed)
         except intel.IntelUnavailable as e:
             self.call_from_thread(self.notify, f"Intel unavailable: {e}", severity="warning")
         except Exception as e:
             self.call_from_thread(self.notify, f"Intel background error: {e}", severity="warning")
 
-    def _on_intel_finished(self) -> None:
+    def _on_intel_finished(self, processed_keys: list[str] | None = None) -> None:
         cur_job = self._job()
         cur_key = cur_job.get("dedup_key") if cur_job else None
         self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur_key)
