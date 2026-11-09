@@ -1758,3 +1758,59 @@ def test_tui_note_modal_initial_value_and_keybinding_distinction(db_path, tmp_pa
     assert bindings.get("w") == "filter_jd_keywords"
 
 
+def test_action_rerun_intel_preserves_jd_scroll(db_path, tmp_path):
+    long_desc = "\n".join(f"JD line content {i}" for i in range(120))
+    rows = [
+        {
+            "id": f"scroll_job_{i}",
+            "company": f"Company {i:02d}",
+            "title": f"Software Engineer {i}",
+            "job_url": f"https://example.com/job_{i}",
+            "location": "Seattle, WA",
+            "description": long_desc,
+        }
+        for i in range(10)
+    ]
+    df = frame(*rows)
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, df)
+        con.execute("UPDATE jobs_master SET priority_score = 30.0")
+
+    fake = FakeGemini()
+
+    async def drive() -> None:
+        from textual.containers import VerticalScroll
+
+        app = _app(db_path, tmp_path, fake=fake)
+        async with app.run_test(size=(100, 30)) as pilot:
+            table = app.query_one("CockpitTable")
+            pane = app.query_one("#detail-pane", VerticalScroll)
+
+            # Move down a few jobs and scroll JD down
+            for _ in range(3):
+                await pilot.press("j")
+            await pilot.pause()
+
+            for _ in range(8):
+                await pilot.press("J")
+            await pilot.pause()
+
+            initial_jd_y = pane.scroll_y
+            assert initial_jd_y > 0
+
+            # Press 'I' to re-evaluate intel
+            await pilot.press("I")
+            await pilot.pause()
+
+            # Verify JD pane scroll position is preserved
+            assert pane.scroll_y == initial_jd_y
+
+            # Verify moving to next job resets JD scroll to top
+            await pilot.press("j")
+            await pilot.pause()
+            assert pane.scroll_y == 0.0
+
+    asyncio.run(drive())
+
+
+

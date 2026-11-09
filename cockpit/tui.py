@@ -197,6 +197,7 @@ class JobCockpitApp(App[None]):
         self.jd_keywords: str | None = None
         self.date_filter: str | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
+        self._last_selected_key: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -404,7 +405,11 @@ class JobCockpitApp(App[None]):
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._show(event.cursor_row)
-        self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
+        cur_job = self._job()
+        cur_key = cur_job.get("dedup_key") if cur_job else None
+        if cur_key != self._last_selected_key:
+            self._last_selected_key = cur_key
+            self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_stage(False)
