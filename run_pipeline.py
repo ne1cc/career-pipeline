@@ -110,6 +110,7 @@ EXPECTED_OUTPUTS = {
     "west_coast_msba_jobs.csv": "West Coast MSBA Jobs",
     "ats_direct_jobs.csv": "ATS Direct Jobs",
     "tech_portals_jobs.csv": "Tech Portals Jobs",
+    "open_feeds_jobs.csv": "Open Feeds Jobs",
 }
 
 EMAIL_PLACEHOLDERS = {
