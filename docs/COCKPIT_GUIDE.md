@@ -62,7 +62,7 @@ It shows `Jobs: 6/15 | Q:34 | H:2`.
 cockpit ingest
 ```
 
-Reads this month's `*_jobs.csv`, dedupes across boards, scores, and queues. Re-running is safe: jobs you applied to or skipped are never overwritten.
+In interactive terminals, opens a fuzzy finder (`fzf` or curses menu) to select which scan date to ingest, ingest all uningested results (`--all-uningested` / `-u`), or ingest up to a date cumulatively (`--cumulative` / `-c`). Reads `*_jobs.csv`, dedupes across boards, scores, and queues. Re-running is safe: jobs you applied to or skipped are never overwritten. Pass `--latest` / `-l` to ingest the latest run without prompt.
 
 ### Afternoon: apply
 

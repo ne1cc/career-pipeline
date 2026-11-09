@@ -234,7 +234,7 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 | `cockpit build-resumes` | Compile `config/evidence/base_resumes/*.md` into `.docx` and `.pdf` in `resumes/` |
 | `cockpit doctor` | Audit DuckDB, vendored `career-ops` prompts, user profile/CV, archetype resumes, LLM, and tmux |
 | `cockpit init` | Initialize `data/job_funnel.duckdb` schema and tmux status cache |
-| `cockpit ingest [PATHS...]` | Ingest JobSpy CSVs or Excel workbooks into DuckDB (auto-discovers latest `Job_Report_*.xlsx` if omitted) |
+| `cockpit ingest [PATHS...]` | Ingest JobSpy CSVs or Excel workbooks into DuckDB (launches interactive date/uningested fuzzy finder in terminal, or pass `--all-uningested` / `--latest` / `--cumulative`) |
 | `cockpit sprint [--limit N] [--recent]` | Launch sequential interactive CLI application sprint for top-scored queued jobs |
 | `cockpit verify-open [--limit N] [--dry-run]` | Verify whether apply URLs for queued internships are still active/open (HTTP status check) |
 | `cockpit prefill [URL\|KEY] [--copy] [--open]` | Format ATS application form fields for Greenhouse, Ashby, Lever, or generic jobs |
