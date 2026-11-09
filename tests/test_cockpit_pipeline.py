@@ -830,8 +830,8 @@ def test_fetch_jobs_recent_72h_filter(db_path):
     with db.session(db_path) as con:
         # One recent job (today) and one older job (5 days ago)
         db.upsert_jobspy_frame(con, frame(
-            {"company": "RecentCo", "title": "Data Engineer", "date_posted": "2026-10-21"},
-            {"company": "OldCo", "title": "Data Engineer", "date_posted": "2026-10-01"},
+            {"company": "RecentCo", "date_posted": "2026-10-21"},
+            {"company": "OldCo", "date_posted": "2026-10-01"},
         ))
         # Backdate OldCo's discovered_at to 5 days ago
         con.execute(
