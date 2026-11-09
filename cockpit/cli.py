@@ -45,8 +45,12 @@ AGENT_LABEL = "com.jobcockpit.sync"
 AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
 
 
-def _list_candidate_result_dirs() -> list[tuple[str, int, Path]]:
-    """List all date directories with *_jobs.csv files, sorted by date descending."""
+def _list_candidate_result_dirs() -> list[tuple[str, int, Path, str]]:
+    """List all date directories with *_jobs.csv files, sorted by date descending.
+
+    Returns list of tuples: (date_str, csv_count, dir_path, status_tag)
+    where status_tag is '[NEW]', '[PARTIAL]', or '[INGESTED]'.
+    """
     results_root = REPO_ROOT / "jobspy" / "scraped jobs" / "results"
     if not results_root.exists():
         return []
@@ -55,13 +59,34 @@ def _list_candidate_result_dirs() -> list[tuple[str, int, Path]]:
         [d for d in results_root.iterdir() if d.is_dir() and re.match(r"^\d{4}_\d{2}$", d.name)],
         reverse=True,
     )
-    candidates: list[tuple[str, int, Path]] = []
+    manifest_paths: set[str] = set()
+    try:
+        with db.session() as con:
+            manifest_paths = db.get_ingest_manifest_paths(con)
+    except Exception:
+        pass
+
+    candidates: list[tuple[str, int, Path, str]] = []
     for md in month_dirs:
         for sd in sorted(md.iterdir(), reverse=True):
             if sd.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}$", sd.name):
-                csv_count = len(list(sd.glob("*_jobs.csv")))
-                if csv_count > 0:
-                    candidates.append((sd.name, csv_count, sd))
+                csv_files = list(sd.glob("*_jobs.csv"))
+                if not csv_files:
+                    continue
+                ingested_count = sum(
+                    1
+                    for f in csv_files
+                    if str(f.resolve()) in manifest_paths
+                    or (f.is_relative_to(REPO_ROOT) and str(f.relative_to(REPO_ROOT)) in manifest_paths)
+                )
+                if ingested_count == 0:
+                    status_tag = "[NEW]"
+                elif ingested_count == len(csv_files):
+                    status_tag = "[INGESTED]"
+                else:
+                    status_tag = "[PARTIAL]"
+                candidates.append((sd.name, len(csv_files), sd, status_tag))
+
     # Sort primarily by date descending
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates
@@ -92,11 +117,14 @@ def _fuzzy_score(query: str, target: str) -> int:
     return score
 
 
-def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None:
+def _curses_fuzzy_select(candidates: list[tuple[str, int, Path, str]]) -> tuple[str, Path | None] | None:
     """Built-in curses interactive fuzzy finder for terminal environments."""
     import curses
 
-    def _menu(stdscr: curses.window) -> Path | None:
+    # Options include top action item if any candidates exist
+    has_candidates = bool(candidates)
+
+    def _menu(stdscr: curses.window) -> tuple[str, Path | None] | None:
         curses.curs_set(1)
         curses.use_default_colors()
         query = ""
@@ -106,19 +134,30 @@ def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None
             stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()
 
+            # Build items list: special action entries + candidate directories
+            items: list[tuple[str, Path | None, str, int, str]] = []
+            if has_candidates:
+                # Count uningested files across all candidates
+                new_days = sum(1 for c in candidates if c[3] in ("[NEW]", "[PARTIAL]"))
+                new_csvs = sum(c[1] for c in candidates if c[3] in ("[NEW]", "[PARTIAL]"))
+                all_label = f"⚡ Ingest ALL Uningested Results ({new_days} days, {new_csvs} CSVs)"
+                items.append(("all_uningested", None, all_label, new_csvs, "[ACTION]"))
+
+            for c in candidates:
+                items.append(("date", c[2], c[0], c[1], c[3]))
+
             # Filter candidates based on query
             if not query.strip():
-                # Default order: date descending
-                matched = candidates[:]
+                matched = items[:]
             else:
                 scored = []
-                for item in candidates:
-                    label = f"{item[0]} {item[1]} csv"
+                for item in items:
+                    label = f"{item[2]} {item[3]} csv {item[4]}"
                     s = _fuzzy_score(query, label)
                     if s >= 0:
                         scored.append((s, item))
-                # Sort by score descending, then date descending
-                scored.sort(key=lambda x: (x[0], x[1][0]), reverse=True)
+                # Sort by score descending
+                scored.sort(key=lambda x: x[0], reverse=True)
                 matched = [item for _, item in scored]
 
             if selected_idx >= len(matched):
@@ -131,7 +170,7 @@ def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None
             stdscr.addnstr(1, 0, search_line[:max_x], max_x, curses.A_UNDERLINE)
 
             # Column legend
-            legend = "  DATE         SCRAPED CSVS   PATH"
+            legend = "  STATUS      DATE/ACTION                           CSVS"
             stdscr.addnstr(3, 0, legend[:max_x], max_x, curses.A_DIM)
 
             # Candidate rows
@@ -143,9 +182,12 @@ def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None
                 start_row = selected_idx - available_rows + 1
 
             for display_i, i in enumerate(range(start_row, min(len(matched), start_row + available_rows))):
-                date_str, count, path = matched[i]
-                rel_path = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
-                line_str = f"  {date_str:<12} {count:>2} CSV(s)       {rel_path}"
+                action_type, path, label, count, status = matched[i]
+                if action_type == "all_uningested":
+                    line_str = f"  {status:<11} {label:<38} {count:>3} CSV(s)"
+                else:
+                    rel_path = path.relative_to(REPO_ROOT) if path and path.is_relative_to(REPO_ROOT) else (path or "")
+                    line_str = f"  {status:<11} {label:<16} {count:>2} CSV(s)   {rel_path}"
                 is_selected = (i == selected_idx)
                 attr = curses.A_REVERSE | curses.A_BOLD if is_selected else curses.A_NORMAL
                 marker = "▶" if is_selected else " "
@@ -159,7 +201,8 @@ def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None
                 return None
             elif ch in (curses.KEY_ENTER, 10, 13):
                 if matched and 0 <= selected_idx < len(matched):
-                    return matched[selected_idx][2]
+                    chosen = matched[selected_idx]
+                    return (chosen[0], chosen[1])
                 return None
             elif ch in (curses.KEY_UP, 65):  # Up arrow
                 selected_idx = max(0, selected_idx - 1)
@@ -176,17 +219,31 @@ def _curses_fuzzy_select(candidates: list[tuple[str, int, Path]]) -> Path | None
     return curses.wrapper(_menu)
 
 
-def _interactive_fuzzy_select_dir() -> Path | None:
-    """Prompt user to select a results directory using fzf (if available) or an interactive curses fuzzy menu."""
+def _interactive_fuzzy_select_dir() -> tuple[str, Path | None] | None:
+    """Prompt user to select a results directory using fzf (if available) or an interactive curses fuzzy menu.
+
+    Returns tuple of (action_type, path):
+    - ("all_uningested", None)
+    - ("date", Path)
+    - None if cancelled
+    """
     candidates = _list_candidate_result_dirs()
     if not candidates:
         return None
 
+    new_days = sum(1 for c in candidates if c[3] in ("[NEW]", "[PARTIAL]"))
+    new_csvs = sum(c[1] for c in candidates if c[3] in ("[NEW]", "[PARTIAL]"))
+
     # Check for fzf binary
     fzf_bin = shutil.which("fzf") or (Path("/opt/homebrew/bin/fzf") if Path("/opt/homebrew/bin/fzf").is_file() else None)
     if fzf_bin and sys.stdin.isatty():
-        # Lines formatted for fzf: DATE | CSV COUNT | PATH
-        lines = [f"{date_str}  │  {count:>2} CSV(s)  │  {path}" for date_str, count, path in candidates]
+        # Lines formatted for fzf: ACTION/STATUS | DATE | CSV COUNT | PATH
+        lines = [
+            f"[ACTION]    │ ⚡ Ingest ALL Uningested Results ({new_days} days, {new_csvs} CSVs) │ ALL_UNINGESTED",
+        ]
+        for date_str, count, path, status in candidates:
+            lines.append(f"{status:<11} │ {date_str}  │  {count:>2} CSV(s)  │  {path}")
+
         try:
             proc = subprocess.Popen(
                 [
@@ -194,7 +251,7 @@ def _interactive_fuzzy_select_dir() -> Path | None:
                     "--height=40%",
                     "--reverse",
                     "--prompt=Select results date > ",
-                    "--header=Use fuzzy search (e.g. '10/27', '8 csv'). Enter to select, Esc to cancel.",
+                    "--header=Use fuzzy search (e.g. 'new', '10/27', 'all'). Enter to select, Esc to cancel.",
                 ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -203,11 +260,13 @@ def _interactive_fuzzy_select_dir() -> Path | None:
             )
             stdout, _ = proc.communicate(input="\n".join(lines))
             if proc.returncode == 0 and stdout.strip():
-                # Extract path from line
-                parts = stdout.strip().split("│")
-                if len(parts) >= 3:
+                selected_line = stdout.strip()
+                if "ALL_UNINGESTED" in selected_line:
+                    return ("all_uningested", None)
+                parts = selected_line.split("│")
+                if len(parts) >= 4:
                     selected_path = Path(parts[-1].strip())
-                    return selected_path
+                    return ("date", selected_path)
         except Exception:
             pass
 
@@ -220,7 +279,7 @@ def _interactive_fuzzy_select_dir() -> Path | None:
 
     # Fallback if non-interactive: pick the most recent date with maximum CSV count
     best = sorted(candidates, key=lambda item: (item[1], item[0]), reverse=True)
-    return best[0][2] if best else None
+    return ("date", best[0][2]) if best else None
 
 
 def _resolve_results_date_dir(date_query: str) -> Path:
@@ -263,7 +322,8 @@ def _collect_recent_days_inputs(days: int = 5) -> list[Path]:
     # Filter directories whose date is within `days` of either now or the latest available directory date
     latest_dt: datetime | None = None
     dir_dates: list[tuple[datetime, Path]] = []
-    for date_str, _, path in candidates:
+    for c in candidates:
+        date_str, path = c[0], c[2]
         try:
             dt = datetime.strptime(date_str, "%Y_%m_%d")
             dir_dates.append((dt, path))
@@ -288,30 +348,90 @@ def _collect_recent_days_inputs(days: int = 5) -> list[Path]:
     return all_csvs
 
 
-def _expand_inputs(inputs: list[Path] | None, date_str: str | None = None, select: bool = False, days: int | None = None) -> list[Path]:
+def _collect_all_uningested_inputs() -> list[Path]:
+    """Collect all *_jobs.csv from candidate directories that are not fully recorded in ingest_manifest."""
+    candidates = _list_candidate_result_dirs()
+    all_csvs: list[Path] = []
+    for date_str, count, path, status in candidates:
+        if status in ("[NEW]", "[PARTIAL]"):
+            all_csvs.extend(sorted(path.glob("*_jobs.csv")))
+    return all_csvs
+
+
+def _collect_cumulative_date_inputs(target_dir: Path) -> list[Path]:
+    """Collect all *_jobs.csv from results date directories up to and including target_dir date."""
+    candidates = _list_candidate_result_dirs()
+    target_date_str = target_dir.name
+    # Filter candidates whose date <= target_date_str
+    # Candidates are sorted date descending
+    selected_dirs: list[Path] = []
+    for date_str, count, path, status in candidates:
+        if date_str <= target_date_str:
+            selected_dirs.append(path)
+
+    all_csvs: list[Path] = []
+    for d in selected_dirs:
+        all_csvs.extend(sorted(d.glob("*_jobs.csv")))
+    return all_csvs
+
+
+def _expand_inputs(
+    inputs: list[Path] | None,
+    date_str: str | None = None,
+    select: bool = False,
+    days: int | None = None,
+    all_uningested: bool = False,
+    cumulative: bool = False,
+    latest: bool = False,
+) -> list[Path]:
+    if all_uningested:
+        csvs = _collect_all_uningested_inputs()
+        if not csvs:
+            raise typer.BadParameter("No uningested *_jobs.csv found across results directories.")
+        return csvs
+
     if days is not None:
         csvs = _collect_recent_days_inputs(days=days)
         if not csvs:
             raise typer.BadParameter(f"No *_jobs.csv found in results directories from the last {days} days.")
         return csvs
 
-    if select:
-        selected_dir = _interactive_fuzzy_select_dir()
-        if not selected_dir:
-            raise typer.BadParameter("Selection cancelled or no results directory available.")
-        csvs = sorted(selected_dir.glob("*_jobs.csv"))
-        if not csvs:
-            raise typer.BadParameter(f"No *_jobs.csv found in selected directory: {selected_dir}")
-        return csvs
-
     if date_str:
         target_dir = _resolve_results_date_dir(date_str)
         if not target_dir.exists():
             raise typer.BadParameter(f"Results directory for date '{date_str}' does not exist: {target_dir}")
-        csvs = sorted(target_dir.glob("*_jobs.csv"))
+        if cumulative:
+            csvs = _collect_cumulative_date_inputs(target_dir)
+        else:
+            csvs = sorted(target_dir.glob("*_jobs.csv"))
         if not csvs:
             raise typer.BadParameter(f"No *_jobs.csv found in date directory: {target_dir}")
         return csvs
+
+    # In interactive mode when no specific target is provided and --latest is not set:
+    should_prompt_select = select or (inputs is None and not latest and sys.stdin.isatty())
+    if should_prompt_select:
+        selection = _interactive_fuzzy_select_dir()
+        if not selection:
+            raise typer.BadParameter("Selection cancelled or no results directory available.")
+        if isinstance(selection, tuple):
+            action_type, selected_dir = selection
+        else:
+            action_type, selected_dir = ("date", selection)
+
+        if action_type == "all_uningested":
+            csvs = _collect_all_uningested_inputs()
+            if not csvs:
+                raise typer.BadParameter("No uningested *_jobs.csv found across results directories.")
+            return csvs
+        if selected_dir:
+            if cumulative:
+                csvs = _collect_cumulative_date_inputs(selected_dir)
+            else:
+                csvs = sorted(selected_dir.glob("*_jobs.csv"))
+            if not csvs:
+                raise typer.BadParameter(f"No *_jobs.csv found in selected directory: {selected_dir}")
+            return csvs
 
     if not inputs:
         return _find_default_inputs()
@@ -320,7 +440,7 @@ def _expand_inputs(inputs: list[Path] | None, date_str: str | None = None, selec
     for p in inputs:
         # Check if the argument is a date specification (e.g. '10/27' or '2026_10_27')
         if not p.exists() and re.match(r"^(?:\d{4}[_\-\/])?\d{1,2}[_\-\/]\d{1,2}$", str(p)):
-            expanded.extend(_expand_inputs(None, date_str=str(p)))
+            expanded.extend(_expand_inputs(None, date_str=str(p), cumulative=cumulative))
         elif p.is_dir():
             csvs = sorted(p.glob("*_jobs.csv"))
             if not csvs:
@@ -408,6 +528,9 @@ def _load_input_frame(p: Path, sheet: str | None = None) -> "pd.DataFrame":
 def ingest(
     inputs: Annotated[Optional[list[Path]], typer.Argument(help="JobSpy CSVs, directory, date (e.g. 10/27, 2026_10_27), or Excel workbooks; default: latest results dir or ~/Downloads/Job_Report_*.xlsx")] = None,
     select: Annotated[bool, typer.Option("--select", "-s", help="Open an interactive fuzzy finder (fzf) to choose which results date directory to ingest")] = False,
+    all_uningested: Annotated[bool, typer.Option("--all-uningested", "-u", help="Ingest all uningested results across all date directories")] = False,
+    cumulative: Annotated[bool, typer.Option("--cumulative", "-c", help="Ingest up to the selected date cumulatively across all earlier uningested scan results")] = False,
+    latest: Annotated[bool, typer.Option("--latest", "-l", help="Force ingesting latest results directory without prompt even in interactive terminal")] = False,
     days: Annotated[Optional[int], typer.Option("--days", help="Bulk ingest CSVs from results directories across the last N days (default for bulk: 5)")] = None,
     date: Annotated[Optional[str], typer.Option("--date", "-d", help="Ingest from specific date directory under results/ (e.g. '10/27', '2026_10_27', '2026-10-27')")] = None,
     sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
@@ -426,7 +549,15 @@ def ingest(
     )
     from cockpit import intel as intel_module
 
-    paths = _expand_inputs(inputs, date_str=date, select=select, days=days)
+    paths = _expand_inputs(
+        inputs,
+        date_str=date,
+        select=select,
+        days=days,
+        all_uningested=all_uningested,
+        cumulative=cumulative,
+        latest=latest,
+    )
     if not paths:
         raise typer.BadParameter(f"No CSVs found in {_default_results_dir()} and no Job_Report_*.xlsx found in ~/Downloads; pass paths explicitly.")
 
@@ -464,6 +595,17 @@ def ingest(
         with db.session() as con:
             stats = db.upsert_jobspy_frame(con, frame, progress_callback=on_score_progress)
             progress.update(score_task, completed=len(frame), description="[green]✔ Scored and deduped postings")
+
+            # Record successfully ingested files into ingest_manifest
+            for p in paths:
+                try:
+                    rel = str(p.relative_to(REPO_ROOT)) if p.is_relative_to(REPO_ROOT) else str(p.resolve())
+                    date_val = p.parent.name if re.match(r"^\d{4}_\d{2}_\d{2}$", p.parent.name) else datetime.now().strftime("%Y_%m_%d")
+                    size = p.stat().st_size if p.exists() else 0
+                    mtime = p.stat().st_mtime if p.exists() else 0.0
+                    db.record_ingested_file(con, rel, date_val, file_size=size, mtime_epoch=mtime, row_count=len(frame))
+                except Exception:
+                    pass
 
             db_task = progress.add_task("[magenta]Reconciling holds & saved jobs...", total=None)
             expired = db.expire_stale_referral_holds(con)

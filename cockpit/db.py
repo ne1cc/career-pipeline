@@ -125,6 +125,14 @@ ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS needs_return_to_school BOOLEAN 
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS undergrad_only BOOLEAN DEFAULT FALSE;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_open BOOLEAN;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS ingest_manifest (
+    file_path VARCHAR PRIMARY KEY,
+    date_str VARCHAR NOT NULL,
+    file_size BIGINT,
+    mtime_epoch DOUBLE,
+    row_count INTEGER,
+    ingested_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 _INSERT_COLS = (
@@ -607,6 +615,38 @@ def list_ingest_dates(con: duckdb.DuckDBPyConnection) -> list[str]:
         ).fetchall()
         if r[0]
     ]
+
+
+def record_ingested_file(
+    con: duckdb.DuckDBPyConnection,
+    file_path: str,
+    date_str: str,
+    file_size: int = 0,
+    mtime_epoch: float = 0.0,
+    row_count: int = 0,
+) -> None:
+    """Record or update an ingested file in ingest_manifest."""
+    con.execute(
+        """INSERT INTO ingest_manifest (file_path, date_str, file_size, mtime_epoch, row_count, ingested_at)
+           VALUES (?, ?, ?, ?, ?, now())
+           ON CONFLICT (file_path) DO UPDATE SET
+               date_str = excluded.date_str,
+               file_size = excluded.file_size,
+               mtime_epoch = excluded.mtime_epoch,
+               row_count = excluded.row_count,
+               ingested_at = now()""",
+        [file_path, date_str, file_size, mtime_epoch, row_count],
+    )
+
+
+def get_ingest_manifest_paths(con: duckdb.DuckDBPyConnection) -> set[str]:
+    """Return set of normalized absolute or repo-relative paths recorded in ingest_manifest."""
+    return {r[0] for r in con.execute("SELECT file_path FROM ingest_manifest").fetchall() if r[0]}
+
+
+def get_ingested_dates_manifest(con: duckdb.DuckDBPyConnection) -> set[str]:
+    """Return set of dates (YYYY_MM_DD) recorded in ingest_manifest."""
+    return {r[0] for r in con.execute("SELECT DISTINCT date_str FROM ingest_manifest").fetchall() if r[0]}
 
 
 def rescore_queued(

@@ -1669,3 +1669,66 @@ def test_tui_worker_resilience_on_background_intel_error(db_path, tmp_path, care
 
     asyncio.run(drive())
 
+
+def test_ingest_manifest_tracking_and_all_uningested(tmp_path, monkeypatch):
+    from cockpit import cli, db
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+    monkeypatch.setattr(db, "REPO_ROOT", fake_root)
+    db_file = tmp_path / "test_manifest.duckdb"
+    monkeypatch.setattr(db, "DB_PATH", db_file)
+
+    d1 = results / "2026_11" / "2026_11_01"
+    d2 = results / "2026_11" / "2026_11_02"
+    d1.mkdir(parents=True, exist_ok=True)
+    d2.mkdir(parents=True, exist_ok=True)
+
+    f1 = d1 / "remote_jobs.csv"
+    f2 = d2 / "seattle_jobs.csv"
+    f1.write_text("id,title\n1,Analyst")
+    f2.write_text("id,title\n2,Engineer")
+
+    # Initially both d1 and d2 are [NEW]
+    candidates = cli._list_candidate_result_dirs()
+    assert len(candidates) == 2
+    assert all(c[3] == "[NEW]" for c in candidates)
+
+    # Ingest all uningested
+    all_files = cli._expand_inputs(None, all_uningested=True)
+    assert sorted(all_files) == sorted([f1, f2])
+
+    # Record f1 in manifest
+    with db.session(db_file) as con:
+        db.record_ingested_file(con, str(f1.relative_to(fake_root)), "2026_11_01", 100, 1.0, 1)
+
+    # Now d1 is [INGESTED], d2 is [NEW]
+    candidates_after = cli._list_candidate_result_dirs()
+    status_map = {c[0]: c[3] for c in candidates_after}
+    assert status_map["2026_11_01"] == "[INGESTED]"
+    assert status_map["2026_11_02"] == "[NEW]"
+
+    # Ingest all uningested now only returns f2
+    only_new = cli._expand_inputs(None, all_uningested=True)
+    assert only_new == [f2]
+
+
+def test_cumulative_date_inputs(tmp_path, monkeypatch):
+    from cockpit import cli
+    fake_root = tmp_path / "repo"
+    results = fake_root / "jobspy" / "scraped jobs" / "results"
+    monkeypatch.setattr(cli, "REPO_ROOT", fake_root)
+
+    days = ["2026_11_01", "2026_11_02", "2026_11_03"]
+    files = {}
+    for day in days:
+        d = results / "2026_11" / day
+        d.mkdir(parents=True, exist_ok=True)
+        csv_file = d / f"{day}_jobs.csv"
+        csv_file.write_text("id\n1")
+        files[day] = csv_file
+
+    # Cumulative up to 11_02 should yield 11_01 and 11_02 (not 11_03)
+    res = cli._expand_inputs(None, date_str="11/02", cumulative=True)
+    assert sorted(res) == sorted([files["2026_11_01"], files["2026_11_02"]])
+
