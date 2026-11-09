@@ -853,6 +853,19 @@ def test_fetch_jobs_recent_72h_filter(db_path):
         assert len(recent_hours) == 1
         assert recent_hours[0]["company"] == "RecentCo"
 
+        # Mark RecentCo as closed (is_open = FALSE)
+        con.execute("UPDATE jobs_master SET is_open = FALSE WHERE company = 'RecentCo'")
+        board_after = db.scoreboard(con)
+        assert board_after["queued_72h"] == 0
+        assert board_after["queued"] == 1  # only OldCo remains queued
+
+        recent_72h_after = db.fetch_jobs(con, status="72H")
+        assert len(recent_72h_after) == 0
+
+        queued_after = db.fetch_jobs(con, status="QUEUED")
+        assert len(queued_after) == 1
+        assert queued_after[0]["company"] == "OldCo"
+
 
 def test_tui_72h_filter_toggle_and_cycle(db_path):
     with db.session(db_path) as con:
