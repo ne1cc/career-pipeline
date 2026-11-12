@@ -1627,7 +1627,7 @@ def test_action_rerun_intel_preserves_table_scroll_and_cursor(db_path, tmp_path)
             assert table.scroll_y == 15
 
             # Worker finish reload must also preserve scroll and cursor
-            app._on_intel_finished()
+            app._on_dossier_change()
             await pilot.pause()
             assert table.cursor_row == 25
             assert table.scroll_y == 15
@@ -1816,12 +1816,14 @@ def test_action_rerun_intel_preserves_jd_scroll(db_path, tmp_path):
 
 
 
-def test_dossier_counts_track_saved_intel_lifecycle(db_path, career_ops, tmp_path):
+def test_dossier_counts_split_first_run_from_regeneration(db_path, career_ops, tmp_path):
     ctx = intel.load_context(career_ops)
+    zero = {"dossiers_generating": 0, "dossiers_regenerating": 0, "dossiers_pending": 0}
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame({}))
-        assert db.dossier_counts(con) == {"dossiers_running": 0, "dossiers_pending": 0}
-        db.toggle_saved(con, _key(con))
+        key = _key(con)
+        assert db.dossier_counts(con) == zero
+        db.toggle_saved(con, key)
         assert db.scoreboard(con)["dossiers_pending"] == 1
 
     seen: list[dict[str, int]] = []
@@ -1831,11 +1833,15 @@ def test_dossier_counts_track_saved_intel_lifecycle(db_path, career_ops, tmp_pat
             seen.append(db.dossier_counts(con))
 
     intel.process_batch(db_path, ctx, FakeGemini(), tmp_path / "out", on_progress=snapshot)
-    # Claimed job shows as running mid-batch, then nothing is left once the batch ends.
-    assert seen == [
-        {"dossiers_running": 1, "dossiers_pending": 0},
-        {"dossiers_running": 0, "dossiers_pending": 0},
-    ]
+    # First evaluation ever: counted as generating, then nothing left once the batch ends.
+    assert seen == [{**zero, "dossiers_generating": 1}, zero]
+
+    # Re-eval (what the 'I' key does) of an already-evaluated job counts as regenerating.
+    with db.session(db_path) as con:
+        con.execute("UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL WHERE dedup_key = ?", [key])
+    seen.clear()
+    intel.process_batch(db_path, ctx, FakeGemini(), tmp_path / "out", on_progress=snapshot)
+    assert seen == [{**zero, "dossiers_regenerating": 1}, zero]
 
 
 def test_title_bar_shows_dossier_counter(db_path, tmp_path):
@@ -1849,10 +1855,31 @@ def test_title_bar_shows_dossier_counter(db_path, tmp_path):
             text = str(score.content)
             assert "Dossiers: idle" in text and text.index("q:none") < text.index("Dossiers")
 
+            # Simulate another process starting a first-time dossier; the poll must pick it up.
             with db.session(db_path) as con:
                 con.execute("UPDATE jobs_master SET is_saved = TRUE, intel_status = 'running'")
-            app._refresh_dossier_counts()
+            app._poll_dossiers()
+            await app.workers.wait_for_complete()
             await pilot.pause()
-            assert "⟳1" in str(score.content) and "0 queued" in str(score.content)
+            text = str(score.content)
+            assert "1 generating" in text and "regenerating" not in text and "queued" not in text
 
     asyncio.run(drive())
+
+
+def test_tui_worker_drains_more_than_one_batch(db_path, career_ops, tmp_path):
+    rows = [{"company": f"Co{i}", "job_url": f"https://l/{i}"} for i in range(7)]
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame(*rows))
+        con.execute("UPDATE jobs_master SET is_saved = TRUE, intel_status = 'pending'")
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path, career_ops, FakeGemini())
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert "Dossiers: idle" in str(app.query_one("#score", Static).content)
+
+    asyncio.run(drive())
+    with db.session(db_path) as con:
+        assert con.execute("SELECT count(*) FROM jobs_master WHERE intel_status = 'done'").fetchone()[0] == 7
