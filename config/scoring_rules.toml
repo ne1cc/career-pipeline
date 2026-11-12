@@ -121,5 +121,10 @@ or a pointer to the right person to talk to."""
 career_ops_root = "config/career_ops"
 export_dir = "~/Documents/jobspy-cockpit"
 evidence_dir = "config/evidence"
+# provider: "claude-cli" | "agy" (Antigravity CLI) | "gemini". For agy, model may be omitted
+# to use your Antigravity default, or set to e.g. "gemini-4-argon-high".
 provider = "claude-cli"
 model = "sonnet"
+# Optional: your own evaluation prompt (replaces modes/oferta.md). CV, profile, evidence bank
+# and the section/SCORE_SUMMARY output contract are still appended so dossiers keep parsing.
+# prompt_file = "~/path/to/my-dossier-prompt.md"

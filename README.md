@@ -146,9 +146,9 @@ When you bookmark a job in the TUI (press `b`) or run `cockpit intel`, the pipel
 | `exports/<Name>_Resume_<Company>_<Role>.{docx,pdf}` | Publication-ready, ATS-clean 1-page tailored resume in Word and PDF formats |
 | `exports/<Name>_Cover_Letter_<Company>_<Role>.{docx,pdf}` | Matching formatted cover letter in Word and PDF formats |
 
-### Configuring the LLM Backend (`claude-cli` or `gemini`)
+### Configuring the LLM Backend (`claude-cli`, `agy`, or `gemini`)
 
-`cockpit intel` supports two LLM backends configured in `config/scoring_rules.toml` (or overridden via `--provider` / `$LLM_PROVIDER`):
+`cockpit intel` supports three LLM backends configured in `config/scoring_rules.toml` (or overridden via `--provider` / `$LLM_PROVIDER`):
 
 1. **Claude Code CLI (`provider = "claude-cli"`, default)**:
    - Uses your authenticated `claude` CLI (`claude -p --model sonnet`) with zero per-token API key setup required.
@@ -160,6 +160,10 @@ When you bookmark a job in the TUI (press `b`) or run `cockpit intel`, the pipel
      cockpit intel --provider gemini --model gemini-2.5-pro
      ```
    - If `claude` CLI is not installed and `GEMINI_API_KEY` is present, `cockpit intel` automatically falls back to Gemini.
+3. **Antigravity CLI (`provider = "agy"`)**:
+   - Uses your authenticated `agy` under your Antigravity account; `model` is any `agy models` id (default `gemini-4-argon-medium`, or `"default"` for your account default). The context and JD are handed over as files, since `agy -p` truncates text past ~45 KB. A full dossier takes about 6 minutes.
+
+To use your own evaluation prompt instead of `modes/oferta.md`, set `[intel] prompt_file = "~/path/prompt.md"` (or `$INTEL_PROMPT_FILE`). The CV, profile, evidence bank and section/`SCORE_SUMMARY` output contract are still appended so dossiers keep parsing.
 
 ---
 

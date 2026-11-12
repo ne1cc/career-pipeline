@@ -1261,7 +1261,7 @@ def intel(
     limit: Annotated[int, typer.Option(help="Maximum jobs to process in this run")] = 20,
     stale_hours: Annotated[int, typer.Option(help="Requeue jobs whose intel is running/pending for longer than N hours")] = 0,
     retry_failed: Annotated[bool, typer.Option("--retry-failed", "-r", help="Requeue previously failed intel jobs")] = False,
-    provider: Annotated[Optional[str], typer.Option(help="LLM provider: 'claude-cli' (default) or 'gemini'")] = None,
+    provider: Annotated[Optional[str], typer.Option(help="LLM provider: 'claude-cli' (default), 'agy' (Antigravity), or 'gemini'")] = None,
     model: Annotated[Optional[str], typer.Option(help="Model name: 'sonnet' (default for claude-cli) or Gemini model")] = None,
     career_ops_root: Annotated[Optional[Path], typer.Option(help="Path to career-ops repository")] = None,
     evidence_dir: Annotated[Optional[Path], typer.Option(help="Path to evidence bank directory")] = None,
