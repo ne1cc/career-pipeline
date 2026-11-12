@@ -1012,8 +1012,13 @@ def process_batch(
     generator: Callable[[str, str], str],
     export_dir: Path = DEFAULT_EXPORT_DIR,
     limit: int = 5,
+    on_progress: Callable[[], None] | None = None,
 ) -> list[str]:
-    """Process up to `limit` pending intel jobs, creating full per-job application packages."""
+    """Process up to `limit` pending intel jobs, creating full per-job application packages.
+
+    `on_progress`, if given, is called after jobs are claimed and after each job finishes, so a UI
+    can refresh its running/pending dossier counts mid-batch. It runs on the caller's thread.
+    """
     try:
         export_dir.mkdir(parents=True, exist_ok=True)
     except (PermissionError, OSError) as e:
@@ -1025,8 +1030,15 @@ def process_batch(
     if not jobs:
         return []
 
+    # 1. Signal the claim (pending -> running) before the slow LLM calls start.
+    progress = on_progress or (lambda: None)
+    progress()
+
     processed = []
-    for job in jobs:
+    for i, job in enumerate(jobs):
+        # 2. Each iteration after the first means the previous job just finished.
+        if i:
+            progress()
         key = job["dedup_key"]
         job_folder = job_folder_path(job, export_dir)
         dossier_file = job_folder / "05_interview_dossier.md"
@@ -1097,5 +1109,7 @@ def process_batch(
 
     with db.session(db_path) as con:
         rebuild_index(con, export_dir)
+    # 3. Final signal covers the last job, including all-failed batches the TUI would not reload for.
+    progress()
 
     return processed

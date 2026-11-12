@@ -195,7 +195,21 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
         "saved": one("SELECT count(*) FROM jobs_master WHERE is_saved"),
         "positive": one(f"SELECT count(DISTINCT dedup_key) FROM ({_positive_keys_sql()})"),
+        **dossier_counts(con),
     }
+
+
+def dossier_counts(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
+    """Count saved jobs whose dossier is being generated (running) or waiting for the intel worker (pending).
+
+    Contract: returns {"dossiers_running": int, "dossiers_pending": int}; unsaved jobs are ignored.
+    """
+    running, pending = con.execute(
+        """SELECT count(*) FILTER (WHERE intel_status = 'running'),
+                  count(*) FILTER (WHERE intel_status = 'pending')
+           FROM jobs_master WHERE is_saved"""
+    ).fetchone()
+    return {"dossiers_running": running, "dossiers_pending": pending}
 
 
 def tmux_line(board: dict[str, int]) -> str:

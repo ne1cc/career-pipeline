@@ -20,6 +20,7 @@ from cockpit import intel, macos
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
+    dossier_counts,
     expire_stale_referral_holds,
     fetch_jobs,
     finish_intel,
@@ -198,6 +199,7 @@ class JobCockpitApp(App[None]):
         self.date_filter: str | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
         self._last_selected_key: str | None = None
+        self._score_base = ""
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -355,12 +357,32 @@ class JobCockpitApp(App[None]):
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
-        self.query_one("#score", Static).update(
+        self._score_base = (
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
             f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'}{date_indicator} | q:{self.search_query or 'none'}{jd_indicator}{sort_indicator}]"
         )
+        self._render_score(b)
         self._show(table.cursor_row)
+
+    def _render_score(self, counts: dict[str, int]) -> None:
+        """Write the title bar: the cached filter/scoreboard text plus the live dossier counter.
+
+        Contract: `counts` carries dossiers_running / dossiers_pending (see db.dossier_counts).
+        Limits: relies on `_score_base` set by `_reload`; markup is escaped, so user input stays literal.
+        """
+        running, pending = counts.get("dossiers_running", 0), counts.get("dossiers_pending", 0)
+        if running or pending:
+            dossiers = f"   [b]Dossiers:[/b] [yellow]⟳{running}[/yellow] · {pending} queued"
+        else:
+            dossiers = "   [dim]Dossiers: idle[/dim]"
+        self.query_one("#score", Static).update(escape(self._score_base) + dossiers)
+
+    def _refresh_dossier_counts(self) -> None:
+        """Re-read only the dossier counts (cheap) so the title bar updates mid-batch without a full reload."""
+        with session(self.db_path) as con:
+            counts = dossier_counts(con)
+        self._render_score(counts)
 
     def _job(self) -> dict[str, Any] | None:
         i = self.query_one(DataTable).cursor_row
@@ -777,7 +799,14 @@ class JobCockpitApp(App[None]):
                 return
 
         try:
-            processed = intel.process_batch(self.db_path, ctx, generator, self.export_dir, limit=5)
+            processed = intel.process_batch(
+                self.db_path,
+                ctx,
+                generator,
+                self.export_dir,
+                limit=5,
+                on_progress=lambda: self.call_from_thread(self._refresh_dossier_counts),
+            )
             if processed:
                 self.call_from_thread(self._on_intel_finished, processed)
         except intel.IntelUnavailable as e:

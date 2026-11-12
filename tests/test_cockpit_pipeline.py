@@ -1814,3 +1814,45 @@ def test_action_rerun_intel_preserves_jd_scroll(db_path, tmp_path):
 
 
 
+
+
+def test_dossier_counts_track_saved_intel_lifecycle(db_path, career_ops, tmp_path):
+    ctx = intel.load_context(career_ops)
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        assert db.dossier_counts(con) == {"dossiers_running": 0, "dossiers_pending": 0}
+        db.toggle_saved(con, _key(con))
+        assert db.scoreboard(con)["dossiers_pending"] == 1
+
+    seen: list[dict[str, int]] = []
+
+    def snapshot() -> None:
+        with db.session(db_path) as con:
+            seen.append(db.dossier_counts(con))
+
+    intel.process_batch(db_path, ctx, FakeGemini(), tmp_path / "out", on_progress=snapshot)
+    # Claimed job shows as running mid-batch, then nothing is left once the batch ends.
+    assert seen == [
+        {"dossiers_running": 1, "dossiers_pending": 0},
+        {"dossiers_running": 0, "dossiers_pending": 0},
+    ]
+
+
+def test_title_bar_shows_dossier_counter(db_path, tmp_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            score = app.query_one("#score", Static)
+            text = str(score.content)
+            assert "Dossiers: idle" in text and text.index("q:none") < text.index("Dossiers")
+
+            with db.session(db_path) as con:
+                con.execute("UPDATE jobs_master SET is_saved = TRUE, intel_status = 'running'")
+            app._refresh_dossier_counts()
+            await pilot.pause()
+            assert "⟳1" in str(score.content) and "0 queued" in str(score.content)
+
+    asyncio.run(drive())
