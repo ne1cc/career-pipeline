@@ -1883,3 +1883,21 @@ def test_tui_worker_drains_more_than_one_batch(db_path, career_ops, tmp_path):
     asyncio.run(drive())
     with db.session(db_path) as con:
         assert con.execute("SELECT count(*) FROM jobs_master WHERE intel_status = 'done'").fetchone()[0] == 7
+
+
+def test_unsaved_pending_job_shows_dash_not_ellipsis(db_path, tmp_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        key = _key(con)
+        db.toggle_saved(con, key)  # -> pending
+        db.toggle_saved(con, key)  # unsave; intel_status stays 'pending' and the worker will never claim it
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            fit = app.query_one(DataTable).get_row_at(0)[0]
+            assert (fit.plain if isinstance(fit, Text) else str(fit)) == "—"
+            assert "Dossiers: idle" in str(app.query_one("#score", Static).content)
+
+    asyncio.run(drive())

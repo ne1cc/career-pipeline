@@ -325,12 +325,14 @@ class JobCockpitApp(App[None]):
             is_saved = bool(r.get("is_saved"))
             if is_saved and not is_saved_filter:
                 table.highlighted_row_keys.add(r["dedup_key"])
-            # Format Fit column: "…" if pending/running, "4.2" if done, "!" if failed
+            # Format Fit column: "…" if a saved job's dossier is pending/running, "4.2" if done, "!" if failed.
+            # Unsaving leaves intel_status='pending', but the worker only claims saved jobs, so an
+            # unsaved "…" would never resolve; show "—" instead.
             fit_val = r.get("fit_score")
             intel_st = r.get("intel_status")
             if fit_val is not None:
                 fit_str = f"{fit_val:.1f}"
-            elif intel_st in ("pending", "running"):
+            elif intel_st in ("pending", "running") and is_saved:
                 fit_str = "…"
             elif intel_st == "failed":
                 fit_str = "!"
