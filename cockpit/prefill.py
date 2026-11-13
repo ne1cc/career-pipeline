@@ -13,6 +13,7 @@ import urllib.parse
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from rich.console import Console
@@ -100,36 +101,47 @@ def detect_ats(url: str) -> AtsTarget | None:
 
 
 def read_candidate_profile(repo_root: Path | None = None) -> CandidateProfile:
-    """Read candidate profile from config/career_ops/config/profile.yml or config/evidence/."""
+    """Read the applicant's contact fields from the career-ops profile, else the evidence file.
+
+    Contract:
+    - Returns a CandidateProfile; any field not found is "" (never raises on bad YAML).
+    - profile.yml may nest contacts under `candidate:` (real layout) or be flat (legacy);
+      `location` is always a plain string, taken from the candidate block only.
+    - The evidence YAML is consulted when profile.yml yields neither a name nor an email.
+
+    Limits: the top-level `location:` mapping (country/city/authorization) is deliberately
+    ignored here; it describes work authorization, not a form-fill address.
+    """
     root = repo_root or Path(__file__).resolve().parent.parent
 
-    # Priority 1: config/career_ops/config/profile.yml
+    def load(path: Path) -> dict[str, Any]:
+        """Return the contact mapping from a YAML file, unwrapping `candidate:` when it is a mapping."""
+        if not (path.exists() and yaml):
+            return {}
+        try:
+            loaded = yaml.safe_load(path.read_text("utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(loaded, dict):
+            return {}
+        nested = loaded.get("candidate")
+        return nested if isinstance(nested, dict) else loaded
+
+    # 1. Priority 1: config/career_ops/config/profile.yml (example file when the real one is absent)
     profile_yml = root / "config" / "career_ops" / "config" / "profile.yml"
     if not profile_yml.exists():
         profile_yml = root / "config" / "career_ops" / "config" / "profile.example.yml"
+    data = load(profile_yml)
 
-    data: dict[str, Any] = {}
-    if profile_yml.exists() and yaml:
-        try:
-            loaded = yaml.safe_load(profile_yml.read_text("utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception:
-            pass
-
-    # Priority 2: config/evidence/01_master_career_history.yaml
-    if not data:
+    # 2. No name and no email → fall back to config/evidence/01_master_career_history.yaml
+    if not (data.get("full_name") or data.get("name") or data.get("email")):
         ev_yaml = root / "config" / "evidence" / "01_master_career_history.yaml"
         if not ev_yaml.exists():
             ev_yaml = root / "config" / "templates" / "evidence" / "01_master_career_history.yaml"
-        if ev_yaml.exists() and yaml:
-            try:
-                loaded = yaml.safe_load(ev_yaml.read_text("utf-8"))
-                if isinstance(loaded, dict) and "candidate" in loaded:
-                    data = loaded["candidate"]
-            except Exception:
-                pass
+        data = load(ev_yaml) or data
 
+    location = data.get("location")
+    location = location.strip() if isinstance(location, str) else ""
     full_name = str(data.get("full_name") or data.get("name") or "").strip()
     parts = full_name.split() if full_name else []
     first_name = parts[0] if parts else ""
@@ -140,11 +152,59 @@ def read_candidate_profile(repo_root: Path | None = None) -> CandidateProfile:
         last_name=last_name,
         email=str(data.get("email") or "").strip(),
         phone=str(data.get("phone") or "").strip(),
-        location=str(data.get("location") or "").strip(),
+        location=location,
         linkedin=str(data.get("linkedin") or "").strip(),
         portfolio_url=str(data.get("portfolio_url") or data.get("portfolio") or "").strip(),
         github=str(data.get("github") or "").strip(),
     )
+
+
+@dataclass(frozen=True)
+class ApplicationFiles:
+    resume: Path | None  # PDF to upload
+    tailored: bool  # True when `resume` is the job-specific one, not the base resume
+    cover_pdf: Path | None  # cover letter PDF to upload, if any
+    cover_text: Path | None  # cover letter markdown/text, for pasting into a text box
+
+
+def application_files(job: Mapping[str, Any], folder: Path | None) -> ApplicationFiles:
+    """Pick the resume and cover letter files to use when applying to one job.
+
+    Contract:
+    - resume: `tailored_resume_path` if a file; else first sorted `exports/*Resume*.pdf`;
+      else the base `resume_path` if a file; else None (`tailored` is True only for the first two).
+    - cover_pdf: `cover_letter_path` if an existing .pdf; else first sorted `exports/*Cover_Letter*.pdf`.
+    - cover_text: `03_cover_letter.md`, else `03_tailored_cover_letter.md`, else `cover_letter_path`
+      if an existing non-PDF file.
+    - Never raises; `folder` may be None or missing, in which case only the job's own paths count.
+
+    Limits: globs are filename-based (`Resume` / `Cover_Letter`), so the export naming scheme
+    is load-bearing. Takes the folder as an argument to avoid importing cockpit.intel.
+    """
+
+    def existing(value: Any) -> Path | None:
+        return Path(value) if value and Path(value).is_file() else None
+
+    def first_export(pattern: str) -> Path | None:
+        return next(iter(sorted((folder / "exports").glob(pattern))), None) if folder else None
+
+    # 1. Resume: job-specific file beats exported PDF beats base resume
+    tailored = existing(job.get("tailored_resume_path")) or first_export("*Resume*.pdf")
+    resume = tailored or existing(job.get("resume_path"))
+
+    # 2. Cover PDF: explicit path (only if it is a PDF) beats exported PDF
+    cover_path = existing(job.get("cover_letter_path"))
+    cover_pdf = (cover_path if cover_path and cover_path.suffix.lower() == ".pdf" else None) or first_export(
+        "*Cover_Letter*.pdf"
+    )
+
+    # 3. Cover text: folder markdown beats a non-PDF explicit path
+    cover_text = next(
+        (p for n in ("03_cover_letter.md", "03_tailored_cover_letter.md") if folder and (p := folder / n).is_file()),
+        None,
+    ) or (cover_path if cover_path and cover_path.suffix.lower() != ".pdf" else None)
+
+    return ApplicationFiles(resume, tailored is not None, cover_pdf, cover_text)
 
 
 def build_prefill_fields(
