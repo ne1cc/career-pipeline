@@ -23,6 +23,7 @@
 window.__submits=0;
 document.addEventListener('click',e=>{if(e.target.closest('.ashby-application-form-submit-button,[type=submit]'))window.__submits++},true);
 document.addEventListener('submit',e=>{window.__submits++;e.preventDefault()},true);
+document.querySelector('.ashby-application-form-input-date').addEventListener('blur',e=>{if(!/^\d\d\/\d\d\/\d{4}$/.test(e.target.value))e.target.value=''});
 document.querySelectorAll('.ashby-application-form-input-yesno').forEach(g=>g.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{g.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b))})));
 const loc=document.querySelector('[role=combobox]'),PLACES=['Seattle, Washington, United States','Seattle Heights, Texas, United States','Portland, Oregon, United States'];
 loc.addEventListener('input',()=>{document.getElementById('menu')?.remove();const q=loc.value.toLowerCase();if(!q)return;

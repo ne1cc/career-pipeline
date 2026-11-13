@@ -55,12 +55,23 @@ OUTLINE = "2px solid orange"
 
 @dataclass(frozen=True)
 class AnswerRule:
+    """`answer` is text to type / an option to pick, or a list of options to tick (a
+    multi-select checkbox question). A list on any other kind of question is not applied.
+    """
+
     pattern: re.Pattern[str]
-    answer: str
+    answer: str | list[str]
+
+
+def _scalar(v: Any) -> str:
+    """A YAML scalar as answer text ("" when it is not one); booleans become Yes/No."""
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    return str(v).strip() if isinstance(v, (str, int, float)) else ""
 
 
 def load_answers(path: Path) -> list[AnswerRule]:
-    """Read the owner's answers file: a YAML list of `{match: <regex>, answer: <text>}`.
+    """Read the owner's answers file: a YAML list of `{match: <regex>, answer: <text|list>}`.
 
     Returns the valid rules in file order; `[]` when the file is missing or unreadable.
     A bad regex or malformed entry is skipped, never fatal. Patterns are case-insensitive.
@@ -75,16 +86,13 @@ def load_answers(path: Path) -> list[AnswerRule]:
         if not isinstance(entry, dict):
             continue
         match, answer = entry.get("match"), entry.get("answer")
-        if isinstance(answer, bool):
-            answer = "Yes" if answer else "No"
-        if (
-            not isinstance(match, str)
-            or not match
-            or not isinstance(answer, (str, int, float))
-        ):
-            continue
-        answer = str(answer).strip()
-        if not answer:
+        if isinstance(answer, list):
+            # A list answer is for ticking several boxes; every item must be a usable string.
+            items = [_scalar(a) for a in answer]
+            answer = items if items and all(items) else None
+        else:
+            answer = _scalar(answer)
+        if not isinstance(match, str) or not match or not answer:
             continue
         try:
             rules.append(AnswerRule(re.compile(match, re.IGNORECASE), answer))
@@ -101,7 +109,10 @@ class FillReport:
     ats: str
     url: str
     filled: list[str] = field(default_factory=list)
-    needs_you: list[str] = field(default_factory=list)
+    needs_you: list[str] = field(default_factory=list)  # required and still empty
+    unmatched: list[str] = field(
+        default_factory=list
+    )  # optional; a rule matched, nothing fit
     rules_fired: list[tuple[str, str]] = field(default_factory=list)
     blocked: str | None = None
     resume: str | None = None
@@ -144,7 +155,7 @@ SITES: dict[str, Site] = {
     # country picker are separate wrappers inside `fieldset.phone-input`.
     "greenhouse": Site(
         form="form#application-form, form:has(#first_name)",
-        root=".text-input-wrapper, .select__container, fieldset:not(.phone-input), [role=group]:not(.file-upload)",
+        root=".text-input-wrapper, .select__container, fieldset:not(.phone-input), [role=group]",
         label="",
         resume="#resume",
     ),
@@ -196,6 +207,7 @@ _CONTACT_RE = [
     for k, a, b in _CONTACT
 ]
 
+_NOT_CONTACT = re.compile(r"preferred|nick ?name|pronounc|pronoun", re.IGNORECASE)
 _COVER_FILE = 'input[type=file][id*="cover" i], input[type=file][name*="cover" i]'
 _COVER_LABEL = re.compile(r"cover letter", re.IGNORECASE)
 
@@ -313,6 +325,8 @@ _EXTRACT_JS = """(cfg) => {""" + _HAS_VALUE_JS + """
       q.name = ctrl.getAttribute('name') || ''; q.id = ctrl.id || '';
       q.ac = ctrl.getAttribute('autocomplete') || '';
       q.visible = q.kind === 'file' || vis(ctrl);
+      q.date = ctrl.type === 'date' || /(^|[\\s_-])date([\\s_-]|$)/i.test(ctrl.className) ||
+        !!ctrl.closest('.react-datepicker-wrapper');
     }
     root.setAttribute('data-af', out.length);
     q.hasValue = hasValue(root);
@@ -345,11 +359,20 @@ _VALUE_JS = (
 # ───────────────────────── small helpers ─────────────────────────
 
 
+def _norm(text: str) -> str:
+    """Lower-case, curly quotes and en/em dashes straightened, spaces collapsed."""
+    t = text.translate(
+        str.maketrans("\u2018\u2019\u201c\u201d\u2013\u2014", "''\"\"--")
+    )
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
 def _pick(options: list[str], answer: str) -> int | None:
     """Index of the option for `answer`: exact (case-insensitive), else the single option
     containing it as whole words. Returns None for no match or for more than one."""
-    a = answer.strip().lower()
-    exact = [i for i, o in enumerate(options) if o.strip().lower() == a]
+    options = [_norm(o) for o in options]
+    a = _norm(answer)
+    exact = [i for i, o in enumerate(options) if o == a]
     if exact:
         return exact[0] if len(exact) == 1 else None
     word = re.compile(rf"(?<!\w){re.escape(a)}(?!\w)", re.IGNORECASE)
@@ -386,18 +409,29 @@ def _item(page: Any, q: dict, k: int) -> Any:
     return label.first if label.count() else el
 
 
-def _set_choice(page: Any, q: dict, answer: str) -> bool:
-    """Select the option matching `answer` for radio / checkbox / buttons / select.
+def _set_choice(page: Any, q: dict, answer: str | list[str]) -> bool:
+    """Select the option(s) matching `answer` for radio / checkbox / buttons / select.
 
-    Returns True only if the page then shows a value for the question.
+    A list ticks several boxes and is only valid on a checkbox group; every item must
+    match exactly one option (and no two items the same one), else nothing is touched.
+    Returns True only if the page then shows every chosen option as selected.
     """
-    k = _pick(q["options"], answer)
-    if k is None:
+    wanted = [answer] if isinstance(answer, str) else answer
+    if len(wanted) > 1 and q["kind"] != "checkbox":
+        return False
+    ks = [_pick(q["options"], a) for a in wanted]
+    if None in ks or len(set(ks)) != len(ks):
         return False
     if q["kind"] == "select":
-        _qloc(page, q).select_option(label=q["options"][k], timeout=ACTION_MS)
+        _qloc(page, q).select_option(label=q["options"][ks[0]], timeout=ACTION_MS)
     else:
-        _click(_item(page, q, k))
+        for k in ks:
+            _click(_item(page, q, k))
+    if q["kind"] == "checkbox":
+        root = page.locator(f'[data-af="{q["i"]}"]')
+        return all(
+            root.locator(f'[data-af-o="{k}"]').is_checked(timeout=ACTION_MS) for k in ks
+        )
     return bool(page.evaluate(_VALUE_JS, q["i"]))
 
 
@@ -442,14 +476,31 @@ def _set_combo(page: Any, q: dict, answer: str) -> bool:
 
 
 def _set_text(q: dict, ctrl: Any, value: str) -> bool:
-    """Fill a text control and read it back (React can silently reset a controlled input)."""
+    """Fill a text control and read it back (React can silently reset a controlled input).
+
+    A date-picker input is also blurred: its widget only commits a typed date on blur and
+    drops text it cannot parse, so a value that survives the blur counts as set (the widget
+    may reformat it, so equality is not required there).
+    """
     ctrl.fill(value, timeout=ACTION_MS)
+    if q.get("date"):
+        ctrl.press("Escape", timeout=ACTION_MS)
+        ctrl.blur(timeout=ACTION_MS)
+        return ctrl.input_value(timeout=ACTION_MS).strip() != ""
     return ctrl.input_value(timeout=ACTION_MS) == value
 
 
 def _contact_key(q: dict, taken: set[str]) -> str | None:
     """The contact field this question is: the visible label decides first, the field's
-    name / id / autocomplete attribute second. Keys already filled are skipped."""
+    name / id / autocomplete attribute second. Keys already filled are skipped.
+
+    A preferred name / nickname / pronunciation question is never a contact field, whatever
+    its attributes say (a name like `preferred_first_name` would otherwise match first_name);
+    it is left to a rule. A second "legal name" box is also left to a rule, because each key
+    is used once and the first name field on the page takes the profile name.
+    """
+    if _NOT_CONTACT.search(q["label"]):
+        return None
     for key, by_label, _ in _CONTACT_RE:
         if key not in taken and q["label"] and by_label.search(q["label"]):
             return key
@@ -567,9 +618,11 @@ def fill_page(
         if q["required"] or q.get("_ruled"):
             left.append(q)
 
-    # 4. Report what still needs the owner, and outline it on the page.
+    # 4. Report what still needs the owner, and outline it on the page. Only required
+    #    questions go in `needs_you`; an optional one matters only when a rule matched it.
     for q in left:
-        rep.needs_you.append(q["label"] or q["name"] or "(unlabelled question)")
+        name = q["label"] or q["name"] or "(unlabelled question)"
+        (rep.needs_you if q["required"] else rep.unmatched).append(name)
         _try(
             lambda q=q: page.locator(f'[data-af="{q["i"]}"]').evaluate(
                 "(e, o) => { e.style.outline = o; e.style.outlineOffset = '2px'; }",
@@ -627,7 +680,9 @@ def _fill_question(
     if rule is None:
         return False
     q["_ruled"] = True
-    if q["kind"] == "text":
+    if isinstance(rule.answer, list):
+        ok = q["kind"] == "checkbox" and _set_choice(page, q, rule.answer)
+    elif q["kind"] == "text":
         ok = _set_text(q, ctrl, rule.answer)
     elif q["kind"] == "combobox":
         ok = _set_combo(page, q, rule.answer)

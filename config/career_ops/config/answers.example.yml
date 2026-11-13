@@ -11,23 +11,106 @@
 #   - match:  a regular expression, matched case-insensitively against the question text
 #     answer: the text to enter, or the option to pick (see below)
 #
-# Rules are tried top to bottom; the first match wins, so put specific rules first.
+# Rules are tried top to bottom; the first match wins, so specific rules come first.
 # For dropdowns and radio buttons the answer must equal an option (ignoring case), or
 # appear as whole words in exactly one option. If no option or several fit, the question
 # is left for you. Quote Yes / No: bare YAML reads them as true / false.
+# For a "select all that apply" checkbox question, `answer` may be a list: each item must
+# match exactly one option, and if any item matches none, the whole question is left alone.
+#   answer: ["Bachelor's degree", "Associate degree"]
+# Date questions want the format the form shows (MM/YYYY, MM/DD/YYYY, ...); check it.
+#
+# Keep patterns tight. A bare "sponsorship" or "degree" would also match follow-up
+# questions ("If yes, what type of sponsorship?") and type the answer into them.
 
-# Work authorization: set to your real status.
+# ── Work authorization ───────────────────────────────────────────────────────────────
+
+# Set to your real status.
 - match: "authorized to work|legally (authorized|eligible)|eligible to work|work authorization"
   answer: "Yes"
 
-# Sponsorship: set to your real status. Keep the pattern tight: a bare "sponsorship" would
-# also match follow-ups like "If yes, what type of sponsorship?" and type "No" into them.
+# Set to your real status.
 - match: "(require|need).{0,40}sponsorship|sponsorship.{0,40}(require|need)|require.{0,40}visa"
   answer: "No"
 
-# "How did you hear about us?" style questions.
-- match: "how did you (first )?(hear|learn)|where did you (hear|find)"
-  answer: "Company website"
+# ── Name and location ────────────────────────────────────────────────────────────────
+# Your first name field and your first "full name" field come from profile.yml, not from
+# here. These rules are for the extra ones.
+
+# A second name box ("Please state your full legal name:"); not used when the form's first
+# name field already is the legal name.
+- match: "legal name"
+  answer: "Jane Q. Public"
+
+- match: "preferred (first )?name|nick ?name|what (should|do) we call you|go(es)? by"
+  answer: "Jane"
+
+- match: "pronouns"
+  answer: "they/them"
+
+- match: "^(country|country of residence|country you (currently )?(live|reside) in)\\??$"
+  answer: "United States"
+
+- match: "\\b(state|province)\\b.{0,40}\\b(reside|live)\\b|\\b(reside|live)\\b.{0,40}\\b(state|province)\\b|^state( / ?province)?\\??$"
+  answer: "California"
+
+# ── How you found the job, history with the company ─────────────────────────────────
+# Used only when the form has an option that matches; otherwise it is left for you.
+# The "previously employed" rule recognises "previously / formerly employed" and "ever
+# worked for us". Phrasing that names the company some other way needs its own rule.
+- match: "how did you (first )?(hear|learn|find)|where did you (hear|find|learn)|hear about (us|this)"
+  answer: "LinkedIn"
+
+- match: "(previously|formerly) (been )?(employed|worked)|former employee|ever (been )?(employed|worked) (at|by|for|with) (us|our|this|the company)"
+  answer: "No"
+
+# ── Education ────────────────────────────────────────────────────────────────────────
+# Order matters here: the GPA and date rules sit before the school rule.
+
+- match: "^(cumulative |overall )?gpa\\b|\\byour (current |final |cumulative |overall |current or final )?gpa\\b"
+  answer: "3.7"
+
+- match: "(begin|start|began|started).{0,40}(degree|program|studies)"
+  answer: "09/2023"
+
+- match: "graduat(e|ion)\\b.{0,30}(date|month|year)|(date|month|year).{0,20}graduat|when (do|will) you (expect to )?graduate|expect(ed)? to (complete|finish).{0,40}(degree|program|studies)|expected graduation"
+  answer: "05/2027"
+
+# A tick-all-that-apply question. Remove this rule if it does not describe you.
+- match: "degrees? (have )?you (have )?(already )?(completed|earned|obtained)"
+  answer: ["Bachelor's degree"]
+
+- match: "^(what )?degree (are you )?(currently )?(pursuing|seeking|studying)|^what degree|highest (level of )?(education|degree)"
+  answer: "Bachelor's degree"
+
+- match: "^(your |current |most recent |last )?(school|university|college)( or (university|college))?( name| attended)?:?$"
+  answer: "Example State University"
+
+- match: "^(what is )?(your )?(field of study|major|area of study)\\b|your (field of study|major)\\b"
+  answer: "Computer Science"
+
+# ── Availability, logistics ──────────────────────────────────────────────────────────
+
+- match: "when (can|could|would) you (start|begin|join)|earliest.{0,20}start|available to start|start date|availability date"
+  answer: "01/04/2027"
+
+- match: "(willing|open|able|comfortable|prepared) (to|for) relocat"
+  answer: "Yes"
+
+# "Are you able to work from our office three days per week?"
+- match: "(on-?site|in[- ]office|in[- ]person|hybrid|office).{0,50}\\b(\\d+|one|two|three|four|five) days|\\b(\\d+|one|two|three|four|five) days.{0,40}(on-?site|in[- ]office|office)"
+  answer: "Yes"
+
+- match: "(at least|over|older than|minimum age of) (the age of )?(18|eighteen)( years)?(?! of experience| months)|18 years (of age|old)|age of (18|eighteen)|legal age"
+  answer: "Yes"
+
+- match: "non-?compete|non-?solicit|restrictive (covenant|agreement)"
+  answer: "No"
+
+# "How did you hear" etc. are above. Salary: many people prefer to answer per job (it
+# depends on the role and location), so this is left off. Uncomment to answer it always.
+# - match: "salary (expectation|requirement)|expected (salary|compensation)|desired (salary|compensation)"
+#   answer: "120000"
 
 # Demographic / EEO questions. Leaving these out leaves every one of them untouched for
 # you to answer yourself. Uncomment only if declining is what you want on every form.

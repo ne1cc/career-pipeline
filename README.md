@@ -237,7 +237,9 @@ Press `A` on a job to open its application form in a separate Chromium window wi
 - **It never submits.** You review the page and press Submit yourself. It stops at CAPTCHAs and logins and leaves the tab open for you. Required questions it could not answer are outlined in orange.
 - **Answers file:** `config/career_ops/config/answers.yml` (git-ignored; copy from `answers.example.yml`). Each rule is a `match` regex plus an `answer`. You must set these answers truthfully yourself; a question with no matching rule is left blank.
 - **Separate browser profile:** `~/Library/Application Support/jobspy-cockpit/apply-profile`, so it shares no logins or cookies with your everyday browser. Log in once in that window if a site needs it.
-- **Not handled yet:** date pickers, multi-select checkboxes, Greenhouse's "enter manually" cover letter, the country dropdown, and LinkedIn / Indeed / Workday.
+- **Answers can be a list** for a "select all that apply" checkbox question; each item must match exactly one option, otherwise the whole question is left for you. Date answers must use the format the form shows (MM/YYYY, MM/DD/YYYY). Phrasing that names a company ("previously employed at Acme") needs its own per-company rule.
+- **Report:** `needs you` lists required questions left blank; optional questions where a rule matched but no single option fit are listed separately as `unmatched`.
+- **Not handled yet:** Greenhouse's "enter manually" cover letter, searchable school/university pickers (Lever), and LinkedIn / Indeed / Workday.
 - The same flow runs from the shell with `cockpit autofill <url|key>`.
 
 ### `cockpit` CLI Commands
