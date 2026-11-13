@@ -71,7 +71,12 @@ DEFAULT_SEARCH_TERMS = [
     "Rotational Analyst",
     "Data Operations Specialist",
     # Early Career & Junior Roles
+    "New Grad",
+    "Early Career",
+    "University Grad",
     "New Grad Software Engineer",
+    "Software Engineer I",
+    "Data Analyst I",
     "Data Engineer",
     "Junior Backend Engineer",
     "Backend Engineer",
@@ -207,6 +212,34 @@ ROLE_PATTERN = re.compile(
     r"infosec|soc|devops|sre|revops|bizops|operations|solutions)\b",
     re.IGNORECASE,
 )
+
+# Pre-filter senior/executive titles and clearly non-US locations before saving ATS CSVs
+ATS_SENIOR_TITLE_PATTERN = re.compile(
+    r"\b(?:senior|sr\.?|staff|principal|director|vp|vice president|"
+    r"lead|head of|chief|distinguished|fellow|iii|iv|v|l5|l6|l7|ic4|ic5|ic6)\b",
+    re.IGNORECASE,
+)
+
+US_LOCATION_PATTERN = re.compile(
+    r"(?:\b(?:united states|usa|u\.s\.|remote|seattle|bellevue|redmond|kirkland|renton|issaquah|"
+    r"washington|california|san francisco|los angeles|san diego|san jose|palo alto|mountain view|"
+    r"sunnyvale|menlo park|oregon|portland|arizona|phoenix|tempe|scottsdale|colorado|denver|boulder|"
+    r"texas|austin|dallas|houston|new york|nyc|boston|chicago|atlanta|raleigh|durham|virginia|"
+    r"utah|minnesota|florida|michigan|pennsylvania|new jersey|maryland)\b|"
+    r"(?:,\s*|\b)(?:wa|ca|az|co|tx|ny|ma|il|ga|nc|va|dc|ut|mn|fl|mi|pa|nj|md)\b|"
+    r",\s*or\b|\bus\b)",
+    re.IGNORECASE,
+)
+
+
+def is_target_ats_role(title: str, location: str, is_remote: bool) -> bool:
+    """Keep US/remote/unspecified-location roles that are not senior/executive titles."""
+    if ATS_SENIOR_TITLE_PATTERN.search(title or ""):
+        return False
+    loc = (location or "").strip()
+    if is_remote or not loc:
+        return True
+    return bool(US_LOCATION_PATTERN.search(loc))
 
 STANDARD_COLUMNS = [
     "id",
@@ -410,6 +443,14 @@ def run_ats_scrape(smoke_test: bool = False, skip_dataset: bool = False) -> Path
     df.drop_duplicates(subset=["job_url"], keep="first", inplace=True)
     deduped_count = len(df)
 
+    # Filter out senior/executive titles and clearly non-US locations
+    keep_mask = [
+        is_target_ats_role(str(t or ""), str(loc or ""), bool(rem))
+        for t, loc, rem in zip(df["title"], df["location"], df["is_remote"])
+    ]
+    df = df[keep_mask].copy()
+    filtered_count = len(df)
+
     # Sort alphabetically by title (case-insensitive)
     df.sort_values(
         by="title",
@@ -428,7 +469,7 @@ def run_ats_scrape(smoke_test: bool = False, skip_dataset: bool = False) -> Path
     )
 
     print(
-        f"\nFinished ATS scraping. Extracted {initial_count} roles -> {deduped_count} unique roles."
+        f"\nFinished ATS scraping. Extracted {initial_count} roles -> {deduped_count} unique -> {filtered_count} US/non-senior roles."
     )
     print(f"Saved to: {output_path}")
 

@@ -43,12 +43,25 @@ def test_scraper_hours_old_and_fetch_description(script_path: Path):
     assert len(kwargs_list) > 0, f"No scrape_jobs call found in {script_path.name}"
     for kwargs in kwargs_list:
         assert kwargs.get("hours_old", 0) <= 48, f"{script_path.name} has hours_old > 48"
-        assert kwargs.get("results_wanted") == 9999, f"{script_path.name} results_wanted != 9999"
-        should_fetch_description = script_path.name not in {
-            "search_jobs_seattle_msba.py",
-            "search_jobs_msba_west.py",
-        }
+        results_wanted = kwargs.get("results_wanted", 0)
+        assert 50 <= results_wanted <= 200, (
+            f"{script_path.name} results_wanted={results_wanted} must be bounded (50..200) to avoid 7200s timeouts"
+        )
+        # Only focused single-city entry-level scrape fetches full LinkedIn descriptions per job
+        should_fetch_description = script_path.name == "search_jobs_seattle_entry_level.py"
         assert kwargs.get("linkedin_fetch_description", False) is should_fetch_description
+
+
+def test_ats_pre_filter_drops_senior_and_non_us():
+    from jobspy.search_jobs_ats import is_target_ats_role
+
+    assert is_target_ats_role("New Grad Software Engineer", "Seattle, WA", False) is True
+    assert is_target_ats_role("Data Analyst", "Phoenix, AZ", False) is True
+    assert is_target_ats_role("Data Engineer", "Berlin, Germany", True) is True
+    assert is_target_ats_role("Senior Software Engineer", "Seattle, WA", False) is False
+    assert is_target_ats_role("Staff Data Scientist", "Remote", True) is False
+    assert is_target_ats_role("Business Analyst", "Seoul, South Korea", False) is False
+    assert is_target_ats_role("Analytics Engineer", "Eindhoven, The Netherlands", False) is False
 
 
 def test_msba_recruitment_filter_handles_empty_description():

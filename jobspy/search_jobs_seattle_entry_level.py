@@ -113,7 +113,7 @@ if __name__ == "__main__":
                     location=loc,
                     google_search_term=f"{term} jobs near {loc} since yesterday",
                     country_indeed="USA",
-                    results_wanted=9999,
+                    results_wanted=100,
                     hours_old=48,
                     linkedin_fetch_description=True,
                 )

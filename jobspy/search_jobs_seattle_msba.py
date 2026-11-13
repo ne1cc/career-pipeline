@@ -217,7 +217,7 @@ if __name__ == "__main__":
                     search_term=term,
                     location=loc,
                     country_indeed="USA",
-                    results_wanted=9999,
+                    results_wanted=150,
                     hours_old=48,
                     linkedin_fetch_description=False,
                 )
