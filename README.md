@@ -193,6 +193,7 @@ bind-key -n M-j run-shell "~/bin/tmux-jobcockpit '#{client_tty}'"
 | `c` | **Copy Cover Letter** | Copies the tailored cover letter `.pdf` path (or Markdown text) to clipboard |
 | `p` | **Preview Resume** | Previews the staged resume PDF via macOS QuickLook |
 | `P` | **ATS Form Prefill** | Generates ATS prefill field mappings (Greenhouse/Ashby/Lever) and copies to clipboard |
+| `A` | **Autofill** | Opens the application form in a separate Chromium window and fills it (see below) |
 | `i` | **Open Interview Dossier** | Opens `05_interview_dossier.md` in default Markdown viewer |
 | `e` | **Edit in Neovim** | Suspends TUI and opens the job's 4 core Markdown artifacts in `$EDITOR` / `nvim -p` |
 | `F` | **Open Folder** | Reveals the job's generated artifact folder in Finder / file manager |
@@ -229,6 +230,16 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 | `jobspy-pipeline` | `python run_pipeline.py` | Run the full parallel scraping + Excel workbook + Cockpit ingest pipeline |
 | `jobspy-parallel` | `python run_parallel.py` | Run the 8 parallel scrapers standalone |
 
+### Autofill (`A`)
+
+Press `A` on a job to open its application form in a separate Chromium window with your contact details filled in, the tailored resume (else the base resume) attached, the cover letter pasted where the form has a text box, and your preset eligibility answers chosen. Supported sites: Greenhouse, Ashby and Lever. Any other site just opens in your everyday browser.
+
+- **It never submits.** You review the page and press Submit yourself. It stops at CAPTCHAs and logins and leaves the tab open for you. Required questions it could not answer are outlined in orange.
+- **Answers file:** `config/career_ops/config/answers.yml` (git-ignored; copy from `answers.example.yml`). Each rule is a `match` regex plus an `answer`. You must set these answers truthfully yourself; a question with no matching rule is left blank.
+- **Separate browser profile:** `~/Library/Application Support/jobspy-cockpit/apply-profile`, so it shares no logins or cookies with your everyday browser. Log in once in that window if a site needs it.
+- **Not handled yet:** date pickers, multi-select checkboxes, Greenhouse's "enter manually" cover letter, the country dropdown, and LinkedIn / Indeed / Workday.
+- The same flow runs from the shell with `cockpit autofill <url|key>`.
+
 ### `cockpit` CLI Commands
 
 | Command | Description |
@@ -242,6 +253,7 @@ Sourcing `shell/cockpit.sh` (configured automatically by `./setup.sh`) provides 
 | `cockpit sprint [--limit N] [--recent]` | Launch sequential interactive CLI application sprint for top-scored queued jobs |
 | `cockpit verify-open [--limit N] [--dry-run]` | Verify whether apply URLs for queued internships are still active/open (HTTP status check) |
 | `cockpit prefill [URL\|KEY] [--copy] [--open]` | Format ATS application form fields for Greenhouse, Ashby, Lever, or generic jobs |
+| `cockpit autofill [URL\|KEY] [--pdf F] [--cover F]` | Autofill one application form in a separate browser, then wait for you to review and submit |
 | `cockpit verify-ats [PATH] [--all] [-k "..."]` | Score resume ATS parseability (0-100), letter grade, and keyword match coverage |
 | `cockpit intel [--limit N] [--retry-failed]` | Generate 8-file dossiers and `.docx`/`.pdf` exports for bookmarked jobs |
 | `cockpit dossier [QUERY] [--cat] [-v]` | List saved dossiers, print to terminal (`--cat`), or open in Neovim (`-v`) |

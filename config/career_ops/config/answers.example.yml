@@ -1,0 +1,35 @@
+# Answers for application-form questions.
+#
+# Copy this file to `answers.yml` (git-ignored) and edit it.
+#
+# THESE ARE PLACEHOLDERS. Every answer below is a stand-in that you must set truthfully
+# for yourself before use. The autofill tool never invents an answer: it fills a question
+# only from your contact details (profile.yml) or from a rule in this file, and it never
+# submits the form. You review the page and press Submit yourself.
+#
+# Each rule is:
+#   - match:  a regular expression, matched case-insensitively against the question text
+#     answer: the text to enter, or the option to pick (see below)
+#
+# Rules are tried top to bottom; the first match wins, so put specific rules first.
+# For dropdowns and radio buttons the answer must equal an option (ignoring case), or
+# appear as whole words in exactly one option. If no option or several fit, the question
+# is left for you. Quote Yes / No: bare YAML reads them as true / false.
+
+# Work authorization: set to your real status.
+- match: "authorized to work|legally (authorized|eligible)|eligible to work|work authorization"
+  answer: "Yes"
+
+# Sponsorship: set to your real status. Keep the pattern tight: a bare "sponsorship" would
+# also match follow-ups like "If yes, what type of sponsorship?" and type "No" into them.
+- match: "(require|need).{0,40}sponsorship|sponsorship.{0,40}(require|need)|require.{0,40}visa"
+  answer: "No"
+
+# "How did you hear about us?" style questions.
+- match: "how did you (first )?(hear|learn)|where did you (hear|find)"
+  answer: "Company website"
+
+# Demographic / EEO questions. Leaving these out leaves every one of them untouched for
+# you to answer yourself. Uncomment only if declining is what you want on every form.
+# - match: "gender|race|ethnicity|veteran|disability"
+#   answer: "Decline to self-identify"

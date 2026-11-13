@@ -16,7 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Markdown, Static
 from textual.worker import Worker, WorkerState
 
-from cockpit import intel, macos, titles
+from cockpit import autofill, intel, macos, prefill as prefill_mod, titles
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
@@ -37,7 +37,7 @@ from cockpit.db import (
 )
 from cockpit.imap_sync import sync_gmail_statuses
 from cockpit.models import FunnelState
-from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
+from cockpit.normalizer import REPO_ROOT, highlight_jd, linkedin_referral_url, load_rules, render_outreach, resolve_resume, score_job
 
 DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pending")
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
@@ -230,6 +230,20 @@ class CockpitTable(DataTable):
         return style
 
 
+AUTOFILL_PROFILE_DIR = Path.home() / "Library" / "Application Support" / "jobspy-cockpit" / "apply-profile"
+BLOCKED_TEXT = {
+    "captcha": "stopped at a CAPTCHA, solve it in the browser",
+    "login": "site wants a login",
+    "no-form": "no application form found (posting may be closed)",
+}
+
+
+def _default_autofill_worker(profile_dir: Path) -> autofill.AutofillWorker:
+    """Build the real browser worker, creating its profile directory first."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return autofill.AutofillWorker(profile_dir)
+
+
 class JobCockpitApp(App[None]):
     CSS = """
     #score { height: 1; padding: 0 1; background: $boost; }
@@ -272,6 +286,8 @@ class JobCockpitApp(App[None]):
         Binding("p", "preview", "Preview"),
         Binding("P", "prefill", "Prefill"),
         Binding("shift+p", "prefill", "Prefill", show=False),
+        Binding("A", "autofill", "Autofill"),
+        Binding("shift+a", "autofill", "Autofill", show=False),
         Binding("a", "mark('APPLIED')", "Applied"),
         Binding("s", "mark('SKIPPED')", "Skip"),
         Binding("h", "hold", "Hold"),
@@ -297,8 +313,14 @@ class JobCockpitApp(App[None]):
         career_ops_root: Path | None = None,
         model: str | None = None,
         generate: Callable[[str, str], str] | None = None,
+        autofill_worker: Callable[[Path], Any] = _default_autofill_worker,
+        repo_root: Path | None = None,
     ) -> None:
         super().__init__()
+        self._autofill_factory = autofill_worker  # injectable so tests never launch a browser
+        self._autofill: Any = None  # created on first use
+        self._answers_hint_shown = False
+        self.repo_root = repo_root or REPO_ROOT
         self.db_path = db_path
         self.rules = load_rules()
         intel_cfg = self.rules.get("intel", {})
@@ -769,25 +791,14 @@ class JobCockpitApp(App[None]):
 
     def action_stage(self, background: bool) -> None:
         if job := self._job():
-            tailored = job.get("tailored_resume_path")
-            resume_to_copy = job["resume_path"]
-            label = "Resume"
-            if tailored and Path(tailored).is_file():
-                resume_to_copy = tailored
-                label = "Tailored resume"
-            else:
-                folder_p = job.get("folder_path") or (intel.job_folder_path(job, self.export_dir) if job.get("is_saved") else None)
-                if folder_p and Path(folder_p).exists():
-                    res_pdfs = list((Path(folder_p) / "exports").glob("*Resume*.pdf"))
-                    if res_pdfs and res_pdfs[0].is_file():
-                        resume_to_copy = str(res_pdfs[0])
-                        label = "Tailored resume"
+            folder_p = job.get("folder_path") or (intel.job_folder_path(job, self.export_dir) if job.get("is_saved") else None)
+            files = prefill_mod.application_files(job, Path(folder_p) if folder_p else None)
+            resume_to_copy = str(files.resume or job["resume_path"])
+            label = "Tailored resume" if files.tailored else "Resume"
 
             macos.copy_resume_path(resume_to_copy)
             url_to_open = job["apply_url"]
             try:
-                from cockpit import prefill as prefill_mod
-
                 ats_target = prefill_mod.detect_ats(url_to_open)
                 if ats_target:
                     prof = prefill_mod.read_candidate_profile()
@@ -840,8 +851,6 @@ class JobCockpitApp(App[None]):
                 self.notify("No apply URL for this job", severity="warning")
                 return
 
-            from cockpit import prefill as prefill_mod
-
             target = prefill_mod.detect_ats(url)
             if not target:
                 self.notify(f"Could not parse apply URL: {url}", severity="warning")
@@ -849,18 +858,9 @@ class JobCockpitApp(App[None]):
 
             prof = prefill_mod.read_candidate_profile()
             folder_p = Path(job.get("folder_path") or intel.job_folder_path(job, self.export_dir))
-            resume_file: Path | None = None
-            cover_file: Path | None = None
-
-            if folder_p.exists():
-                pdf_cands = list((folder_p / "exports").glob("*.pdf")) or list(folder_p.glob("*.pdf"))
-                if pdf_cands:
-                    resume_file = pdf_cands[0]
-                cov_md = folder_p / "03_tailored_cover_letter.md"
-                if not cov_md.exists():
-                    cov_md = folder_p / "03_cover_letter.md"
-                if cov_md.exists():
-                    cover_file = cov_md
+            files = prefill_mod.application_files(job, folder_p if folder_p.exists() else None)
+            resume_file = files.resume
+            cover_file = files.cover_text or files.cover_pdf
 
             fields = prefill_mod.build_prefill_fields(target, prof, resume_file=resume_file, cover_file=cover_file)
             prefill_url = prefill_mod.build_prefill_url(target, prof)
@@ -873,6 +873,77 @@ class JobCockpitApp(App[None]):
                 self.notify(f"Copied {target.ats.title()} prefill to clipboard! ({target.company_slug})", title="ATS Prefill")
             except Exception as e:
                 self.notify(f"Prefill generated, copy error: {e}", severity="warning")
+
+    def action_autofill(self) -> None:
+        """Fill the current job's application form in a separate browser; never submits.
+
+        Contract:
+        - No apply URL → warning. Site not in `autofill.SUPPORTED` → opened in the everyday browser.
+        - Otherwise queues one job on the lazily created worker and returns at once; the result
+          arrives later through `_autofill_done`.
+        Limits: a missing resume or answers file does not stop the fill; the user is told instead.
+        """
+        job = self._job()
+        if not job:
+            return
+        # 1. No URL → nothing to open.
+        url = job.get("apply_url")
+        if not url:
+            self.notify("No apply URL for this job", severity="warning")
+            return
+        # 2. Unsupported site → the everyday browser (already logged in), never the worker.
+        target = autofill.target_for(url)
+        if target is None or target.ats not in autofill.SUPPORTED:
+            self.notify("No autofill for this site, opening it normally")
+            macos.open_url(url)
+            return
+        # 3. Resolve files, profile, answers (same folder lookup as action_prefill).
+        folder_p = Path(job.get("folder_path") or intel.job_folder_path(job, self.export_dir))
+        files = prefill_mod.application_files(job, folder_p if folder_p.exists() else None)
+        cover_text = None
+        if files.cover_text:
+            try:
+                cover_text = files.cover_text.read_text("utf-8")
+            except OSError:
+                pass
+        answers_path = self.repo_root / "config" / "career_ops" / "config" / "answers.yml"
+        if not answers_path.is_file() and not self._answers_hint_shown:
+            self._answers_hint_shown = True
+            self.notify("Eligibility questions stay blank until answers.yml exists "
+                        "(copy answers.example.yml)", severity="warning", timeout=8)
+        if self._autofill is None:
+            self._autofill = self._autofill_factory(AUTOFILL_PROFILE_DIR)
+        company = job.get("company") or "job"
+        self._autofill.submit(
+            url,
+            prefill_mod.read_candidate_profile(self.repo_root),
+            files.resume,
+            files.cover_pdf,
+            cover_text,
+            autofill.load_answers(answers_path),
+            lambda report: self._autofill_done(company, report),
+        )
+        # 4. Say which resume goes up (or that none resolved; contact fields still get filled).
+        which = ("tailored resume" if files.tailored else "base resume") if files.resume else "no resume found"
+        self.notify(f"Autofill queued: {company} ({which})")
+
+    def _autofill_done(self, company: str, report: autofill.FillReport) -> None:
+        """Worker-thread callback: hop to the UI thread and report; silent if the app has exited."""
+        if report.blocked:
+            msg = BLOCKED_TEXT.get(report.blocked, report.blocked)
+            args = (f"{company}: {msg}",)
+            kw: dict[str, Any] = {"severity": "warning", "timeout": 10}
+        else:
+            args, kw = (f"{company}: {report.summary()}",), {"timeout": 10}
+        try:
+            self.call_from_thread(self.notify, *args, **kw)
+        except Exception:  # app already exited
+            pass
+
+    def on_unmount(self) -> None:
+        # Blocks up to 20 s (AutofillWorker.close joins) only if the browser is slow to quit.
+        if self._autofill is not None:
+            self._autofill.close()
 
     def action_yank(self) -> None:
         if job := self._job():

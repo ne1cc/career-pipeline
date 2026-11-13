@@ -1739,30 +1739,21 @@ def import_resume_cmd(
     console.print(f"[bold green]✔ Successfully imported and staged resume:[/bold green] {resume_path.name}")
 
 
-@app.command("prefill")
-def prefill_cmd(
-    target: Annotated[Optional[str], typer.Argument(help="Apply URL or job dedup_key / row index")] = None,
-    job: Annotated[Optional[str], typer.Option("--job", "-j", help="Job dedup_key or row index in DuckDB")] = None,
-    pdf: Annotated[Optional[Path], typer.Option("--pdf", "-p", help="Path to resume PDF file")] = None,
-    cover: Annotated[Optional[Path], typer.Option("--cover", "-c", help="Path to cover letter file")] = None,
-    copy: Annotated[bool, typer.Option("--copy", help="Copy prefill text to system clipboard")] = False,
-    open_browser: Annotated[bool, typer.Option("--open", "-o", help="Open apply URL in default browser")] = False,
-    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
-) -> None:
-    """Generate ATS application form prefill mappings for Greenhouse, Ashby, Lever, or generic jobs."""
-    import json
+def _resolve_apply_target(
+    raw_target: Optional[str], pdf: Optional[Path], cover: Optional[Path]
+) -> tuple[str, Optional[Path], Optional[Path]]:
+    """Turn an apply URL or a job key / row index into (apply_url, resume, cover_file).
+
+    Returns `("", pdf, cover)` when nothing resolves. Explicit `pdf` / `cover` win over the
+    job folder's files. A DuckDB failure is printed as a notice, not raised.
+    """
     from cockpit import prefill as prefill_mod
     from cockpit import intel as intel_module
 
-    raw_target = target or job
-    apply_url = ""
-    resume_file = pdf
-    cover_file = cover
-
-    # If raw_target is provided, check if it's a URL or a DuckDB job identifier
-    if raw_target and (raw_target.startswith("http://") or raw_target.startswith("https://")):
-        apply_url = raw_target
-    elif raw_target:
+    apply_url, resume_file, cover_file = "", pdf, cover
+    if raw_target and raw_target.startswith(("http://", "https://")):
+        return raw_target, resume_file, cover_file
+    if raw_target:
         try:
             with db.session() as con:
                 row = con.execute("SELECT * FROM jobs_master WHERE dedup_key = ?", [raw_target]).fetchone()
@@ -1780,14 +1771,29 @@ def prefill_cmd(
                     apply_url = job_dict.get("apply_url") or ""
                     export_dir = intel_module.resolve_export_dir()
                     folder = intel_module.job_folder_path(job_dict, export_dir)
-                    if not resume_file and folder.exists():
-                        resume_file = next(folder.glob("*.pdf"), None)
-                    if not cover_file and folder.exists():
-                        cov_p = folder / "03_tailored_cover_letter.md"
-                        if cov_p.exists():
-                            cover_file = cov_p
+                    files = prefill_mod.application_files(job_dict, folder if folder.exists() else None)
+                    resume_file = resume_file or files.resume
+                    cover_file = cover_file or files.cover_text or files.cover_pdf
         except Exception as e:
             console.print(f"[yellow]DuckDB query notice:[/yellow] {e}")
+    return apply_url, resume_file, cover_file
+
+
+@app.command("prefill")
+def prefill_cmd(
+    target: Annotated[Optional[str], typer.Argument(help="Apply URL or job dedup_key / row index")] = None,
+    job: Annotated[Optional[str], typer.Option("--job", "-j", help="Job dedup_key or row index in DuckDB")] = None,
+    pdf: Annotated[Optional[Path], typer.Option("--pdf", "-p", help="Path to resume PDF file")] = None,
+    cover: Annotated[Optional[Path], typer.Option("--cover", "-c", help="Path to cover letter file")] = None,
+    copy: Annotated[bool, typer.Option("--copy", help="Copy prefill text to system clipboard")] = False,
+    open_browser: Annotated[bool, typer.Option("--open", "-o", help="Open apply URL in default browser")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Generate ATS application form prefill mappings for Greenhouse, Ashby, Lever, or generic jobs."""
+    import json
+    from cockpit import prefill as prefill_mod
+
+    apply_url, resume_file, cover_file = _resolve_apply_target(target or job, pdf, cover)
 
     if not apply_url:
         console.print("[bold red]Error:[/bold red] Please provide an apply URL or job identifier: `cockpit prefill <url>` or `--job <key>`")
@@ -1830,6 +1836,64 @@ def prefill_cmd(
 
     if open_browser:
         macos.open_url(prefill_url)
+
+
+@app.command("autofill")
+def autofill_cmd(
+    target: Annotated[Optional[str], typer.Argument(help="Apply URL or job dedup_key / row index")] = None,
+    pdf: Annotated[Optional[Path], typer.Option("--pdf", "-p", help="Resume PDF to upload")] = None,
+    cover: Annotated[Optional[Path], typer.Option("--cover", "-c", help="Cover letter file (.md/.txt text or .pdf)")] = None,
+    headless: Annotated[bool, typer.Option("--headless", hidden=True)] = False,
+) -> None:
+    """Open one application form in a separate browser and fill it. Never submits; you review and submit."""
+    import threading
+
+    from cockpit import autofill as autofill_mod
+    from cockpit import prefill as prefill_mod
+
+    apply_url, resume_file, cover_file = _resolve_apply_target(target, pdf, cover)
+    if not apply_url:
+        console.print("[bold red]Error:[/bold red] Please provide an apply URL or job identifier: `cockpit autofill <url|key>`")
+        raise typer.Exit(1)
+
+    # 1. A cover file is either a PDF to upload or text to paste.
+    cover_pdf, cover_text = None, None
+    if cover_file:
+        if cover_file.suffix.lower() == ".pdf":
+            cover_pdf = cover_file
+        else:
+            cover_text = cover_file.read_text("utf-8")
+
+    # 2. Profile and answers, same locations the TUI uses.
+    profile = prefill_mod.read_candidate_profile(REPO_ROOT)
+    answers = autofill_mod.load_answers(REPO_ROOT / "config" / "career_ops" / "config" / "answers.yml")
+
+    # 3. One job, then wait: closing the worker closes the browser, so hold it open for the review.
+    from cockpit.tui import AUTOFILL_PROFILE_DIR
+
+    AUTOFILL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    worker = autofill_mod.AutofillWorker(AUTOFILL_PROFILE_DIR, headless=headless)
+    done = threading.Event()
+    reports: list = []
+    worker.submit(apply_url, profile, resume_file, cover_pdf, cover_text, answers,
+                  lambda r: (reports.append(r), done.set()))
+    try:
+        done.wait()
+        report = reports[0]
+        console.print(report.summary())
+        for label, items in (("Filled", report.filled), ("Needs you", report.needs_you)):
+            console.print(f"[bold]{label}:[/bold]")
+            for item in items:
+                console.print(f"  - {item}")
+        console.print("[bold]Rules fired:[/bold]")
+        for question, answer in report.rules_fired:
+            console.print(f"  - {question} -> {answer}")
+        console.print(f"Resume: {report.resume or 'none'}")
+        console.print(f"Cover letter: {report.cover or 'none'}")
+        console.print("Review and submit in the browser. Press Enter here to close it.")
+        input()
+    finally:
+        worker.close()
 
 
 @app.command("verify-ats")

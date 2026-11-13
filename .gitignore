@@ -34,6 +34,7 @@ config/scoring_rules.local.toml
 config/career_ops/cv.md
 config/career_ops/config/profile.yml
 config/career_ops/config/cv-facts.json
+config/career_ops/config/answers.yml
 config/career_ops/modes/_profile.md
 config/career_ops/modes/_custom.md
 config/career_ops/modes/_brief.md
