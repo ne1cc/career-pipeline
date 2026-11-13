@@ -534,8 +534,9 @@ def ingest(
     days: Annotated[Optional[int], typer.Option("--days", help="Bulk ingest CSVs from results directories across the last N days (default for bulk: 5)")] = None,
     date: Annotated[Optional[str], typer.Option("--date", "-d", help="Ingest from specific date directory under results/ (e.g. '10/27', '2026_10_27', '2026-10-27')")] = None,
     sheet: Annotated[Optional[str], typer.Option(help="Specific sheet name for Excel files, or 'all' for all raw sheets (default: 'Action Items' if present)")] = None,
+    status: Annotated[bool, typer.Option("--status", "-S", help="Show most recently ingested suite and full ingest log")] = False,
 ) -> None:
-    """Dedupe, score and upsert scraped jobs into DuckDB."""
+    """Dedupe, score and upsert scraped jobs into DuckDB (or pass 'status' / --status)."""
     import pandas as pd
     from rich.progress import (
         BarColumn,
@@ -548,6 +549,12 @@ def ingest(
         TimeRemainingColumn,
     )
     from cockpit import intel as intel_module
+    from cockpit import pipeline_monitor
+
+    if status or (inputs and len(inputs) == 1 and str(inputs[0]) == "status" and not inputs[0].exists()):
+        summary = pipeline_monitor.get_ingest_summary(REPO_ROOT, db_path=db.DB_PATH)
+        console.print(pipeline_monitor.render_ingest_dashboard(summary))
+        return
 
     paths = _expand_inputs(
         inputs,
@@ -580,9 +587,12 @@ def ingest(
     ) as progress:
         load_task = progress.add_task(f"[cyan]Loading input files from {source_label}...", total=len(paths))
         loaded_frames = []
+        file_row_counts: dict[Path, int] = {}
         for p in paths:
             progress.update(load_task, description=f"[cyan]Loading {p.name}...")
-            loaded_frames.append(_load_input_frame(p, sheet=sheet))
+            df_i = _load_input_frame(p, sheet=sheet)
+            file_row_counts[p] = len(df_i)
+            loaded_frames.append(df_i)
             progress.advance(load_task)
         frame = pd.concat(loaded_frames, ignore_index=True)
         progress.update(load_task, description=f"[green]✔ Loaded {len(paths)} file(s) ({len(frame):,} rows) from {source_label}")
@@ -596,14 +606,19 @@ def ingest(
             stats = db.upsert_jobspy_frame(con, frame, progress_callback=on_score_progress)
             progress.update(score_task, completed=len(frame), description="[green]✔ Scored and deduped postings")
 
-            # Record successfully ingested files into ingest_manifest
+            # Record successfully ingested files into ingest_manifest and ingest_history
+            recorded_files = []
+            suite_dates = []
             for p in paths:
                 try:
                     rel = str(p.relative_to(REPO_ROOT)) if p.is_relative_to(REPO_ROOT) else str(p.resolve())
                     date_val = p.parent.name if re.match(r"^\d{4}_\d{2}_\d{2}$", p.parent.name) else datetime.now().strftime("%Y_%m_%d")
                     size = p.stat().st_size if p.exists() else 0
                     mtime = p.stat().st_mtime if p.exists() else 0.0
-                    db.record_ingested_file(con, rel, date_val, file_size=size, mtime_epoch=mtime, row_count=len(frame))
+                    rows_i = file_row_counts.get(p, 0)
+                    db.record_ingested_file(con, rel, date_val, file_size=size, mtime_epoch=mtime, row_count=rows_i)
+                    recorded_files.append({"name": p.name, "path": rel, "size": size, "rows": rows_i})
+                    suite_dates.append(date_val)
                 except Exception:
                     pass
 
@@ -611,6 +626,21 @@ def ingest(
             expired = db.expire_stale_referral_holds(con)
             intel_module.reconcile_saved_jobs(con)
             progress.update(db_task, description="[green]✔ Reconciled holds and saved jobs", completed=1, total=1)
+
+    pipeline_monitor.record_ingest_run(
+        REPO_ROOT,
+        {
+            "ingested_at": datetime.now().isoformat(),
+            "date_str": suite_dates[-1] if suite_dates else datetime.now().strftime("%Y_%m_%d"),
+            "source_label": str(source_label),
+            "files": recorded_files,
+            "seen": int(stats.get("seen", 0)),
+            "inserted": int(stats.get("inserted", 0)),
+            "duplicates": int(stats.get("duplicates", 0)),
+            "invalid": int(stats.get("invalid", 0)),
+            "stale_holds_flagged": int(expired),
+        },
+    )
 
     console.print(
         f"[bold green]✔ Ingest complete:[/bold green] [cyan]{len(paths)} file(s)[/cyan] from [yellow]{source_label}[/yellow] "

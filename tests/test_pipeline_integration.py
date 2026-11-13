@@ -305,3 +305,49 @@ def test_main_records_failed_outcome(monkeypatch, tmp_path, failure):
     assert state["finished_at"]
     if failure in {"ingest", "partial"}:
         assert ingested == [True]
+
+
+def test_ingest_status_records_and_renders_suites(tmp_path, monkeypatch):
+    from rich.console import Console
+    from typer.testing import CliRunner
+    from cockpit import cli, db, pipeline_monitor
+
+    db_path = tmp_path / "funnel.duckdb"
+    with db.session(db_path):
+        pass
+
+    results_dir = tmp_path / "jobspy" / "scraped jobs" / "results" / "2026_11" / "2026_11_13"
+    results_dir.mkdir(parents=True)
+    csv1 = results_dir / "campus_early_career_jobs.csv"
+    csv1.write_text(
+        "job_url,title,company,location,date_posted,description\n"
+        "https://example.com/1,New Grad Software Engineer,Acme,Seattle WA,2026-11-13,Python SQL\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+
+    runner = CliRunner()
+    res_ingest = runner.invoke(cli.app, ["ingest", str(csv1)])
+    assert res_ingest.exit_code == 0, res_ingest.stdout
+
+    summary = pipeline_monitor.get_ingest_summary(tmp_path, db_path=db_path)
+    assert summary["latest"] is not None
+    assert summary["latest"]["inserted"] == 1
+    assert summary["latest"]["seen"] == 1
+    assert summary["latest"]["files"][0]["name"] == "campus_early_career_jobs.csv"
+    assert summary["latest"]["files"][0]["rows"] == 1
+
+    res_status = runner.invoke(cli.app, ["ingest", "status"])
+    assert res_status.exit_code == 0, res_status.stdout
+    assert "Most Recently Ingested Suite" in res_status.stdout
+    assert "campus_early_career_jobs.csv" in res_status.stdout
+    assert "Ingest Log (1 suite(s))" in res_status.stdout
+
+    # Also verify render_pipeline_dashboard includes the latest ingest suite panel
+    console = Console(record=True, width=120)
+    console.print(pipeline_monitor.render_pipeline_dashboard({"tasks": {}}, is_live=False, ingest_summary=summary))
+    rendered = console.export_text()
+    assert "Latest Ingest Suite" in rendered
+    assert "campus_early_career_jobs.csv" in rendered

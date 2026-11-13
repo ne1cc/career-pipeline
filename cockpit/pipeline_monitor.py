@@ -22,6 +22,8 @@ EXPECTED_OUTPUTS: dict[str, str] = {
     "search_jobs_msba_west.py": "west_coast_msba_jobs.csv",
     "search_jobs_ats.py": "ats_direct_jobs.csv",
     "search_jobs_portals.py": "tech_portals_jobs.csv",
+    "search_jobs_campus.py": "campus_early_career_jobs.csv",
+    "search_jobs_internships.py": "internship_jobs.csv",
 }
 
 SCRAPER_NAMES: list[str] = list(EXPECTED_OUTPUTS.keys())
@@ -74,6 +76,105 @@ def save_yield_history(repo_root: Path, history: dict[str, Any]) -> None:
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps(history, indent=2), encoding="utf-8")
     tmp.replace(f)
+
+
+def get_ingest_history_file(repo_root: Path) -> Path:
+    return repo_root / ".pipeline_state" / "ingest_history.json"
+
+
+def load_ingest_history(repo_root: Path) -> list[dict[str, Any]]:
+    """Return recorded ingest runs ordered newest-first."""
+    path = get_ingest_history_file(repo_root)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        runs = data.get("runs", [])
+        return runs if isinstance(runs, list) else []
+    except Exception:
+        return []
+
+
+def record_ingest_run(repo_root: Path, run: dict[str, Any], max_runs: int = 50) -> None:
+    """Append an ingest run summary to .pipeline_state/ingest_history.json."""
+    runs = load_ingest_history(repo_root)
+    runs.insert(0, run)
+    path = get_ingest_history_file(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"runs": runs[:max_runs]}, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_manifest_suites(db_path: Path) -> list[dict[str, Any]]:
+    """Read per-date ingest suites from DuckDB ingest_manifest (read-only)."""
+    if not db_path.exists():
+        return []
+    try:
+        import duckdb
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        try:
+            rows = con.execute(
+                """
+                SELECT file_path, date_str, file_size, row_count, ingested_at
+                FROM ingest_manifest
+                ORDER BY ingested_at DESC, file_path ASC
+                """
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for file_path, date_str, file_size, row_count, ingested_at in rows:
+        key = str(date_str or "unknown")
+        ts = ingested_at.isoformat() if hasattr(ingested_at, "isoformat") else str(ingested_at or "")
+        entry = grouped.setdefault(
+            key,
+            {
+                "date_str": key,
+                "ingested_at": ts,
+                "source_label": key,
+                "files": [],
+                "seen": None,
+                "inserted": None,
+                "duplicates": None,
+                "invalid": None,
+                "from_manifest": True,
+            },
+        )
+        if ts > entry["ingested_at"]:
+            entry["ingested_at"] = ts
+        entry["files"].append(
+            {
+                "name": Path(str(file_path)).name,
+                "path": str(file_path),
+                "size": int(file_size or 0),
+                "rows": int(row_count or 0),
+            }
+        )
+    return sorted(grouped.values(), key=lambda r: r["ingested_at"], reverse=True)
+
+
+def get_ingest_summary(repo_root: Path, db_path: Path | None = None) -> dict[str, Any]:
+    """Combine live ingest_history.json runs with DuckDB ingest_manifest suites."""
+    runs = load_ingest_history(repo_root)
+    resolved_db = db_path if db_path is not None else (repo_root / "data" / "job_funnel.duckdb")
+    manifest_suites = _load_manifest_suites(resolved_db)
+
+    seen_dates = {r.get("date_str") for r in runs if r.get("date_str")}
+    combined = list(runs)
+    for suite in manifest_suites:
+        if suite["date_str"] not in seen_dates:
+            combined.append(suite)
+
+    combined.sort(key=lambda r: str(r.get("ingested_at") or ""), reverse=True)
+    return {
+        "latest": combined[0] if combined else None,
+        "history": combined,
+    }
 
 
 def extract_site_counts(results_dir: Path) -> dict[str, int]:
@@ -480,7 +581,110 @@ def render_phase_pipeline(current_phase: str, is_active: bool):
     return res
 
 
-def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True):
+def render_ingest_dashboard(summary: dict[str, Any]):
+    """Render Rich panels for the most recently ingested suite and full ingest log."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    latest = summary.get("latest")
+    history = summary.get("history", [])
+    layout = Table.grid(padding=1, expand=True)
+
+    if not latest:
+        layout.add_row(
+            Panel(
+                Text("No ingest runs recorded yet. Run 'cockpit ingest' to ingest scraped CSVs.", style="dim"),
+                title="[bold cyan]📥 Ingest Status[/bold cyan]",
+                border_style="cyan",
+            )
+        )
+        return layout
+
+    ts = str(latest.get("ingested_at") or "—")[:19].replace("T", " ")
+    suite_label = str(latest.get("source_label") or latest.get("date_str") or "—")
+    files = latest.get("files") or []
+    seen = latest.get("seen")
+    inserted = latest.get("inserted")
+    dupes = latest.get("duplicates")
+    invalid = latest.get("invalid")
+
+    header_bits = [
+        ("Latest Suite: ", "bold"),
+        (suite_label, "cyan"),
+        ("  |  Ingested: ", "bold bright_black"),
+        (ts, "bright_white"),
+        ("  |  Files: ", "bold bright_black"),
+        (str(len(files)), "bright_cyan"),
+    ]
+    if inserted is not None:
+        header_bits.extend(
+            [
+                ("  |  Added: ", "bold bright_black"),
+                (f"{inserted:,}", "bold bright_green"),
+                ("  |  Seen: ", "bold bright_black"),
+                (f"{seen:,}" if seen is not None else "—", "white"),
+                ("  |  Dupes: ", "bold bright_black"),
+                (f"{dupes:,}" if dupes is not None else "—", "dim"),
+                ("  |  Invalid: ", "bold bright_black"),
+                (f"{invalid:,}" if invalid is not None else "—", "yellow" if invalid else "dim"),
+            ]
+        )
+
+    files_table = Table(box=None, header_style="bold bright_white", expand=True)
+    files_table.add_column("File", style="cyan", no_wrap=True)
+    files_table.add_column("Rows", justify="right", style="bright_green", no_wrap=True)
+    files_table.add_column("Size", justify="right", style="white", no_wrap=True)
+    files_table.add_column("Path", style="dim", ratio=1)
+
+    is_manifest_only = bool(latest.get("from_manifest"))
+    for f in files:
+        rows_val = f.get("rows")
+        rows_str = "—" if (is_manifest_only and rows_val is not None) else (f"{rows_val:,}" if rows_val is not None else "—")
+        files_table.add_row(
+            str(f.get("name") or "—"),
+            rows_str,
+            format_bytes(f.get("size")),
+            str(f.get("path") or "—"),
+        )
+
+    latest_grid = Table.grid(padding=(0, 1), expand=True)
+    latest_grid.add_row(Text.assemble(*header_bits))
+    latest_grid.add_row(files_table)
+    layout.add_row(Panel(latest_grid, title="[bold cyan]📥 Most Recently Ingested Suite[/bold cyan]", border_style="cyan"))
+
+    log_table = Table(box=None, header_style="bold bright_white", expand=True)
+    log_table.add_column("Ingested At", style="bright_white", no_wrap=True)
+    log_table.add_column("Suite / Date", style="cyan", no_wrap=True)
+    log_table.add_column("Files", justify="right", style="bright_cyan", no_wrap=True)
+    log_table.add_column("Seen", justify="right", no_wrap=True)
+    log_table.add_column("Added", justify="right", style="bold bright_green", no_wrap=True)
+    log_table.add_column("Dupes", justify="right", style="dim", no_wrap=True)
+    log_table.add_column("Invalid", justify="right", style="dim", no_wrap=True)
+
+    for entry in history[:15]:
+        entry_ts = str(entry.get("ingested_at") or "—")[:19].replace("T", " ")
+        entry_suite = str(entry.get("date_str") or entry.get("source_label") or "—")
+        entry_files = len(entry.get("files") or [])
+        s_val = entry.get("seen")
+        i_val = entry.get("inserted")
+        d_val = entry.get("duplicates")
+        inv_val = entry.get("invalid")
+        log_table.add_row(
+            entry_ts,
+            entry_suite,
+            str(entry_files),
+            f"{s_val:,}" if s_val is not None else "—",
+            f"{i_val:,}" if i_val is not None else "—",
+            f"{d_val:,}" if d_val is not None else "—",
+            f"{inv_val:,}" if inv_val is not None else "—",
+        )
+
+    layout.add_row(Panel(log_table, title=f"[bold]Ingest Log ({len(history)} suite(s))[/bold]", border_style="bright_black"))
+    return layout
+
+
+def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True, ingest_summary: dict[str, Any] | None = None):
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
@@ -605,7 +809,36 @@ def render_pipeline_dashboard(state: dict[str, Any], is_live: bool = True):
 
     layout_table.add_row(Panel(header_table, title="[bold cyan]🚀 Career Pipeline Monitor[/bold cyan]", border_style="cyan"))
     layout_table.add_row(Panel(pipeline_badges, title="[bold]Pipeline Phase Tracker[/bold]", border_style="bright_black"))
-    layout_table.add_row(Panel(table, title="[bold]Parallel Scraper Tasks (8)[/bold]", border_style="bright_black"))
+    layout_table.add_row(Panel(table, title=f"[bold]Parallel Scraper Tasks ({len(SCRAPER_NAMES)})[/bold]", border_style="bright_black"))
+    if ingest_summary and ingest_summary.get("latest"):
+        latest = ingest_summary["latest"]
+        ing_ts = str(latest.get("ingested_at") or "—")[:19].replace("T", " ")
+        ing_suite = str(latest.get("source_label") or latest.get("date_str") or "—")
+        ing_files = latest.get("files") or []
+        ing_added = latest.get("inserted")
+        ing_seen = latest.get("seen")
+        ing_parts = [
+            ("Suite: ", "bold"),
+            (ing_suite, "cyan"),
+            ("  |  When: ", "bold bright_black"),
+            (ing_ts, "bright_white"),
+            ("  |  Files: ", "bold bright_black"),
+            (str(len(ing_files)), "bright_cyan"),
+        ]
+        if ing_added is not None:
+            ing_parts.extend(
+                [
+                    ("  |  Added: ", "bold bright_black"),
+                    (f"{ing_added:,}", "bold bright_green"),
+                    (" / ", "dim"),
+                    (f"{ing_seen:,} seen" if ing_seen is not None else "—", "dim"),
+                ]
+            )
+        file_names = ", ".join(str(f.get("name")) for f in ing_files[:6])
+        if len(ing_files) > 6:
+            file_names += f", +{len(ing_files) - 6} more"
+        ing_text = Text.assemble(*ing_parts, ("\nFiles: ", "bold bright_black"), (file_names or "—", "dim"))
+        layout_table.add_row(Panel(ing_text, title="[bold]Latest Ingest Suite (run 'cockpit ingest status' for full log)[/bold]", border_style="bright_black"))
     layout_table.add_row(footer)
 
     return layout_table
@@ -693,14 +926,16 @@ def monitor_loop(repo_root: Path, once: bool = False, refresh_interval: float = 
 
     if once:
         state = get_pipeline_state(repo_root)
-        console.print(render_pipeline_dashboard(state, is_live=False))
+        ingest_summary = get_ingest_summary(repo_root)
+        console.print(render_pipeline_dashboard(state, is_live=False, ingest_summary=ingest_summary))
         return
 
     try:
         with Live(console=console, refresh_per_second=int(1.0 / refresh_interval) or 1, screen=False) as live:
             while True:
                 state = get_pipeline_state(repo_root)
-                live.update(render_pipeline_dashboard(state, is_live=True))
+                ingest_summary = get_ingest_summary(repo_root)
+                live.update(render_pipeline_dashboard(state, is_live=True, ingest_summary=ingest_summary))
                 if not state.get("is_active"):
                     # Pipeline completed or failed
                     time.sleep(refresh_interval)
