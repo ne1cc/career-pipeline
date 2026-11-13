@@ -106,11 +106,13 @@ def group_titles(
     explore: str = DEFAULT_EXPLORE,
     batch_size: int = BATCH_SIZE,
     on_batch: Callable[[int, int], None] | None = None,
+    stop: Any = None,
 ) -> list[RoleGroup]:
     """Group cleaned titles into roles with exact counts, largest first.
 
     Contract: sum(g.count) == sum(counts.values()). Titles the model skips or a batch that
-    errors land in the "Unsorted" role instead of disappearing.
+    errors land in the "Unsorted" role instead of disappearing. `stop` (anything with
+    is_set(), e.g. threading.Event) skips batches not yet sent; the caller discards the result.
     """
     # 1. Most common titles first, so the first batch covers most jobs.
     titles = [t for t, _ in counts.most_common()]
@@ -121,6 +123,8 @@ def group_titles(
 
     def run(batch: list[str]) -> dict[int, tuple[str, str]]:
         nonlocal done
+        if stop is not None and stop.is_set():
+            return {}
         listing = "\n".join(f"{i}. {t}" for i, t in enumerate(batch, 1))
         try:
             result = parse_groups(generate(system, listing), len(batch))

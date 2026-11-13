@@ -918,9 +918,70 @@ def rebuild_index(con: Any, export_dir: Path = DEFAULT_EXPORT_DIR) -> None:
     (export_dir / "index.md").write_text("\n".join(lines) + "\n", "utf-8")
 
 
+class Cancelled(Exception):
+    """Raised inside an LLM call whose CancelScope was cancelled."""
+
+
+class CancelScope:
+    """Kill switch for a group of CLI LLM calls running on worker threads.
+
+    Contract: cancel() kills every CLI process started through run() and makes later run()
+    calls raise Cancelled at once, so a cancelled job stops spending quota.
+    Limits: only the CLI providers (claude-cli, agy) are killable; others just stop early
+    between calls.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._procs: set[subprocess.Popen[str]] = set()
+        self._lock = threading.Lock()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def is_set(self) -> bool:  # Event-like, so it can be passed as a plain stop flag
+        return self._event.is_set()
+
+    def cancel(self) -> None:
+        self._event.set()
+        with self._lock:
+            procs = list(self._procs)
+        for p in procs:
+            try:
+                p.kill()
+            except OSError:
+                pass
+
+    def run(self, cmd: list[str], input: str | None = None, **kw: Any) -> subprocess.CompletedProcess[str]:
+        if self.cancelled:
+            raise Cancelled
+        stdin = subprocess.PIPE if input is not None else kw.pop("stdin", None)
+        proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
+        with self._lock:
+            self._procs.add(proc)
+        try:
+            if self.cancelled:  # cancelled between the check above and registration
+                proc.kill()
+            out, err = proc.communicate(input)
+        finally:
+            with self._lock:
+                self._procs.discard(proc)
+        if self.cancelled:
+            raise Cancelled
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _run_cli(cmd: list[str], cancel: CancelScope | None, **kw: Any) -> subprocess.CompletedProcess[str]:
+    if cancel is not None:
+        return cancel.run(cmd, **kw)
+    return subprocess.run(cmd, text=True, capture_output=True, check=False, **kw)
+
+
 def create_claude_cli_client(
     model_name: str = "sonnet",
     binary_path: str = "/opt/homebrew/bin/claude",
+    cancel: CancelScope | None = None,
 ) -> Callable[[str, str], str]:
     """Client for local Claude CLI (claude -p) using authenticated Claude Pro account."""
     bin_p = Path(binary_path)
@@ -956,13 +1017,7 @@ def create_claude_cli_client(
         delay = 2.0
         for attempt in range(retries):
             try:
-                proc = subprocess.run(
-                    cmd,
-                    input=user_content,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
+                proc = _run_cli(cmd, cancel, input=user_content)
                 if proc.returncode == 0:
                     return proc.stdout or ""
                 err = proc.stderr.strip() or proc.stdout.strip()
@@ -971,6 +1026,8 @@ def create_claude_cli_client(
                     delay *= 2.0
                     continue
                 raise RuntimeError(f"Claude CLI error (exit {proc.returncode}): {err}")
+            except Cancelled:
+                raise
             except Exception:
                 if attempt >= retries - 1:
                     raise
@@ -986,6 +1043,7 @@ def create_agy_client(
     binary_path: str = "/opt/homebrew/bin/agy",
     timeout: str = "20m",
     task: str | None = None,
+    cancel: CancelScope | None = None,
 ) -> Callable[[str, str], str]:
     """Client for the Antigravity CLI (`agy -p`) under the user's own Antigravity account.
 
@@ -1022,7 +1080,7 @@ def create_agy_client(
             with tempfile.TemporaryDirectory(prefix="cockpit-agy-") as cwd:
                 (Path(cwd) / "context.md").write_text(system_prompt, "utf-8")
                 (Path(cwd) / "job.md").write_text(user_content, "utf-8")
-                proc = subprocess.run(cmd, text=True, capture_output=True, check=False, stdin=subprocess.DEVNULL, cwd=cwd)
+                proc = _run_cli(cmd, cancel, stdin=subprocess.DEVNULL, cwd=cwd)
             if proc.returncode == 0 and proc.stdout.strip():
                 return proc.stdout
             err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}, no output"
@@ -1094,6 +1152,8 @@ def fallback_chain(
                 if out and out.strip():
                     return out
                 err = IntelUnavailable(f"{label} returned an empty reply")
+            except Cancelled:
+                raise
             except Exception as e:  # noqa: BLE001 - any provider failure triggers the fallback
                 err = e
             with lock:
@@ -1111,8 +1171,11 @@ def create_llm_client(
     provider: str | None = None,
     model_name: str | None = None,
     agy_task: str | None = None,
+    cancel: CancelScope | None = None,
 ) -> Callable[[str, str], str]:
     """Factory returning the configured LLM callable.
+
+    `cancel` lets a caller kill in-flight claude-cli / agy calls (see CancelScope).
 
     `agy_task` replaces agy's built-in dossier instruction for non-dossier uses (title grouping);
     the other providers take instructions from the system prompt alone.
@@ -1131,11 +1194,11 @@ def create_llm_client(
     prov = (prov or "claude-cli").lower()
 
     if prov in AGY_PROVIDERS:
-        return create_agy_client(model_name=model_name or AGY_DEFAULT_MODEL, task=agy_task)
+        return create_agy_client(model_name=model_name or AGY_DEFAULT_MODEL, task=agy_task, cancel=cancel)
     if prov in CLAUDE_PROVIDERS:
         mod = model_name or "sonnet"
         try:
-            return create_claude_cli_client(model_name=mod)
+            return create_claude_cli_client(model_name=mod, cancel=cancel)
         except IntelUnavailable:
             if provider is None and macos.gemini_api_key():
                 return create_gemini_client(model_name="gemini-3.5-flash-lite")

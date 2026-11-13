@@ -143,7 +143,7 @@ def test_titles_generator_uses_agy_hydrogen_then_claude(db_path, tmp_path, monke
 
     made = []
 
-    def fake_create(provider=None, model_name=None, agy_task=None):
+    def fake_create(provider=None, model_name=None, agy_task=None, cancel=None):
         made.append((provider, model_name))
         return lambda s, u: f"{provider}:{model_name}"
 
@@ -151,3 +151,81 @@ def test_titles_generator_uses_agy_hydrogen_then_claude(db_path, tmp_path, monke
     app = _app(db_path, tmp_path)
     assert app._titles_generator()("s", "u") == "agy:gemini-4-hydrogen-medium"
     assert made == [("agy", "gemini-4-hydrogen-medium"), ("claude-cli", "sonnet")]
+
+
+def test_cancel_scope_kills_running_cli_and_blocks_new_calls():
+    import threading
+    import time
+
+    import pytest
+
+    from cockpit import intel
+
+    scope, result = intel.CancelScope(), {}
+
+    def call():
+        try:
+            scope.run(["sleep", "30"])
+        except intel.Cancelled:
+            result["cancelled"] = True
+
+    t = threading.Thread(target=call)
+    start = time.monotonic()
+    t.start()
+    time.sleep(0.3)
+    scope.cancel()
+    t.join(5)
+    assert result == {"cancelled": True} and time.monotonic() - start < 5
+    with pytest.raises(intel.Cancelled):
+        scope.run(["echo", "never"])
+
+
+def test_group_titles_stop_skips_unsent_batches():
+    import threading
+
+    stop, calls = threading.Event(), []
+
+    def gen(system, user):
+        calls.append(user)
+        stop.set()  # cancel during the first call
+        return ""
+
+    titles.MAX_WORKERS, saved = 1, titles.MAX_WORKERS
+    try:
+        titles.group_titles(Counter({f"t{i}": 1 for i in range(6)}), gen, batch_size=2, stop=stop)
+    finally:
+        titles.MAX_WORKERS = saved
+    assert len(calls) == 1
+
+
+def test_tui_escape_and_T_cancel_grouping(db_path, tmp_path):  # noqa: F811
+    import threading
+
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({"company": "Co", "title": "Data Engineer", "link": "https://e.com/1"}))
+    release = threading.Event()
+
+    def slow(system, user):
+        release.wait(5)
+        return "Data Engineer | target | 1"
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path, None, slow)
+        async with app.run_test() as pilot:
+            for cancel_key in ("escape", "T"):
+                await pilot.press("T")
+                await pilot.pause()
+                scope = app._titles_cancel
+                assert scope is not None
+                await pilot.press(cancel_key)
+                await pilot.pause()
+                assert scope.cancelled and app._titles_cancel is None
+                release.set()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+                assert not isinstance(app.screen, TitlesModal) and app._titles_cache is None
+                release.clear()
+            # Esc with nothing running is a no-op.
+            assert app.check_action("cancel_titles", ()) is False
+
+    asyncio.run(drive())
