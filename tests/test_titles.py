@@ -101,3 +101,49 @@ def test_tui_titles_view_drilldown_and_guard(db_path, tmp_path):  # noqa: F811
             assert "Data Engineer | target | 2" in prompts[-1][1]
 
     asyncio.run(drive())
+
+
+def test_fallback_chain_sticks_to_fallback_after_primary_fails():
+    from cockpit import intel
+
+    calls, switched = [], []
+
+    def agy(s, u):
+        calls.append("agy")
+        raise RuntimeError("agy down")
+
+    def claude(s, u):
+        calls.append("claude")
+        return "ok"
+
+    gen = intel.fallback_chain([("agy", agy), ("claude", claude)], lambda a, b, e: switched.append((a, b)))
+    assert gen("s", "u") == "ok" and gen("s", "u") == "ok"
+    assert calls == ["agy", "claude", "claude"]  # primary tried once, then skipped
+    assert switched == [("agy", "claude")]
+
+
+def test_fallback_chain_treats_blank_reply_as_failure_and_raises_when_all_fail():
+    from cockpit import intel
+
+    gen = intel.fallback_chain([("agy", lambda s, u: "  "), ("claude", lambda s, u: "Data Engineer | target | 1")])
+    assert gen("s", "u").startswith("Data Engineer")
+    dead = intel.fallback_chain([("only", lambda s, u: (_ for _ in ()).throw(RuntimeError("boom")))])
+    import pytest
+
+    with pytest.raises(RuntimeError, match="boom"):
+        dead("s", "u")
+
+
+def test_titles_generator_uses_agy_hydrogen_then_claude(db_path, tmp_path, monkeypatch):  # noqa: F811
+    from cockpit import intel
+
+    made = []
+
+    def fake_create(provider=None, model_name=None, agy_task=None):
+        made.append((provider, model_name))
+        return lambda s, u: f"{provider}:{model_name}"
+
+    monkeypatch.setattr(intel, "create_llm_client", fake_create)
+    app = _app(db_path, tmp_path)
+    assert app._titles_generator()("s", "u") == "agy:gemini-4-hydrogen-medium"
+    assert made == [("agy", "gemini-4-hydrogen-medium"), ("claude-cli", "sonnet")]

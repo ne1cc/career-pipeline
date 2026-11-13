@@ -134,5 +134,8 @@ model = "sonnet"
 # Tiers: target (apply now), stretch (target family but senior / 5+ yrs), explore (skills to learn), out.
 target = "Data Engineer, Analytics Engineer, Data Analyst, BI / Business Intelligence Analyst, Business Analyst, Backend / Software Engineer, Platform Engineer, at intern / new-grad / entry / I-II level"
 explore = "Data Scientist, Machine Learning / AI Engineer, Financial / Pricing Analyst, Product Manager / APM, Security Engineer: not qualified yet, worth watching for skills to learn"
-# Optional model override for grouping (defaults to the [intel] provider's default; e.g. "haiku" for claude-cli).
-# model = "haiku"
+# Grouping runs on Antigravity; if it errors or returns nothing, the rest of the run uses Claude.
+provider = "agy"
+model = "gemini-4-hydrogen-medium"
+fallback_provider = "claude-cli"
+fallback_model = "sonnet"

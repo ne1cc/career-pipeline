@@ -553,7 +553,26 @@ class JobCockpitApp(App[None]):
     def _titles_generator(self) -> Callable[[str, str], str]:
         if self.generate is not None:
             return self.generate
-        return intel.create_llm_client(model_name=self.rules.get("titles", {}).get("model"), agy_task=TITLES_AGY_TASK)
+        # 1. Primary ([titles] provider/model), then fallback; a provider that can't start is skipped.
+        cfg = self.rules.get("titles", {})
+        clients = []
+        for provider, model in (
+            (cfg.get("provider"), cfg.get("model")),
+            (cfg.get("fallback_provider"), cfg.get("fallback_model")),
+        ):
+            if provider is None and model is None and clients:
+                continue
+            try:
+                client = intel.create_llm_client(provider=provider, model_name=model, agy_task=TITLES_AGY_TASK)
+            except intel.IntelUnavailable:
+                continue
+            clients.append((f"{provider or 'default'} {model or ''}".strip(), client))
+
+        # 2. Sticky fallback: once the primary fails, the rest of the run uses the fallback.
+        def fell_back(old: str, new: str, err: Exception) -> None:
+            self.call_from_thread(self.notify, f"Titles: {old} failed ({err}); using {new}", severity="warning", timeout=8)
+
+        return intel.fallback_chain(clients, fell_back)
 
     def action_titles(self) -> None:
         """Open the role breakdown for the current view; reuses the last grouping if the view is unchanged."""

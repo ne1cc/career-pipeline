@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -1067,6 +1068,43 @@ def create_gemini_client(api_key: str | None = None, model_name: str = "gemini-3
         return ""
 
     return call_gemini
+
+
+def fallback_chain(
+    clients: list[tuple[str, Callable[[str, str], str]]],
+    on_fallback: Callable[[str, str, Exception], None] | None = None,
+) -> Callable[[str, str], str]:
+    """Generator that tries each (label, client) in order and sticks with the first that works.
+
+    Contract: an exception or blank reply moves to the next client for this and every later call,
+    so a broken primary costs one failure, not one per batch. Raises the last error when all fail.
+    """
+    if not clients:
+        raise IntelUnavailable("no LLM client configured")
+    lock = threading.Lock()
+    state = {"i": 0}
+
+    def generate(system: str, user: str) -> str:
+        err: Exception = IntelUnavailable("no LLM client configured")
+        i = state["i"]
+        while i < len(clients):
+            label, client = clients[i]
+            try:
+                out = client(system, user)
+                if out and out.strip():
+                    return out
+                err = IntelUnavailable(f"{label} returned an empty reply")
+            except Exception as e:  # noqa: BLE001 - any provider failure triggers the fallback
+                err = e
+            with lock:
+                if state["i"] == i and i + 1 < len(clients):
+                    state["i"] = i + 1
+                    if on_fallback:
+                        on_fallback(label, clients[i + 1][0], err)
+            i += 1
+        raise err
+
+    return generate
 
 
 def create_llm_client(
