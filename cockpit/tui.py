@@ -135,11 +135,11 @@ class TitlesModal(ModalScreen[Any]):
         tier_line = " · ".join(f"[{TIER_COLORS[t]}]{t} {totals[t]}[/]" for t in titles.TIERS)
         self.query_one("#titles-head", Static).update(
             f"[b]Roles in view[/b] {escape(self.view_label)}: {total} jobs, {len(self.groups)} roles   {tier_line}\n"
-            f"[dim]showing: {tier or 'all tiers'} · Enter: show these jobs · x: tier filter · a: ask AI · r: regroup · Esc: close[/dim]"
+            f"[dim]showing: {tier or 'all tiers'} · Enter: show these jobs (full table, same titles together) · x: tier filter · a: ask AI · r: regroup · Esc: close[/dim]"
         )
         table = self.query_one("#titles-table", DataTable)
         table.clear()
-        table.add_row("[b]All roles[/b] (clear role filter)", "", str(total), "100%", "", key="__all__")
+        table.add_row("[b]All roles[/b] (every job, sorted role → title)", "", str(total), "100%", "", key="__all__")
         for i, g in enumerate(shown):
             color = TIER_COLORS.get(g.tier, "dim")
             table.add_row(
@@ -286,6 +286,7 @@ class JobCockpitApp(App[None]):
         Binding("D", "filter_date", "Date"),
         Binding("R", "sync", "Sync mail"),
         Binding("T", "titles", "Titles"),
+        Binding("escape", "cancel_titles", "Cancel grouping", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -321,6 +322,8 @@ class JobCockpitApp(App[None]):
         self.title_role: titles.RoleGroup | None = None  # drill-down from the Titles view
         self._view_rows: list[dict[str, Any]] = []  # current view before the role filter
         self._titles_cache: tuple[tuple[Any, ...], list[titles.RoleGroup]] | None = None
+        self._title_roles: dict[str, str] = {}  # cleaned title -> role, from the last grouping
+        self._titles_cancel: intel.CancelScope | None = None  # set while a grouping runs
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -358,6 +361,14 @@ class JobCockpitApp(App[None]):
                     key=lambda r: (r.get("fit_score") is None, r.get("fit_score") or 0.0),
                     reverse=False,
                 )
+        elif col == "role":
+            # Titles view order: role A→Z, then title, then company, so identical titles sit together.
+            # Titles outside the last grouping sort under their own cleaned title.
+            def role_key(r: dict[str, Any]) -> tuple[str, str, str]:
+                t = titles.clean_title(r.get("title"))
+                return (self._title_roles.get(t, t).lower(), t, (r.get("company") or "").lower())
+
+            self.rows.sort(key=role_key, reverse=self.sort_reverse)
         elif col == "score":
             self.rows.sort(
                 key=lambda r: (r.get("priority_score") if r.get("priority_score") is not None else 0.0),
@@ -536,6 +547,8 @@ class JobCockpitApp(App[None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """App keys stay inert while a pop-up is open, so e.g. `s` in the Titles table never skips
         the job behind it. Pop-ups own their keys through their own BINDINGS."""
+        if action == "cancel_titles":
+            return self._titles_cancel is not None
         return len(self.screen_stack) == 1 or action == "quit"
 
     # ---- Titles view: AI role breakdown of the current view ----
@@ -550,46 +563,95 @@ class JobCockpitApp(App[None]):
                                             ("jd", self.jd_keywords), ("date", self.date_filter)) if v]
         return "[" + " | ".join(parts) + "]"
 
-    def _titles_generator(self) -> Callable[[str, str], str]:
+    def _titles_generator(self, cancel: intel.CancelScope | None = None) -> Callable[[str, str], str]:
         if self.generate is not None:
             return self.generate
-        return intel.create_llm_client(model_name=self.rules.get("titles", {}).get("model"), agy_task=TITLES_AGY_TASK)
+        # 1. Primary ([titles] provider/model), then fallback; a provider that can't start is skipped.
+        cfg = self.rules.get("titles", {})
+        clients = []
+        for provider, model in (
+            (cfg.get("provider"), cfg.get("model")),
+            (cfg.get("fallback_provider"), cfg.get("fallback_model")),
+        ):
+            if provider is None and model is None and clients:
+                continue
+            try:
+                client = intel.create_llm_client(
+                    provider=provider, model_name=model, agy_task=TITLES_AGY_TASK, cancel=cancel
+                )
+            except intel.IntelUnavailable:
+                continue
+            clients.append((f"{provider or 'default'} {model or ''}".strip(), client))
+
+        # 2. Sticky fallback: once the primary fails, the rest of the run uses the fallback.
+        def fell_back(old: str, new: str, err: Exception) -> None:
+            self.call_from_thread(self.notify, f"Titles: {old} failed ({err}); using {new}", severity="warning", timeout=8)
+
+        return intel.fallback_chain(clients, fell_back)
 
     def action_titles(self) -> None:
-        """Open the role breakdown for the current view; reuses the last grouping if the view is unchanged."""
+        """Open the role breakdown for the current view; reuses the last grouping if the view is unchanged.
+        Pressing T again while a grouping runs cancels it (same as Esc)."""
+        if self._titles_cancel is not None:
+            self.action_cancel_titles()
+            return
         if self._titles_cache and self._titles_cache[0] == self._view_signature():
             self._show_titles(*self._titles_cache)
             return
         if not self._view_rows:
             self.notify("No jobs in this view.", severity="warning")
             return
-        self.run_worker(self._titles_worker, thread=True, group="titles", exclusive=True, exit_on_error=False)
+        cancel = self._titles_cancel = intel.CancelScope()
+        self.run_worker(lambda: self._titles_worker(cancel), thread=True, group="titles", exclusive=True, exit_on_error=False)
 
-    def _titles_worker(self) -> None:
-        sig, rows = self._view_signature(), list(self._view_rows)
-        counts = titles.count_titles(rows)
-        batches = -(-len(counts) // titles.BATCH_SIZE)
-        self.call_from_thread(
-            self.notify, f"Grouping {len(counts)} distinct titles from {len(rows)} jobs ({batches} AI call(s))…", timeout=8
-        )
+    def action_cancel_titles(self) -> None:
+        """Esc / T while grouping: kill in-flight AI calls, skip the rest, show nothing."""
+        cancel, self._titles_cancel = self._titles_cancel, None
+        if cancel is not None:
+            cancel.cancel()
+            self.notify("Title grouping cancelled.", timeout=4)
+
+    def _titles_worker(self, cancel: intel.CancelScope) -> None:
         try:
-            gen = self._titles_generator()
-        except intel.IntelUnavailable as e:
-            self.call_from_thread(self.notify, f"No LLM available: {e}", severity="error")
-            return
-        cfg = self.rules.get("titles", {})
-        groups = titles.group_titles(
-            counts,
-            gen,
-            target=cfg.get("target", titles.DEFAULT_TARGET),
-            explore=cfg.get("explore", titles.DEFAULT_EXPLORE),
-            on_batch=lambda d, n: self.call_from_thread(self.notify, f"Titles: {d}/{n} AI call(s) done", timeout=4)
-            if n > 1 else None,
-        )
-        self.call_from_thread(self._show_titles, sig, groups)
+            sig, rows = self._view_signature(), list(self._view_rows)
+            counts = titles.count_titles(rows)
+            batches = -(-len(counts) // titles.BATCH_SIZE)
+            self.call_from_thread(
+                self.notify,
+                f"Grouping {len(counts)} distinct titles from {len(rows)} jobs ({batches} AI call(s))… Esc or T to cancel",
+                timeout=8,
+            )
+            try:
+                gen = self._titles_generator(cancel)
+            except intel.IntelUnavailable as e:
+                self.call_from_thread(self.notify, f"No LLM available: {e}", severity="error")
+                return
+            cfg = self.rules.get("titles", {})
+
+            def progress(d: int, n: int) -> None:
+                if n > 1 and not cancel.cancelled:
+                    self.call_from_thread(self.notify, f"Titles: {d}/{n} AI call(s) done", timeout=4)
+
+            groups = titles.group_titles(
+                counts,
+                gen,
+                target=cfg.get("target", titles.DEFAULT_TARGET),
+                explore=cfg.get("explore", titles.DEFAULT_EXPLORE),
+                on_batch=progress,
+                stop=cancel,
+            )
+            if not cancel.cancelled:
+                self.call_from_thread(self._show_titles, sig, groups)
+        finally:
+            self.call_from_thread(self._clear_titles_cancel, cancel)
+
+    def _clear_titles_cancel(self, cancel: intel.CancelScope) -> None:
+        if self._titles_cancel is cancel:
+            self._titles_cancel = None
 
     def _show_titles(self, sig: tuple[Any, ...], groups: list[titles.RoleGroup]) -> None:
         self._titles_cache = (sig, groups)
+        self._title_roles = {t: g.role for g in groups for t in g.titles}
         if len(self.screen_stack) > 1:
             self.notify("Titles ready: press T", timeout=6)
             return
@@ -597,6 +659,7 @@ class JobCockpitApp(App[None]):
         def done(result: Any) -> None:
             if result == "ALL":
                 self.title_role = None
+                self.sort_col, self.sort_reverse = "role", False
                 self._reload(0)
             elif result == "REGROUP":
                 self._titles_cache = None
@@ -605,6 +668,7 @@ class JobCockpitApp(App[None]):
                 self._ask_titles(groups)
             elif isinstance(result, titles.RoleGroup):
                 self.title_role = result
+                self.sort_col, self.sort_reverse = "role", False
                 self._reload(0)
 
         self.push_screen(TitlesModal(groups, self._view_label()), done)
