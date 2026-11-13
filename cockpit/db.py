@@ -195,7 +195,25 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
         "saved": one("SELECT count(*) FROM jobs_master WHERE is_saved"),
         "positive": one(f"SELECT count(DISTINCT dedup_key) FROM ({_positive_keys_sql()})"),
+        **dossier_counts(con),
     }
+
+
+def dossier_counts(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
+    """Count saved jobs whose dossier is in flight, split by first-time vs re-run.
+
+    Contract: returns dossiers_generating (running, never evaluated before), dossiers_regenerating
+    (running, a real evaluation already exists) and dossiers_pending (waiting for the intel worker).
+    Limits: "evaluated before" means fit_category holds a real category; it is only written by a
+    successful evaluation (stubs carry 'pending') and survives Re-eval, which clears just fit_score.
+    """
+    generating, regenerating, pending = con.execute(
+        """SELECT count(*) FILTER (WHERE intel_status = 'running' AND coalesce(fit_category, 'pending') = 'pending'),
+                  count(*) FILTER (WHERE intel_status = 'running' AND coalesce(fit_category, 'pending') <> 'pending'),
+                  count(*) FILTER (WHERE intel_status = 'pending')
+           FROM jobs_master WHERE is_saved"""
+    ).fetchone()
+    return {"dossiers_generating": generating, "dossiers_regenerating": regenerating, "dossiers_pending": pending}
 
 
 def tmux_line(board: dict[str, int]) -> str:

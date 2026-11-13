@@ -327,7 +327,8 @@ def test_parse_summary():
         intel.parse_summary("no summary block here")
 
 
-def test_load_context_reads_career_ops_in_place(career_ops):
+def test_load_context_reads_career_ops_in_place(career_ops, monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "claude-cli")  # hermetic vs. a local agy override
     ctx = intel.load_context(career_ops)
     assert ctx.model in ("sonnet", "gemini-3.5-flash-lite")
     assert intel.load_context(career_ops, provider="gemini").model == "gemini-3.5-flash-lite"
@@ -1627,7 +1628,7 @@ def test_action_rerun_intel_preserves_table_scroll_and_cursor(db_path, tmp_path)
             assert table.scroll_y == 15
 
             # Worker finish reload must also preserve scroll and cursor
-            app._on_intel_finished()
+            app._on_dossier_change()
             await pilot.pause()
             assert table.cursor_row == 25
             assert table.scroll_y == 15
@@ -1814,3 +1815,134 @@ def test_action_rerun_intel_preserves_jd_scroll(db_path, tmp_path):
 
 
 
+
+
+def test_dossier_counts_split_first_run_from_regeneration(db_path, career_ops, tmp_path):
+    ctx = intel.load_context(career_ops)
+    zero = {"dossiers_generating": 0, "dossiers_regenerating": 0, "dossiers_pending": 0}
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        key = _key(con)
+        assert db.dossier_counts(con) == zero
+        db.toggle_saved(con, key)
+        assert db.scoreboard(con)["dossiers_pending"] == 1
+
+    seen: list[dict[str, int]] = []
+
+    def snapshot() -> None:
+        with db.session(db_path) as con:
+            seen.append(db.dossier_counts(con))
+
+    intel.process_batch(db_path, ctx, FakeGemini(), tmp_path / "out", on_progress=snapshot)
+    # First evaluation ever: counted as generating, then nothing left once the batch ends.
+    assert seen == [{**zero, "dossiers_generating": 1}, zero]
+
+    # Re-eval (what the 'I' key does) of an already-evaluated job counts as regenerating.
+    with db.session(db_path) as con:
+        con.execute("UPDATE jobs_master SET intel_status = 'pending', fit_score = NULL WHERE dedup_key = ?", [key])
+    seen.clear()
+    intel.process_batch(db_path, ctx, FakeGemini(), tmp_path / "out", on_progress=snapshot)
+    assert seen == [{**zero, "dossiers_regenerating": 1}, zero]
+
+
+def test_title_bar_shows_dossier_counter(db_path, tmp_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            score = app.query_one("#score", Static)
+            text = str(score.content)
+            assert "Dossiers: idle" in text and text.index("q:none") < text.index("Dossiers")
+
+            # Simulate another process starting a first-time dossier; the poll must pick it up.
+            with db.session(db_path) as con:
+                con.execute("UPDATE jobs_master SET is_saved = TRUE, intel_status = 'running'")
+            app._poll_dossiers()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            text = str(score.content)
+            assert "1 generating" in text and "regenerating" not in text and "queued" not in text
+
+    asyncio.run(drive())
+
+
+def test_tui_worker_drains_more_than_one_batch(db_path, career_ops, tmp_path):
+    rows = [{"company": f"Co{i}", "job_url": f"https://l/{i}"} for i in range(7)]
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame(*rows))
+        con.execute("UPDATE jobs_master SET is_saved = TRUE, intel_status = 'pending'")
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path, career_ops, FakeGemini())
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert "Dossiers: idle" in str(app.query_one("#score", Static).content)
+
+    asyncio.run(drive())
+    with db.session(db_path) as con:
+        assert con.execute("SELECT count(*) FROM jobs_master WHERE intel_status = 'done'").fetchone()[0] == 7
+
+
+def test_unsaved_pending_job_shows_dash_not_ellipsis(db_path, tmp_path):
+    with db.session(db_path) as con:
+        db.upsert_jobspy_frame(con, frame({}))
+        key = _key(con)
+        db.toggle_saved(con, key)  # -> pending
+        db.toggle_saved(con, key)  # unsave; intel_status stays 'pending' and the worker will never claim it
+
+    async def drive() -> None:
+        app = _app(db_path, tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            fit = app.query_one(DataTable).get_row_at(0)[0]
+            assert (fit.plain if isinstance(fit, Text) else str(fit)) == "—"
+            assert "Dossiers: idle" in str(app.query_one("#score", Static).content)
+
+    asyncio.run(drive())
+
+
+def test_custom_prompt_file_replaces_oferta_but_keeps_output_contract(career_ops, tmp_path, monkeypatch):
+    monkeypatch.delenv("INTEL_PROMPT_FILE", raising=False)
+    mine = tmp_path / "my-dossier-prompt.md"
+    mine.write_text("MY COMPREHENSIVE JOB OVERVIEW PROMPT")
+    default = intel.load_context(career_ops, provider="agy")
+    custom = intel.load_context(career_ops, provider="agy", prompt_file=mine)
+    assert "MY COMPREHENSIVE JOB OVERVIEW PROMPT" in custom.prompt
+    assert "Full A-G Evaluation" not in custom.prompt  # oferta.md replaced, not appended
+    assert "# Alex Sun" in custom.prompt and "---SCORE_SUMMARY---" in custom.prompt
+    assert custom.hash != default.hash  # prompt edits invalidate cached dossiers
+    monkeypatch.setenv("INTEL_PROMPT_FILE", str(tmp_path / "typo.md"))
+    with pytest.raises(intel.IntelUnavailable):
+        intel.load_context(career_ops)
+
+
+def test_agy_provider_keeps_model_names_unprefixed(career_ops, monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    assert intel.load_context(career_ops, provider="agy").model == "gemini-4-argon-medium"
+    assert intel.load_context(career_ops, provider="agy", model="claude-opus-5-5-high").model == "claude-opus-5-5-high"
+
+
+def test_agy_client_hands_context_and_jd_over_as_files(tmp_path, monkeypatch):
+    fake_bin = tmp_path / "agy"
+    fake_bin.write_text("")
+    calls = []
+
+    seen = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        seen.append({f: (Path(kw["cwd"]) / f).read_text() for f in ("context.md", "job.md")})
+        return subprocess.CompletedProcess(cmd, 0, stdout=SUMMARY_OUTPUT, stderr="")
+
+    monkeypatch.setattr(intel.subprocess, "run", fake_run)
+    gen = intel.create_agy_client(model_name=intel.AGY_DEFAULT_MODEL, binary_path=str(fake_bin))
+    assert gen("SYSTEM RULES", "Senior Data Engineer JD") == SUMMARY_OUTPUT
+    assert seen[0] == {"context.md": "SYSTEM RULES", "job.md": "Senior Data Engineer JD"}
+    cmd = calls[0]
+    assert len(next(a for a in cmd if a.startswith("-p="))) < 45_000  # agy truncates long -p text
+    assert "--model" not in cmd and cmd[cmd.index("--mode") + 1] == "plan"
+    intel.create_agy_client(model_name="gemini-4-argon-high", binary_path=str(fake_bin))("s", "u")
+    assert calls[1][calls[1].index("--model") + 1] == "gemini-4-argon-high"
