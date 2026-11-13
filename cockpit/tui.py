@@ -13,10 +13,10 @@ from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Label, Static
+from textual.widgets import DataTable, Footer, Input, Label, Markdown, Static
 from textual.worker import Worker, WorkerState
 
-from cockpit import intel, macos
+from cockpit import intel, macos, titles
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
@@ -74,6 +74,119 @@ class NoteModal(ModalScreen[str | None]):
         self.dismiss(event.value)
 
     def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+TITLES_AGY_TASK = (
+    "Read ./context.md (your instructions) and ./job.md (the input data) in full, then reply exactly "
+    "as context.md instructs. Do not run commands, write files, or ask questions."
+)
+TIER_COLORS = {"target": "green", "stretch": "yellow", "explore": "cyan", "out": "dim", titles.UNSORTED: "dim"}
+
+
+class TitlesModal(ModalScreen[Any]):
+    """Role breakdown of the current view.
+
+    Contract: dismisses with a RoleGroup (show only its jobs), "ALL" (clear the role filter),
+    "ASK" (ask the AI about this breakdown), "REGROUP" (rerun the AI), or None (close).
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("x", "cycle_tier", "Tier filter"),
+        Binding("a", "ask", "Ask AI"),
+        Binding("r", "regroup", "Regroup"),
+        Binding("j", "down", "Down", show=False),
+        Binding("k", "up", "Up", show=False),
+    ]
+    DEFAULT_CSS = """
+    TitlesModal { align: center middle; }
+    #titles-box { width: 90%; height: 90%; border: round $accent; padding: 0 1; background: $surface; }
+    #titles-head { height: auto; padding: 0 0 1 0; }
+    #titles-table { height: 1fr; }
+    """
+
+    def __init__(self, groups: list[titles.RoleGroup], view_label: str) -> None:
+        super().__init__()
+        self.groups = groups
+        self.view_label = view_label
+        self.tier_idx = 0  # 0 = all tiers, else index into titles.TIERS + 1
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="titles-box"):
+            yield Static(id="titles-head")
+            yield DataTable(id="titles-table", cursor_type="row", zebra_stripes=True)
+
+    def on_mount(self) -> None:
+        table = self.query_one("#titles-table", DataTable)
+        table.add_column("Role", width=44, key="role")
+        table.add_column("Tier", width=9, key="tier")
+        table.add_column("Jobs", width=7, key="jobs")
+        table.add_column("%", width=6, key="pct")
+        table.add_column("Title variants", width=14, key="variants")
+        self._fill()
+        table.focus()
+
+    def _fill(self) -> None:
+        total = sum(g.count for g in self.groups) or 1
+        tier = None if self.tier_idx == 0 else titles.TIERS[self.tier_idx - 1]
+        shown = [g for g in self.groups if tier is None or g.tier == tier]
+        totals = titles.tier_totals(self.groups)
+        tier_line = " · ".join(f"[{TIER_COLORS[t]}]{t} {totals[t]}[/]" for t in titles.TIERS)
+        self.query_one("#titles-head", Static).update(
+            f"[b]Roles in view[/b] {escape(self.view_label)}: {total} jobs, {len(self.groups)} roles   {tier_line}\n"
+            f"[dim]showing: {tier or 'all tiers'} · Enter: show these jobs · x: tier filter · a: ask AI · r: regroup · Esc: close[/dim]"
+        )
+        table = self.query_one("#titles-table", DataTable)
+        table.clear()
+        table.add_row("[b]All roles[/b] (clear role filter)", "", str(total), "100%", "", key="__all__")
+        for i, g in enumerate(shown):
+            color = TIER_COLORS.get(g.tier, "dim")
+            table.add_row(
+                escape(g.role), f"[{color}]{g.tier}[/]", str(g.count), f"{100 * g.count / total:.1f}%", str(len(g.titles)), key=str(i)
+            )
+        self._shown = shown
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = event.row_key.value
+        self.dismiss("ALL" if key == "__all__" else self._shown[int(key)])
+
+    def action_cycle_tier(self) -> None:
+        self.tier_idx = (self.tier_idx + 1) % (len(titles.TIERS) + 1)
+        self._fill()
+
+    def action_down(self) -> None:
+        self.query_one("#titles-table", DataTable).action_cursor_down()
+
+    def action_up(self) -> None:
+        self.query_one("#titles-table", DataTable).action_cursor_up()
+
+    def action_ask(self) -> None:
+        self.dismiss("ASK")
+
+    def action_regroup(self) -> None:
+        self.dismiss("REGROUP")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class AnswerModal(ModalScreen[None]):
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close", show=False)]
+    DEFAULT_CSS = """
+    AnswerModal { align: center middle; }
+    #answer-box { width: 80%; height: 85%; border: round $accent; padding: 0 1; background: $surface; }
+    """
+
+    def __init__(self, question: str, answer: str) -> None:
+        super().__init__()
+        self.question, self.answer = question, answer
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="answer-box"):
+            yield Markdown(f"**Q:** {self.question}\n\n{self.answer}\n\n*Esc to close*")
+
+    def action_close(self) -> None:
         self.dismiss(None)
 
 
@@ -172,6 +285,7 @@ class JobCockpitApp(App[None]):
         Binding("slash", "location", "Location"),
         Binding("D", "filter_date", "Date"),
         Binding("R", "sync", "Sync mail"),
+        Binding("T", "titles", "Titles"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -204,6 +318,9 @@ class JobCockpitApp(App[None]):
         self._last_selected_key: str | None = None
         self._score_base = ""
         self._last_dossier_counts: dict[str, int] = {}
+        self.title_role: titles.RoleGroup | None = None  # drill-down from the Titles view
+        self._view_rows: list[dict[str, Any]] = []  # current view before the role filter
+        self._titles_cache: tuple[tuple[Any, ...], list[titles.RoleGroup]] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -310,6 +427,10 @@ class JobCockpitApp(App[None]):
                 date_filter=self.date_filter,
             )
             b = scoreboard(con)
+        self._view_rows = self.rows
+        if self.title_role is not None:
+            keep = self.title_role.titles
+            self.rows = [r for r in self.rows if titles.clean_title(r.get("title")) in keep]
         self._apply_sort()
         table = self.query_one(CockpitTable)
         saved_x = table.scroll_x
@@ -364,6 +485,7 @@ class JobCockpitApp(App[None]):
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
+        date_indicator += f" | role:{self.title_role.role} ({len(self.rows)})" if self.title_role else ""
         self._score_base = (
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
@@ -410,6 +532,108 @@ class JobCockpitApp(App[None]):
             return  # DB briefly locked by another process; try again next tick.
         if counts != self._last_dossier_counts:
             self.call_from_thread(self._on_dossier_change)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """App keys stay inert while a pop-up is open, so e.g. `s` in the Titles table never skips
+        the job behind it. Pop-ups own their keys through their own BINDINGS."""
+        return len(self.screen_stack) == 1 or action == "quit"
+
+    # ---- Titles view: AI role breakdown of the current view ----
+
+    def _view_signature(self) -> tuple[Any, ...]:
+        return (FILTERS[self.filter_idx], self.segment, self.loc_query, self.search_query,
+                self.jd_keywords, self.date_filter, len(self._view_rows))
+
+    def _view_label(self) -> str:
+        parts = [FILTERS[self.filter_idx] or "ALL", f"loc:{self.loc_query or 'any'}"]
+        parts += [f"{k}:{v}" for k, v in (("sheet", self.segment), ("q", self.search_query),
+                                            ("jd", self.jd_keywords), ("date", self.date_filter)) if v]
+        return "[" + " | ".join(parts) + "]"
+
+    def _titles_generator(self) -> Callable[[str, str], str]:
+        if self.generate is not None:
+            return self.generate
+        return intel.create_llm_client(model_name=self.rules.get("titles", {}).get("model"), agy_task=TITLES_AGY_TASK)
+
+    def action_titles(self) -> None:
+        """Open the role breakdown for the current view; reuses the last grouping if the view is unchanged."""
+        if self._titles_cache and self._titles_cache[0] == self._view_signature():
+            self._show_titles(*self._titles_cache)
+            return
+        if not self._view_rows:
+            self.notify("No jobs in this view.", severity="warning")
+            return
+        self.run_worker(self._titles_worker, thread=True, group="titles", exclusive=True, exit_on_error=False)
+
+    def _titles_worker(self) -> None:
+        sig, rows = self._view_signature(), list(self._view_rows)
+        counts = titles.count_titles(rows)
+        batches = -(-len(counts) // titles.BATCH_SIZE)
+        self.call_from_thread(
+            self.notify, f"Grouping {len(counts)} distinct titles from {len(rows)} jobs ({batches} AI call(s))…", timeout=8
+        )
+        try:
+            gen = self._titles_generator()
+        except intel.IntelUnavailable as e:
+            self.call_from_thread(self.notify, f"No LLM available: {e}", severity="error")
+            return
+        cfg = self.rules.get("titles", {})
+        groups = titles.group_titles(
+            counts,
+            gen,
+            target=cfg.get("target", titles.DEFAULT_TARGET),
+            explore=cfg.get("explore", titles.DEFAULT_EXPLORE),
+            on_batch=lambda d, n: self.call_from_thread(self.notify, f"Titles: {d}/{n} AI call(s) done", timeout=4)
+            if n > 1 else None,
+        )
+        self.call_from_thread(self._show_titles, sig, groups)
+
+    def _show_titles(self, sig: tuple[Any, ...], groups: list[titles.RoleGroup]) -> None:
+        self._titles_cache = (sig, groups)
+        if len(self.screen_stack) > 1:
+            self.notify("Titles ready: press T", timeout=6)
+            return
+
+        def done(result: Any) -> None:
+            if result == "ALL":
+                self.title_role = None
+                self._reload(0)
+            elif result == "REGROUP":
+                self._titles_cache = None
+                self.action_titles()
+            elif result == "ASK":
+                self._ask_titles(groups)
+            elif isinstance(result, titles.RoleGroup):
+                self.title_role = result
+                self._reload(0)
+
+        self.push_screen(TitlesModal(groups, self._view_label()), done)
+
+    def _ask_titles(self, groups: list[titles.RoleGroup]) -> None:
+        def asked(question: str | None) -> None:
+            if question and question.strip():
+                self.notify("Asking the AI…", timeout=6)
+                self.run_worker(lambda: self._ask_worker(question.strip(), groups), thread=True,
+                                group="titles-ask", exclusive=True, exit_on_error=False)
+
+        self.push_screen(NoteModal("Ask the AI about this role breakdown (e.g. 'which roles are realistic for me?')"), asked)
+
+    def _ask_worker(self, question: str, groups: list[titles.RoleGroup]) -> None:
+        cfg = self.rules.get("titles", {})
+        system = (
+            "You are a job-search analyst helping an early-career candidate focus. You get a table of roles "
+            "in the candidate's current filtered job view with EXACT job counts (do not recount or invent numbers) "
+            f"and tiers. Candidate targets: {cfg.get('target', titles.DEFAULT_TARGET)}. "
+            f"Explore (skills to learn): {cfg.get('explore', titles.DEFAULT_EXPLORE)}. "
+            "Answer the question concisely in Markdown, citing roles and counts from the table."
+        )
+        user = f"View: {self._view_label()}\n\n{titles.summarize(groups)}\n\nQuestion: {question}"
+        try:
+            answer = self._titles_generator()(system, user).strip() or "(empty answer)"
+        except Exception as e:
+            self.call_from_thread(self.notify, f"AI error: {e}", severity="error")
+            return
+        self.call_from_thread(self.push_screen, AnswerModal(question, answer))
 
     def _job(self) -> dict[str, Any] | None:
         i = self.query_one(DataTable).cursor_row
