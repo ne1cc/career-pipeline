@@ -17,6 +17,28 @@ locations = [
 ]
 
 search_terms = [
+    # Early Career, New Grad & Junior Roles First (highest yield)
+    "Associate Software Engineer",
+    "Junior Software Engineer",
+    "Software Engineer - Early Career",
+    "Software Engineer - New Grad",
+    "Junior Developer",
+    "Junior Full Stack Developer",
+    "Junior Frontend Engineer",
+    "Junior Backend Engineer",
+    "Junior DevOps Engineer",
+    "Associate Product Engineer",
+    "Junior Security Engineer",
+    "Associate Security Engineer",
+    "Associate Product Manager",
+    "APM",
+    "Business Operations Associate",
+    "Strategy & Operations Associate",
+    "Associate Analyst",
+    "Rotational Analyst",
+    "Associate Data & Analytics",
+    "Technology Advisory Associate",
+
     # Core Data & Analytics
     "Data Analyst",
     "Business Analyst",
@@ -47,8 +69,6 @@ search_terms = [
     "Business Analytics Consultant",
     "Computer Systems Analyst",
     "Programmer Analyst",
-    "Associate Data & Analytics",
-    "Technology Advisory Associate",
     "Strategy Consultant",
 
     # Expanded Data & Analytics Roles
@@ -63,39 +83,19 @@ search_terms = [
     "Customer Analytics Analyst",
 
     # Product & Business Operations Roles
-    "Associate Product Manager",
-    "APM",
-    "Business Operations Associate",
     "BizOps Analyst",
     "Project Coordinator",
     "Operations Coordinator",
-    "Strategy & Operations Associate",
     "Solutions Analyst",
-    "Associate Analyst",
-    "Rotational Analyst",
     "Data Operations Specialist",
 
-    # Junior Software Engineering & Developer Roles
-    "Associate Software Engineer",
-    "Junior Software Engineer",
-    "Software Engineer - Early Career",
-    "Software Engineer - New Grad",
-    "Junior Developer",
-    "Junior Full Stack Developer",
-    "Junior Frontend Engineer",
-    "Junior Backend Engineer",
-    "Junior DevOps Engineer",
+    # Engineering & Security Roles
     "Data Engineer",
     "Backend Engineer",
     "Platform Engineer",
     "Product Engineer",
-    "Associate Product Engineer",
-
-    # Security Roles
-    "Junior Security Engineer",
     "Security Engineer",
     "Application Security Engineer",
-    "Associate Security Engineer",
     "Cybersecurity Analyst",
     "Information Security Analyst",
     "SOC Analyst",
@@ -142,15 +142,13 @@ if __name__ == "__main__":
                     site_name=[
                         "indeed",
                         "linkedin",
-                        "google",
                     ],
                     search_term=term,
                     location=loc,
-                    google_search_term=f"{term} jobs near {loc} since yesterday",
                     country_indeed="USA",
-                    results_wanted=9999,
+                    results_wanted=100,
                     hours_old=48,
-                    linkedin_fetch_description=True,
+                    linkedin_fetch_description=False,
                 )
                 if jobs.attrs.get("scrape_errors"):
                     had_errors = True

@@ -18,6 +18,9 @@ locations = [
     "San Francisco, CA",
     "Los Angeles, CA",
     "Portland, OR",
+    "Phoenix, AZ",
+    "Denver, CO",
+    "Austin, TX",
 ]
 
 # Broad set of search terms that align with roles business analytics/MSBA graduates typically target.
@@ -217,7 +220,7 @@ if __name__ == "__main__":
                     search_term=term,
                     location=loc,
                     country_indeed="USA",
-                    results_wanted=9999,
+                    results_wanted=100,
                     hours_old=48,
                     linkedin_fetch_description=False,
                 )
