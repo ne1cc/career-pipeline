@@ -135,11 +135,11 @@ class TitlesModal(ModalScreen[Any]):
         tier_line = " · ".join(f"[{TIER_COLORS[t]}]{t} {totals[t]}[/]" for t in titles.TIERS)
         self.query_one("#titles-head", Static).update(
             f"[b]Roles in view[/b] {escape(self.view_label)}: {total} jobs, {len(self.groups)} roles   {tier_line}\n"
-            f"[dim]showing: {tier or 'all tiers'} · Enter: show these jobs · x: tier filter · a: ask AI · r: regroup · Esc: close[/dim]"
+            f"[dim]showing: {tier or 'all tiers'} · Enter: show these jobs (full table, same titles together) · x: tier filter · a: ask AI · r: regroup · Esc: close[/dim]"
         )
         table = self.query_one("#titles-table", DataTable)
         table.clear()
-        table.add_row("[b]All roles[/b] (clear role filter)", "", str(total), "100%", "", key="__all__")
+        table.add_row("[b]All roles[/b] (every job, sorted role → title)", "", str(total), "100%", "", key="__all__")
         for i, g in enumerate(shown):
             color = TIER_COLORS.get(g.tier, "dim")
             table.add_row(
@@ -321,6 +321,7 @@ class JobCockpitApp(App[None]):
         self.title_role: titles.RoleGroup | None = None  # drill-down from the Titles view
         self._view_rows: list[dict[str, Any]] = []  # current view before the role filter
         self._titles_cache: tuple[tuple[Any, ...], list[titles.RoleGroup]] | None = None
+        self._title_roles: dict[str, str] = {}  # cleaned title -> role, from the last grouping
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -358,6 +359,14 @@ class JobCockpitApp(App[None]):
                     key=lambda r: (r.get("fit_score") is None, r.get("fit_score") or 0.0),
                     reverse=False,
                 )
+        elif col == "role":
+            # Titles view order: role A→Z, then title, then company, so identical titles sit together.
+            # Titles outside the last grouping sort under their own cleaned title.
+            def role_key(r: dict[str, Any]) -> tuple[str, str, str]:
+                t = titles.clean_title(r.get("title"))
+                return (self._title_roles.get(t, t).lower(), t, (r.get("company") or "").lower())
+
+            self.rows.sort(key=role_key, reverse=self.sort_reverse)
         elif col == "score":
             self.rows.sort(
                 key=lambda r: (r.get("priority_score") if r.get("priority_score") is not None else 0.0),
@@ -609,6 +618,7 @@ class JobCockpitApp(App[None]):
 
     def _show_titles(self, sig: tuple[Any, ...], groups: list[titles.RoleGroup]) -> None:
         self._titles_cache = (sig, groups)
+        self._title_roles = {t: g.role for g in groups for t in g.titles}
         if len(self.screen_stack) > 1:
             self.notify("Titles ready: press T", timeout=6)
             return
@@ -616,6 +626,7 @@ class JobCockpitApp(App[None]):
         def done(result: Any) -> None:
             if result == "ALL":
                 self.title_role = None
+                self.sort_col, self.sort_reverse = "role", False
                 self._reload(0)
             elif result == "REGROUP":
                 self._titles_cache = None
@@ -624,6 +635,7 @@ class JobCockpitApp(App[None]):
                 self._ask_titles(groups)
             elif isinstance(result, titles.RoleGroup):
                 self.title_role = result
+                self.sort_col, self.sort_reverse = "role", False
                 self._reload(0)
 
         self.push_screen(TitlesModal(groups, self._view_label()), done)

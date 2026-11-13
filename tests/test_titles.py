@@ -89,6 +89,10 @@ def test_tui_titles_view_drilldown_and_guard(db_path, tmp_path):  # noqa: F811
             await pilot.press("enter")  # "All roles" row clears the drill-down
             await pilot.pause()
             assert app.title_role is None and len(app.rows) == 3
+            # Full rows (every field) sorted role A→Z, then title: same titles sit together.
+            assert app.sort_col == "role" and "sort:role" in app._score_base
+            assert [r["title"] for r in app.rows] == ["Data Analyst", "Data Engineer", "Data Engineer II (Remote)"]
+            assert all({"company", "location", "priority_score"} <= r.keys() for r in app.rows)
 
             await pilot.press("T")
             await pilot.pause()
