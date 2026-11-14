@@ -245,7 +245,7 @@ def tmux_line(board: dict[str, int]) -> str:
     recent = f" (72h:{board.get('queued_72h', 0)})" if "queued_72h" in board else ""
     return (
         f"#[fg=green]Jobs: {board['applied_today']}/{DAILY_GOAL}#[default]"
-        f" | Q:{board['queued']}{recent}"
+        f" | New:{board['queued']}{recent}"
         f" | H:{board['hold']}"
     )
 

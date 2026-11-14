@@ -52,7 +52,7 @@ Add this to your tmux `status-right`:
 #(cat /tmp/jobcockpit_tmux.cache)
 ```
 
-It shows `Jobs: 6/15 | Q:34 | H:2`.
+It shows `Jobs: 6/15 | New:34 | H:2`. **New** means scraped jobs you have not acted on yet (stored as `QUEUED` in the database).
 
 ## Your daily recruiting loop
 
@@ -79,7 +79,7 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | `s` | Skip |
 | `h` | Hold for a referral (type the contact, then Enter) |
 | `y` | Copy the outreach message for this job |
-| `f` | Cycle the view: Queued, 72h, New Grad, Saved, Intern, Referral Hold, Viewed, Applied, Interviews, All |
+| `f` | Cycle the view: New, 72h, New Grad, Saved, Intern, Referral Hold, Viewed, Applied, Interviews, All |
 | `F` | Cycle the view backwards |
 | `m` | Move an applied job to a stage: `1` OA, `2` phone screen, `3` tech round, `4` final round, `5` offer, `6` rejected |
 | `V` | Weekly funnel table: applications per week and how far each week's jobs got |

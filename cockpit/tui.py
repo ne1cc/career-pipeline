@@ -198,6 +198,15 @@ class AnswerModal(ModalScreen[None]):
 
 
 # Views that track sent applications: there the Fit and Score columns show Age and Mode instead.
+def shown(status: str | None) -> str:
+    """The word the cockpit displays for a stored status or view name.
+
+    Contract: the stored value QUEUED (a scraped job nobody has acted on) is shown as NEW; every
+    other value is shown as stored. Display only: the database and all queries keep QUEUED.
+    """
+    return "NEW" if status == "QUEUED" else (status or "")
+
+
 OPENED_MARK = "↗"  # prefix on the Title of a job whose application page was already opened
 TRACKING_VIEWS = ("APPLIED", "INTERVIEWS")
 STAGES = (
@@ -628,7 +637,7 @@ class JobCockpitApp(App[None]):
                 r["location"] or "",
                 r["site"] or "",
                 r["resume_archetype"],
-                r["status"],
+                shown(r["status"]),
                 key=r["dedup_key"],
             )
         if self.rows:
@@ -639,13 +648,13 @@ class JobCockpitApp(App[None]):
                 table.move_cursor(row=target_idx, scroll=False)
                 table.scroll_to(x=saved_x, y=saved_y, animate=False)
                 table._scroll_cursor_into_view(animate=False)
-        label = FILTERS[self.filter_idx] or "ALL"
+        label = shown(FILTERS[self.filter_idx]) or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
         date_indicator += f" | role:{self.title_role.role} ({len(self.rows)})" if self.title_role else ""
         counts = (
-            f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
+            f"Applied: {b['applied_today']}/{DAILY_GOAL} | New:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
             f"Saved:{b.get('saved', 0)} | Viewed:{b.get('viewed', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
         )
         if summary:
@@ -964,7 +973,7 @@ class JobCockpitApp(App[None]):
         lines = [
             f"  {(t['transitioned_at'] or '')[:16]}  opened"  # an open is an event, not a status change
             if t["triggered_by"] == "tui-open"
-            else f"  {(t['transitioned_at'] or '')[:10]}  {t['from_status'] or '—'} → {t['to_status']}  ({t['triggered_by']})"
+            else f"  {(t['transitioned_at'] or '')[:10]}  {shown(t['from_status']) or '—'} → {shown(t['to_status'])}  ({t['triggered_by']})"
             + (f"  {t['notes']}" if t.get("notes") else "")
             for t in steps
         ]
@@ -1348,7 +1357,7 @@ class JobCockpitApp(App[None]):
         key, snapshot = self.undo_stack.pop()
         with session(self.db_path) as con:
             restore_job_state(con, key, snapshot)
-        self.notify(f"Restored status to {snapshot['status']}")
+        self.notify(f"Restored status to {shown(snapshot['status'])}")
         self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
 
     def action_archetype(self, name: str) -> None:

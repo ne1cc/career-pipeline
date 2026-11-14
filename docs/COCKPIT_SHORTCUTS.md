@@ -58,7 +58,7 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `cockpit sync-saved` | Reconcile saved jobs between disk and DuckDB, and rebuild `index.md` |
 | `cockpit sync-mail` | Reconcile applied jobs against ATS status update emails |
 | `cockpit stats` | View funnel conversion metrics by archetype and board |
-| `cockpit tmux-status` | Output cached status line for tmux status bar (`Q:..., 72h:...`) |
+| `cockpit tmux-status` | Output cached status line for tmux status bar (`New:..., 72h:...`) |
 | `cockpit keychain-setup --run` | Store Gmail app password in macOS Keychain |
 | `cockpit install-agent` | Install the 08:30 / 13:30 launchd background sync agent |
 
@@ -80,8 +80,8 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `k` / `↑` | Previous job |
 | `J` / `K` | Scroll JD preview pane down / up |
 | `d` / `u` | Page JD preview pane half-page down / up |
-| `t` | Toggle 72h recent filter (toggle between `72H` and `QUEUED`) |
-| `f` | Cycle view filter: `QUEUED` → `72H` → `SAVED` → `REFERRAL_HOLD` → `APPLIED` → `All` |
+| `t` | Toggle 72h recent filter (toggle between `72H` and `NEW`) |
+| `f` | Cycle view filter: `NEW` → `72H` → `NEW_GRAD` → `SAVED` → `INTERN` → `REFERRAL_HOLD` → `VIEWED` → `APPLIED` → `INTERVIEWS` → `All` |
 | `g` | Cycle scraper segment: `all` → `seattle` → `west_coast` → `remote` → … |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`); blank clears |
 | `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`); blank clears |

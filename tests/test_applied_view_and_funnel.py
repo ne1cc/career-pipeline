@@ -141,6 +141,9 @@ def test_opening_a_job_marks_it_and_keeps_it_in_the_queue(db_path, tmp_path, cal
             app._reload(0)
             assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
             assert table.opened_row_keys == {k["Opened"]}
+            # QUEUED is stored, NEW is shown: Status cell, view label and title-bar count.
+            assert str(table.get_cell(k["Unopened"], "status")) == "NEW"
+            assert "New:2" in app._score_base and "[NEW |" in app._score_base and "QUEUED" not in app._score_base
             assert not str(table.get_cell(k["Unopened"], "title")).startswith("↗")
 
             # Saving moves it out of Viewed and into Saved.
@@ -188,7 +191,7 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
             assert table.get_row_at(0)[:3] == ["0d", "Base", "Interview Co"]
             assert table.get_row_at(1)[:3] == ["0d", "Ref", "Applied Co"]
             assert "Applied: 2 | 7d: 2 | Tailored: 0% | Referral: 50% | Screens: 0 / 0 mature (—)" in app._score_base
-            assert "QUEUED → REFERRAL_HOLD  (test)" in app._timeline(app.rows[1])
+            assert "NEW → REFERRAL_HOLD  (test)" in app._timeline(app.rows[1])
 
             await pilot.press("m")
             await pilot.pause()
