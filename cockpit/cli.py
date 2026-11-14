@@ -1166,19 +1166,18 @@ def dossier_cmd(
         target_folder, target_dossier = matched[0]
     elif use_nvim:
         # No query + nvim -> open the artifacts root folder in Neovim
-        editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
-        subprocess.run([editor, str(root)])
+        subprocess.run([macos.resolve_editor(), str(root)])
         return
     elif one_markdown:
         # No query + one_markdown -> the index is the front door. One Markdown cannot open a folder,
         # so without an index the root is shown in Finder instead.
         index = root / "index.md"
         if index.is_file():
-            macos.open_file(index, app="One Markdown")
-            console.print(f"Opened dossier index in One Markdown: [cyan]{index}[/cyan]")
+            macos.open_markdown(index, background=False)
+            console.print(f"Opened dossier index in Markdown viewer: [cyan]{index}[/cyan]")
         else:
             macos.open_file(root)
-            console.print(f"Opened dossiers folder in Finder: [cyan]{root}[/cyan]")
+            console.print(f"Opened dossiers folder: [cyan]{root}[/cyan]")
         return
     else:
         valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
@@ -1208,11 +1207,10 @@ def dossier_cmd(
             console.print(f"[bold cyan]─── Dossier: {target_dossier.parent.name} ───[/bold cyan]\n")
             console.print(Markdown(target_dossier.read_text(encoding="utf-8", errors="replace")))
         elif one_markdown:
-            macos.open_file(target_dossier, app="One Markdown")
-            console.print(f"Opened dossier in One Markdown: [cyan]{target_dossier}[/cyan]")
+            macos.open_markdown(target_dossier, background=False)
+            console.print(f"Opened dossier in Markdown viewer: [cyan]{target_dossier}[/cyan]")
         elif use_nvim:
-            editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
-            subprocess.run([editor, str(target_dossier)])
+            subprocess.run([macos.resolve_editor(), str(target_dossier)])
         else:
             macos.open_file(target_dossier)
             console.print(f"Opened dossier: [cyan]{target_dossier}[/cyan]")
@@ -1258,7 +1256,7 @@ def notes_cmd(
     if not query:
         count = intel_module.build_learning_log(root)
         log = root / intel_module.LEARNING_LOG
-        macos.open_file(log, app="One Markdown")
+        macos.open_markdown(log, background=False)
         console.print(f"Learning log rebuilt from {count} job(s): [cyan]{log}[/cyan]")
         return
     # 2. Query: open the matching job's notes for editing.
@@ -1269,8 +1267,7 @@ def notes_cmd(
         raise typer.Exit(1)
     company, _, title = matched[0].name.partition(" - ")
     notes = intel_module.ensure_notes(matched[0], company, title or company)
-    editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
-    subprocess.run([editor, str(notes)])
+    subprocess.run([macos.resolve_editor(), str(notes)])
 
 
 @app.command("edit")

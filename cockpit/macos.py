@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,8 +45,11 @@ def open_url(url: str, background: bool = False) -> None:
 
 
 def quicklook(resume_path: str) -> subprocess.Popen[bytes]:
+    """Preview a resume PDF with QuickLook on macOS, or xdg-open on Linux."""
+    target = posix_path(resume_path)
+    cmd = ["/usr/bin/qlmanage", "-p", target] if sys.platform == "darwin" else ["xdg-open", target]
     return subprocess.Popen(
-        ["/usr/bin/qlmanage", "-p", posix_path(resume_path)],
+        cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -106,9 +110,51 @@ def gemini_api_key() -> str | None:
     return keychain_password(KEYCHAIN_GEMINI_SERVICE, "GEMINI_API_KEY")
 
 
-def open_markdown(path: str | Path) -> None:
-    """Open a Markdown file in One Markdown, or in the default app when One Markdown is missing."""
-    try:
-        subprocess.run(["/usr/bin/open", "-g", "-a", "One Markdown", str(path)], check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+def resolve_editor() -> str:
+    """Return the user's preferred terminal editor ($EDITOR, nvim including Homebrew paths, or vim)."""
+    if env := os.environ.get("EDITOR"):
+        return env
+    if found := shutil.which("nvim"):
+        return found
+    for candidate in (
+        "/home/linuxbrew/.linuxbrew/bin/nvim",
+        "/opt/homebrew/bin/nvim",
+        "/usr/local/bin/nvim",
+        "/usr/bin/nvim",
+    ):
+        if Path(candidate).is_file():
+            return candidate
+    return shutil.which("vim") or "nvim"
+
+
+def open_markdown(path: str | Path, background: bool = True) -> None:
+    """Open a Markdown file in One Markdown (macOS), MarkText (Linux/fallback), or the OS default app.
+
+    Contract: on macOS tries One Markdown then MarkText; on Linux tries MarkText
+    (`marktext` on PATH or `~/.local/bin/marktext`) detached, falling back to `xdg-open`.
+    """
+    target = str(path)
+    if sys.platform == "darwin":
+        g_flag = ["-g"] if background else []
+        for app in ("One Markdown", "MarkText"):
+            try:
+                subprocess.run(["/usr/bin/open", *g_flag, "-a", app, target], check=True)
+                return
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+                continue
         open_file(path)
+        return
+
+    marktext = shutil.which("marktext") or str(Path.home() / ".local" / "bin" / "marktext")
+    if Path(marktext).is_file():
+        try:
+            subprocess.Popen(
+                [marktext, target],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return
+        except OSError:
+            pass
+    open_file(path)
