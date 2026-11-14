@@ -360,7 +360,7 @@ def test_new_grad_filter_and_company_cooldown(tmp_path):
     from cockpit import db, tui
     from cockpit.models import FunnelState
 
-    assert "NEW_GRAD" in tui.FILTERS
+    assert hasattr(tui.JobCockpitApp, "action_toggle_new_grad")
     db_path = tmp_path / "funnel.duckdb"
     with db.session(db_path) as con:
         import pandas as pd

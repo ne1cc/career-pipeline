@@ -21,6 +21,9 @@ from cockpit import autofill, drafts, intel, macos, prefill as prefill_mod, titl
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
+    POSITIVE,
+    TAB_STATUSES,
+    count_tabs,
     applied_summary,
     dossier_counts,
     expire_stale_referral_holds,
@@ -52,7 +55,16 @@ DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pendin
 BULK_CONFIRM_OVER = 10  # marked jobs above this need a second G press
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "VIEWED", "APPLIED", "INTERVIEWS", "DISMISSED", None]
+# Tabs are exclusive stages (a job is in exactly one, except Saved/Dismissed flags); None is All.
+TABS: list[str | None] = [*TAB_STATUSES, None]
+TAB_LABELS = {"NEW": "New", "VIEWED": "Viewed", "SAVED": "Saved", "HOLD": "Hold", "APPLIED": "Applied",
+              "INTERVIEWS": "Interviews", "CLOSED": "Closed", "DISMISSED": "Dismissed", None: "All"}
+# Statuses a job may have and still be listed on a tab, so a mark knows whether the row leaves the view.
+TAB_LISTS_STATUS: dict[str | None, set[str] | None] = {
+    "NEW": {"QUEUED"}, "VIEWED": {"QUEUED"}, "SAVED": None, "HOLD": {"REFERRAL_HOLD", "REFERRAL_STALE"},
+    "APPLIED": {"APPLIED"}, "INTERVIEWS": set(POSITIVE), "CLOSED": {"SKIPPED", "REJECTED"},
+    "DISMISSED": None, None: None,
+}
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -381,6 +393,7 @@ def _default_autofill_worker(profile_dir: Path) -> autofill.AutofillWorker:
 class JobCockpitApp(App[None]):
     CSS = """
     #score { height: 1; padding: 0 1; background: $boost; }
+    #tabs { height: 2; padding: 0 1; }
     #table { width: 65%; }
     #table > .datatable--cursor {
         background: $block-cursor-background;
@@ -427,6 +440,10 @@ class JobCockpitApp(App[None]):
         Binding("F", "cycle_filter(-1)", "Filter back", show=False),
         Binding("shift+f", "cycle_filter(-1)", "Filter back", show=False),
         Binding("t", "toggle_72h", "72h"),
+        Binding("N", "toggle_new_grad", "New grad"),
+        Binding("shift+n", "toggle_new_grad", "New grad", show=False),
+        Binding("E", "toggle_intern", "Intern"),
+        Binding("shift+e", "toggle_intern", "Intern", show=False),
         Binding("D", "filter_date", "Date"),
         Binding("w", "filter_jd_keywords", "JD Words"),
         Binding("T", "titles", "Titles"),
@@ -490,7 +507,9 @@ class JobCockpitApp(App[None]):
         self.rows: list[dict[str, Any]] = []
         self.sort_col: str | None = None
         self.sort_reverse: bool = False
-        self.filter_idx = 0
+        self.tab_idx = 0
+        self.f_72h = self.f_new_grad = self.f_intern = False  # filters stacked on the current tab
+        self._tab_counts: dict[str | None, int] = {}
         self.segment: str | None = None
         self.loc_query: str | None = None
         self.search_query: str | None = None
@@ -512,6 +531,7 @@ class JobCockpitApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
+        yield Static(id="tabs")
         with Horizontal():
             yield CockpitTable(id="table", cursor_type="row", zebra_stripes=True, cell_padding=1)
             with VerticalScroll(id="detail-pane"):
@@ -619,20 +639,18 @@ class JobCockpitApp(App[None]):
         self._reload(preserve_key=cur_key)
 
     def _tracking(self) -> bool:
-        return FILTERS[self.filter_idx] in TRACKING_VIEWS
+        return TABS[self.tab_idx] in TRACKING_VIEWS
 
     def _reload(self, row: int | None = None, preserve_key: str | None = None) -> None:
         tracking = self._tracking()
         with session(self.db_path) as con:
-            self.rows = fetch_jobs(
-                con,
-                FILTERS[self.filter_idx],
-                min_score(),
-                self.segment,
-                self.loc_query,
-                query=self.search_query,
-                jd_keywords=self.jd_keywords,
-                date_filter=self.date_filter,
+            narrow = dict(
+                query=self.search_query, jd_keywords=self.jd_keywords, date_filter=self.date_filter,
+                hours=72 if self.f_72h else None, new_grad=self.f_new_grad, intern=self.f_intern,
+            )
+            self.rows = fetch_jobs(con, TABS[self.tab_idx], min_score(), self.segment, self.loc_query, **narrow)
+            self._tab_counts = count_tabs(
+                con, floor=min_score(), segment=self.segment, location=self.loc_query, **narrow
             )
             self._recent_applied = recent_applied_companies(con, days=30)
             b = scoreboard(con)
@@ -648,13 +666,13 @@ class JobCockpitApp(App[None]):
         table.clear()
         table.highlighted_row_keys.clear()
         table.opened_row_keys.clear()
-        in_dismissed_view = FILTERS[self.filter_idx] == "DISMISSED"
+        in_dismissed_view = TABS[self.tab_idx] == "DISMISSED"
         self.marked &= {r["dedup_key"] for r in self.rows}
         table.marked_row_keys = set(self.marked)
         # Dismissed rows are skipped by the cursor everywhere except the DISMISSED view, where they are the content.
         table.skipped_row_keys = set() if in_dismissed_view else {r["dedup_key"] for r in self.rows if r.get("dismissed")}
         self._update_column_headers()
-        is_saved_filter = FILTERS[self.filter_idx] == "SAVED"
+        is_saved_filter = TABS[self.tab_idx] == "SAVED"
         target_row = row
         for idx, r in enumerate(self.rows):
             if preserve_key and r.get("dedup_key") == preserve_key:
@@ -702,15 +720,12 @@ class JobCockpitApp(App[None]):
                 table.move_cursor(row=target_idx, scroll=False)
                 table.scroll_to(x=saved_x, y=saved_y, animate=False)
                 table._scroll_cursor_into_view(animate=False)
-        label = shown(FILTERS[self.filter_idx]) or "ALL"
+        label = TAB_LABELS[TABS[self.tab_idx]].upper()
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
         date_indicator += f" | role:{self.title_role.role} ({len(self.rows)})" if self.title_role else ""
-        counts = (
-            f"Applied: {b['applied_today']}/{DAILY_GOAL} | New:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
-            f"Saved:{b.get('saved', 0)} | Viewed:{b.get('viewed', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
-        )
+        counts = f"Applied: {b['applied_today']}/{DAILY_GOAL} today | Pos:{b['positive']}"
         if summary:
             counts = (
                 f"Applied: {summary['total_applied']} | 7d: {summary['applied_7d']} | "
@@ -723,6 +738,7 @@ class JobCockpitApp(App[None]):
             f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'}{date_indicator} | q:{self.search_query or 'none'}{jd_indicator}{sort_indicator}]"
         )
         self._render_score(b)
+        self._render_tabs()
         self._show(table.cursor_row)
 
     def _render_score(self, counts: dict[str, int]) -> None:
@@ -786,11 +802,11 @@ class JobCockpitApp(App[None]):
     # ---- Titles view: AI role breakdown of the current view ----
 
     def _view_signature(self) -> tuple[Any, ...]:
-        return (FILTERS[self.filter_idx], self.segment, self.loc_query, self.search_query,
+        return (TABS[self.tab_idx], self.f_72h, self.f_new_grad, self.f_intern, self.segment, self.loc_query, self.search_query,
                 self.jd_keywords, self.date_filter, len(self._view_rows))
 
     def _view_label(self) -> str:
-        parts = [FILTERS[self.filter_idx] or "ALL", f"loc:{self.loc_query or 'any'}"]
+        parts = [TAB_LABELS[TABS[self.tab_idx]].upper(), *self._active_flags(), f"loc:{self.loc_query or 'any'}"]
         parts += [f"{k}:{v}" for k, v in (("sheet", self.segment), ("q", self.search_query),
                                             ("jd", self.jd_keywords), ("date", self.date_filter)) if v]
         return "[" + " | ".join(parts) + "]"
@@ -1518,7 +1534,8 @@ class JobCockpitApp(App[None]):
         with session(self.db_path) as con:
             prev = transition_job_state(con, key, status, "tui", note)
         self.undo_stack.append((key, prev))
-        still_listed = FILTERS[self.filter_idx] in (None, status.value)
+        listed = TAB_LISTS_STATUS[TABS[self.tab_idx]]
+        still_listed = listed is None or status.value in listed
         self._reload(row + 1 if still_listed else row)
 
     def action_mark(self, status: str) -> None:
@@ -1583,16 +1600,40 @@ class JobCockpitApp(App[None]):
             self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
 
     def action_toggle_72h(self) -> None:
-        if FILTERS[self.filter_idx] == "72H":
-            self.filter_idx = FILTERS.index("QUEUED")
-        else:
-            self.filter_idx = FILTERS.index("72H")
+        self.f_72h = not self.f_72h
         self._reload(0)
 
-    def action_cycle_filter(self, step: int = 1) -> None:
-        """`f` moves to the next view, `F` (step -1) to the previous one; both wrap around."""
-        self.filter_idx = (self.filter_idx + step) % len(FILTERS)
+    def action_toggle_new_grad(self) -> None:
+        self.f_new_grad = not self.f_new_grad
         self._reload(0)
+
+    def action_toggle_intern(self) -> None:
+        self.f_intern = not self.f_intern
+        self._reload(0)
+
+    def _active_flags(self) -> list[str]:
+        return [n for n, on in (("72h", self.f_72h), ("new-grad", self.f_new_grad), ("intern", self.f_intern)) if on]
+
+    def action_cycle_filter(self, step: int = 1) -> None:
+        """`f` moves to the next tab, `F` (step -1) to the previous one; both wrap around."""
+        self.tab_idx = (self.tab_idx + step) % len(TABS)
+        self._reload(0)
+
+    def _render_tabs(self) -> None:
+        """Row 1: every tab with its count under the current filters; row 2: the filters that narrow them."""
+        tabs = Text()
+        for tab in TABS:
+            label = f" {TAB_LABELS[tab]} {self._tab_counts.get(tab, 0)} "
+            tabs.append(label, style="reverse bold" if tab == TABS[self.tab_idx] else "dim")
+            tabs.append(" ")
+        filters = [*self._active_flags()]
+        filters += [f"{k}:{v}" for k, v in (("sheet", self.segment), ("loc", self.loc_query), ("q", self.search_query),
+                                            ("jd", self.jd_keywords), ("date", self.date_filter)) if v]
+        if self.title_role:
+            filters.append(f"role:{self.title_role.role}")
+        tabs.append("\nFilters: ", style="dim")
+        tabs.append("  ".join(filters) if filters else "none", style="bold" if filters else "dim")
+        self.query_one("#tabs", Static).update(tabs)
 
     def action_segment(self) -> None:
         with session(self.db_path) as con:

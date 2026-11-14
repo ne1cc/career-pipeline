@@ -625,8 +625,16 @@ def set_resume_archetype(con: duckdb.DuckDBPyConnection, dedup_key: str, archety
     )
 
 
-def fetch_jobs(
-    con: duckdb.DuckDBPyConnection,
+_INTERN_SQL = "is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE) AND (undergrad_only IS NULL OR undergrad_only = FALSE)"
+_NEW_GRAD_SQL = (
+    "NOT is_internship AND (is_open IS NULL OR is_open = TRUE) "
+    "AND (site = 'simplify_campus' OR regexp_matches(lower(title), '(new grad|early career|university grad|campus|junior|associate|rotational|entry[- ]level|trainee)'))"
+)
+# Tab names the cockpit shows; each is one exclusive stage of a job's life (see `_job_filter`).
+TAB_STATUSES = ("NEW", "VIEWED", "SAVED", "HOLD", "APPLIED", "INTERVIEWS", "CLOSED", "DISMISSED")
+
+
+def _job_filter(
     status: str | None = None,
     floor: float | None = None,
     segment: str | None = None,
@@ -635,8 +643,14 @@ def fetch_jobs(
     hours: int | None = None,
     jd_keywords: list[str] | str | None = None,
     date_filter: str | None = None,
-) -> list[dict[str, Any]]:
-    """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
+    new_grad: bool = False,
+    intern: bool = False,
+) -> tuple[list[str], list[Any], str]:
+    """Build the WHERE clauses, parameters and ORDER BY shared by `fetch_jobs` and `count_tabs`.
+
+    Contract: `status` picks the stage (a tab name, a legacy view name or a raw status); every other
+    argument only narrows it. `new_grad` / `intern` are filters that stack on any stage.
+    """
     clauses, params = [], []
     order_by = "priority_score DESC, discovered_at"
     if status == "APPLIED":
@@ -654,13 +668,22 @@ def fetch_jobs(
         order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
     elif status == "DISMISSED":
         clauses.append("dismissed = TRUE")
-    elif status == "INTERN":
-        clauses.append("is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE) AND (undergrad_only IS NULL OR undergrad_only = FALSE)")
-    elif status == "NEW_GRAD":
+        order_by = "priority_score DESC, discovered_at"
+    elif status == "NEW":
+        # Untouched: not yet opened, saved, applied or skipped. Opening a job moves it to VIEWED.
         clauses.append(
-            "status = 'QUEUED' AND NOT is_internship AND (is_open IS NULL OR is_open = TRUE) "
-            "AND (site = 'simplify_campus' OR regexp_matches(lower(title), '(new grad|early career|university grad|campus|junior|associate|rotational|entry[- ]level|trainee)'))"
+            f"status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE) AND NOT COALESCE(is_saved, FALSE) "
+            f"AND dedup_key NOT IN ({_OPENED_SQL})"
         )
+    elif status == "HOLD":
+        clauses.append("status IN ('REFERRAL_HOLD', 'REFERRAL_STALE')")
+    elif status == "CLOSED":
+        clauses.append("status IN ('SKIPPED', 'REJECTED')")
+        order_by = "last_updated_at DESC"
+    elif status == "INTERN":
+        clauses.append(_INTERN_SQL)
+    elif status == "NEW_GRAD":
+        clauses.append(f"status = 'QUEUED' AND {_NEW_GRAD_SQL}")
     elif status in ("72H", "QUEUED_72H"):
         clauses.append("status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE)")
         hours = hours or 72
@@ -669,6 +692,10 @@ def fetch_jobs(
     elif status:
         clauses.append("status = ?")
         params.append(status)
+    if new_grad:
+        clauses.append(f"({_NEW_GRAD_SQL})")
+    if intern:
+        clauses.append(f"({_INTERN_SQL})")
     if hours is not None:
         d = max(1, (hours + 23) // 24)
         clauses.append(
@@ -716,6 +743,26 @@ def fetch_jobs(
             clauses.append("lower(COALESCE(description, '')) LIKE ?")
             params.append(kw_pattern)
 
+    return clauses, params, order_by
+
+
+def fetch_jobs(
+    con: duckdb.DuckDBPyConnection,
+    status: str | None = None,
+    floor: float | None = None,
+    segment: str | None = None,
+    location: str | None = None,
+    query: str | None = None,
+    hours: int | None = None,
+    jd_keywords: list[str] | str | None = None,
+    date_filter: str | None = None,
+    new_grad: bool = False,
+    intern: bool = False,
+) -> list[dict[str, Any]]:
+    """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
+    clauses, params, order_by = _job_filter(
+        status, floor, segment, location, query, hours, jd_keywords, date_filter, new_grad, intern
+    )
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
         # had_referral, age_days and opened_at are derived here in one pass, so views never query per row.
@@ -729,6 +776,19 @@ def fetch_jobs(
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def count_tabs(con: duckdb.DuckDBPyConnection, **filters: Any) -> dict[str | None, int]:
+    """Rows per tab (plus None for All) under the same narrowing filters the table uses.
+
+    Limits: one COUNT per tab; fine at tens of thousands of rows, so no cache.
+    """
+    out: dict[str | None, int] = {}
+    for tab in (*TAB_STATUSES, None):
+        clauses, params, _ = _job_filter(tab, **filters)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        out[tab] = con.execute(f"SELECT count(*) FROM jobs_master {where}", params).fetchone()[0]
+    return out
 
 
 def list_segments(con: duckdb.DuckDBPyConnection) -> list[str]:
