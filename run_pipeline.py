@@ -112,6 +112,7 @@ EXPECTED_OUTPUTS = {
     "tech_portals_jobs.csv": "Tech Portals Jobs",
     "campus_early_career_jobs.csv": "Campus New Grad",
     "internship_jobs.csv": "Internships",
+    "landoffer_jobs.csv": "LandOffer Jobs",
 }
 
 EMAIL_PLACEHOLDERS = {

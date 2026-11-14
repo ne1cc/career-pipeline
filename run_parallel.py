@@ -31,6 +31,7 @@ SCRIPTS = [
     JOBSPY_DIR / "search_jobs_portals.py",
     JOBSPY_DIR / "search_jobs_campus.py",
     JOBSPY_DIR / "search_jobs_internships.py",
+    JOBSPY_DIR / "search_jobs_landoffer.py",
 ]
 
 EXPECTED_OUTPUTS = {
@@ -44,6 +45,7 @@ EXPECTED_OUTPUTS = {
     "search_jobs_portals.py": "tech_portals_jobs.csv",
     "search_jobs_campus.py": "campus_early_career_jobs.csv",
     "search_jobs_internships.py": "internship_jobs.csv",
+    "search_jobs_landoffer.py": "landoffer_jobs.csv",
 }
 
 IMMEDIATE_SCRAPERS = {"search_jobs_ats.py", "search_jobs_portals.py", "search_jobs_campus.py"}
