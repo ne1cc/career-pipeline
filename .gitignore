@@ -27,6 +27,7 @@ results/
 # job cockpit
 data/*.duckdb
 data/*.duckdb.wal
+data/title_roles.json
 
 # User layer (personal resumes, profile, evidence bank, and local overrides — never commit)
 config/evidence/
