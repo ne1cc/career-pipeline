@@ -24,8 +24,8 @@ class FakeWorker:
         self.profile_dir, self.calls, self.closed = profile_dir, [], 0
         FakeWorker.instances.append(self)
 
-    def submit(self, url, profile, resume, cover_pdf, cover_text, answers, on_done):
-        self.calls.append({"url": url, "profile": profile, "resume": resume, "cover_pdf": cover_pdf,
+    def submit(self, url, profile, resume, cover_pdf, cover_text, answers, on_done, drafter=None):
+        self.calls.append({"drafter": drafter, "url": url, "profile": profile, "resume": resume, "cover_pdf": cover_pdf,
                            "cover_text": cover_text, "answers": answers, "on_done": on_done})
 
     def close(self):
@@ -47,9 +47,12 @@ def _app(db_path, tmp_path, repo):
                          autofill_worker=lambda d: FakeWorker(d))
 
 
-def _seed(db_path, url=GREENHOUSE, company="Acme"):
+def _seed(db_path, url=GREENHOUSE, company="Acme", dossier="done", **cols):
+    """One job; `dossier` is its intel_status ("done" = the form opens at once), `cols` extra columns."""
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame({"company": company, "job_url_direct": url, "job_url": url}))
+        sets = {"intel_status": dossier, **cols}
+        con.execute(f"UPDATE jobs_master SET {', '.join(f'{k} = ?' for k in sets)}", list(sets.values()))
 
 
 def _notes(app):
@@ -57,14 +60,13 @@ def _notes(app):
 
 
 def test_a_on_greenhouse_submits_once_with_profile_resume_answers(db_path, tmp_path):
-    _seed(db_path)
     resume = tmp_path / "base.pdf"
     resume.write_bytes(b"%PDF")
+    _seed(db_path, resume_path=str(resume))
 
     async def drive():
         app = _app(db_path, tmp_path, _repo(tmp_path))
         async with app.run_test() as pilot:
-            app.rows[0]["resume_path"] = str(resume)
             await pilot.press("A")
             await pilot.pause()
             (w,) = FakeWorker.instances
@@ -80,7 +82,6 @@ def test_a_on_greenhouse_submits_once_with_profile_resume_answers(db_path, tmp_p
 
 
 def test_tailored_files_and_cover_text_string(db_path, tmp_path):
-    _seed(db_path)
     folder = tmp_path / "folder"
     (folder / "exports").mkdir(parents=True)
     tailored = folder / "exports" / "Pat_Resume.pdf"
@@ -88,11 +89,11 @@ def test_tailored_files_and_cover_text_string(db_path, tmp_path):
     cover_pdf = folder / "exports" / "Pat_Cover_Letter.pdf"
     cover_pdf.write_bytes(b"%PDF")
     (folder / "03_cover_letter.md").write_text("Dear team")
+    _seed(db_path, folder_path=str(folder))
 
     async def drive():
         app = _app(db_path, tmp_path, _repo(tmp_path))
         async with app.run_test() as pilot:
-            app.rows[0]["folder_path"] = str(folder)
             await pilot.press("A")
             await pilot.pause()
             call = FakeWorker.instances[0].calls[0]

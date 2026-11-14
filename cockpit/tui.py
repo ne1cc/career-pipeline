@@ -16,7 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Markdown, Static
 from textual.worker import Worker, WorkerState
 
-from cockpit import autofill, intel, macos, prefill as prefill_mod, titles
+from cockpit import autofill, drafts, intel, macos, prefill as prefill_mod, titles
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
@@ -24,9 +24,11 @@ from cockpit.db import (
     expire_stale_referral_holds,
     fetch_jobs,
     finish_intel,
+    get_job,
     list_ingest_dates,
     list_segments,
     min_score,
+    queue_intel,
     recent_applied_companies,
     restore_job_state,
     scoreboard,
@@ -321,6 +323,7 @@ class JobCockpitApp(App[None]):
         self._autofill_factory = autofill_worker  # injectable so tests never launch a browser
         self._autofill: Any = None  # created on first use
         self._answers_hint_shown = False
+        self._autofill_waiting: dict[str, str] = {}  # dedup_key -> company, waiting on a dossier
         self.repo_root = repo_root or REPO_ROOT
         self.db_path = db_path
         self.rules = load_rules()
@@ -567,6 +570,16 @@ class JobCockpitApp(App[None]):
             return  # DB briefly locked by another process; try again next tick.
         if counts != self._last_dossier_counts:
             self.call_from_thread(self._on_dossier_change)
+        # Jobs whose form is waiting on a dossier: open the finished ones, report the failed.
+        for key in list(self._autofill_waiting):
+            try:
+                with session(self.db_path) as con:
+                    row = get_job(con, key)
+            except Exception:
+                return
+            status = row.get("intel_status") if row else "failed"
+            if status in ("done", "failed"):
+                self.call_from_thread(self._autofill_ready, key, status)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """App keys stay inert while a pop-up is open, so e.g. `s` in the Titles table never skips
@@ -911,7 +924,74 @@ class JobCockpitApp(App[None]):
             self.notify("No autofill for this site, opening it normally")
             macos.open_url(url)
             return
-        # 3. Resolve files, profile, answers (same folder lookup as action_prefill).
+        # 3. Dossier first: queue it unless it is done, and open the form when it finishes.
+        key = job["dedup_key"]
+        company = job.get("company") or "job"
+        with session(self.db_path) as con:
+            status = queue_intel(con, key)
+        if status != "done":
+            self._autofill_waiting[key] = company
+            self._kick_intel()
+            self.notify(f"Dossier queued: {company}. The form opens when it is ready.")
+            self._on_dossier_change()
+            return
+        self._start_autofill(key)
+
+    def _autofill_ready(self, key: str, status: str) -> None:
+        """UI thread: a waiting job's dossier finished (open its form) or failed (say so)."""
+        company = self._autofill_waiting.pop(key, None)
+        if company is None:
+            return
+        if status == "done":
+            self._start_autofill(key)
+        else:
+            self.notify(f"{company}: dossier failed, press A to retry", severity="warning", timeout=10)
+
+    def _llm(self) -> Callable[[str, str], str]:
+        """The model client for drafts: the injected one, else the dossier provider's CLI."""
+        if self.generate is not None:
+            return self.generate
+        ctx = intel.load_context(self.career_ops_root, model=self.model)
+        return intel.create_llm_client(provider=ctx.provider, model_name=ctx.model)
+
+    def _drafter_for(self, job: dict[str, Any], folder: Path) -> Callable[[str], str | None] | None:
+        """Free-text drafter for one job, or None when its dossier cannot be read.
+
+        The model client is created on first use, on the autofill thread, so the UI never waits.
+        """
+        def read(path: Path) -> str:
+            try:
+                return path.read_text("utf-8")
+            except OSError:
+                return ""
+
+        dossier = read(Path(job.get("intel_path") or folder / "05_interview_dossier.md"))
+        if not dossier:
+            return None
+        client: list[Callable[[str, str], str]] = []
+
+        def generate(prompt: str, text: str) -> str:
+            if not client:
+                client.append(self._llm())
+            return client[0](prompt, text)
+
+        return drafts.make_drafter(
+            generate,
+            company=job.get("company") or "",
+            title=job.get("title") or "",
+            jd=job.get("description") or "",
+            dossier=dossier,
+            resume=read(self.career_ops_root / "cv.md"),
+        )
+
+    def _start_autofill(self, key: str) -> None:
+        """Hand a job whose dossier is done to the browser worker (fresh row: the files are new)."""
+        with session(self.db_path) as con:
+            job = get_job(con, key)
+        if not job or not job.get("apply_url"):
+            return
+        url = job["apply_url"]
+        # 1. Resolve files, profile, answers (same folder lookup as action_prefill).
         folder_p = Path(job.get("folder_path") or intel.job_folder_path(job, self.export_dir))
         files = prefill_mod.application_files(job, folder_p if folder_p.exists() else None)
         cover_text = None
@@ -936,8 +1016,9 @@ class JobCockpitApp(App[None]):
             cover_text,
             autofill.load_answers(answers_path),
             lambda report: self._autofill_done(company, report),
+            drafter=self._drafter_for(job, folder_p),
         )
-        # 4. Say which resume goes up (or that none resolved; contact fields still get filled).
+        # 2. Say which resume goes up (or that none resolved; contact fields still get filled).
         which = ("tailored resume" if files.tailored else "base resume") if files.resume else "no resume found"
         self.notify(f"Autofill queued: {company} ({which})")
 

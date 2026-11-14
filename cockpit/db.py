@@ -416,6 +416,42 @@ def toggle_saved(
     return now_saved
 
 
+def queue_intel(con: duckdb.DuckDBPyConnection, dedup_key: str) -> str:
+    """Make sure a dossier is on its way for this job; returns its resulting intel_status.
+
+    Contract: stars the job (the dossier worker only claims saved jobs), then leaves 'done',
+    'pending' and 'running' alone and moves anything else (never run, 'failed') to 'pending'.
+    Unlike `toggle_saved`, calling it twice changes nothing the second time.
+    """
+    con.begin()
+    try:
+        row = con.execute("SELECT is_saved, intel_status FROM jobs_master WHERE dedup_key = ?", [dedup_key]).fetchone()
+        if row is None:
+            raise KeyError(dedup_key)
+        status = row[1] if row[1] in ("done", "pending", "running") else "pending"
+        con.execute(
+            """UPDATE jobs_master SET is_saved = TRUE,
+                   saved_at = CASE WHEN is_saved THEN saved_at ELSE CURRENT_TIMESTAMP END,
+                   intel_status = ?, intel_error = CASE WHEN ? = 'pending' THEN NULL ELSE intel_error END,
+                   last_updated_at = CURRENT_TIMESTAMP
+               WHERE dedup_key = ?""",
+            [status, status, dedup_key],
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    write_tmux_cache(con)
+    return status
+
+
+def get_job(con: duckdb.DuckDBPyConnection, dedup_key: str) -> dict[str, Any] | None:
+    """One jobs_master row as a dict (timestamps as text, like `claim_intel`), or None."""
+    cur = con.execute(f"SELECT {_TS_AS_TEXT} FROM jobs_master WHERE dedup_key = ?", [dedup_key])
+    row = cur.fetchone()
+    return dict(zip([d[0] for d in cur.description], row)) if row else None
+
+
 def set_job_note(con: duckdb.DuckDBPyConnection, dedup_key: str, note: str | None) -> None:
     con.execute(
         "UPDATE jobs_master SET notes = ?, last_updated_at = CURRENT_TIMESTAMP WHERE dedup_key = ?",

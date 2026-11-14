@@ -240,6 +240,8 @@ Press `A` on a job to open its application form in a separate Chromium window wi
 - **Answers can be a list** for a "select all that apply" checkbox question; each item must match exactly one option, otherwise the whole question is left for you. Date answers must use the format the form shows (MM/YYYY, MM/DD/YYYY). Phrasing that names a company ("previously employed at Acme") needs its own per-company rule.
 - **Report:** `needs you` lists required questions left blank; optional questions where a rule matched but no single option fit are listed separately as `unmatched`.
 - **Not handled yet:** Greenhouse's "enter manually" cover letter, searchable school/university pickers (Lever), and LinkedIn / Indeed / Workday.
+- **Dossier first.** If the job has no finished dossier, `A` stars it and queues one (3 dossiers generate at once on your own `claude`/`agy` account); the form opens and fills by itself when the dossier finishes, with the tailored resume and cover letter. A failed dossier shows a warning and opens nothing; press `A` again to retry. Jobs waiting to open are kept in memory, so quitting the cockpit drops that wait (the dossiers still finish; press `A` again and the form opens at once).
+- **Drafted answers.** Empty free-text boxes (required ones, or worded as a question) get a first draft from your resume, dossier and job description, up to 8 per form. Drafts use only facts in those documents, are outlined in blue and listed as `drafted`; read and edit each one. A box the model cannot answer honestly stays blank. Drafts are not made by `cockpit autofill`.
 - The same flow runs from the shell with `cockpit autofill <url|key>`.
 
 ### `cockpit` CLI Commands
