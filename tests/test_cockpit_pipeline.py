@@ -140,10 +140,10 @@ def test_notify_macos(calls, monkeypatch):
 def test_tmux_cache_updates_on_transition(db_path):
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame({}))
-        assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 0/15#[default] | Q:1 (72h:1) | H:0\n"
+        assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 0/15#[default] | New:1 (72h:1) | H:0\n"
         key = con.execute("SELECT dedup_key FROM jobs_master").fetchone()[0]
         db.transition_job_state(con, key, FunnelState.APPLIED, "test")
-    assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 1/15#[default] | Q:0 (72h:0) | H:0\n"
+    assert db.TMUX_CACHE.read_text() == "#[fg=green]Jobs: 1/15#[default] | New:0 (72h:0) | H:0\n"
 
 
 def test_y_copies_outreach_to_clipboard(db_path, calls):

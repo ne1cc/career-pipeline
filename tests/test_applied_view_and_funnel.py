@@ -5,11 +5,11 @@ import asyncio
 
 from textual.widgets import DataTable
 
-from cockpit import db
+from cockpit import db, macos
 from cockpit.imap_sync import classify
 from cockpit.models import FunnelState as S
 from cockpit.tui import FILTERS, FunnelModal, StageMoveModal
-from tests.test_cockpit_pipeline import _app, career_ops, db_path, frame  # noqa: F401  (fixtures)
+from tests.test_cockpit_pipeline import FakeGemini, _app, calls, career_ops, db_path, frame  # noqa: F401  (fixtures)
 
 
 def _seed(con, *companies: str) -> dict[str, str]:
@@ -107,6 +107,72 @@ def test_classify_precedence():
     assert {subject: classify(subject) for subject in cases} == cases
 
 
+def test_opening_a_job_marks_it_and_keeps_it_in_the_queue(db_path, tmp_path, calls):
+    with db.session(db_path) as con:
+        k = _seed(con, "Opened", "Unopened", "Held")
+        _move(con, k["Held"], S.REFERRAL_HOLD)
+    app = _app(db_path, tmp_path)
+
+    async def run() -> None:
+        async with app.run_test(size=(200, 40)) as pilot:
+            table = app.query_one("#table", DataTable)
+            app.filter_idx = FILTERS.index(None)
+            app._reload(0)
+            for company in ("Opened", "Held"):
+                table.move_cursor(row=[r["company"] for r in app.rows].index(company))
+                await pilot.pause()
+                await pilot.press("o")
+                await pilot.pause()
+            # Opening changes no status and saves nothing; the row is marked on the spot.
+            assert {r["company"]: (r["status"], bool(r["is_saved"])) for r in app.rows} == {
+                "Opened": ("QUEUED", False), "Unopened": ("QUEUED", False), "Held": ("REFERRAL_HOLD", False)}
+            assert str(table.get_cell(k["Opened"], "title")).startswith("↗ ")
+            assert table.opened_row_keys == {k["Opened"], k["Held"]}
+
+            # Viewed lists opened jobs still waiting in the queue (the held one is not).
+            app.filter_idx = FILTERS.index("VIEWED")
+            app._reload(0)
+            assert [r["company"] for r in app.rows] == ["Opened"]
+            assert "Viewed:1" in app._score_base
+            assert "  opened" in app._timeline(app.rows[0])
+
+            # The opened job stays in the queue, marked; the unopened one is not marked.
+            app.filter_idx = FILTERS.index("QUEUED")
+            app._reload(0)
+            assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
+            assert table.opened_row_keys == {k["Opened"]}
+            # QUEUED is stored, NEW is shown: Status cell, view label and title-bar count.
+            assert str(table.get_cell(k["Unopened"], "status")) == "NEW"
+            assert "New:2" in app._score_base and "[NEW |" in app._score_base and "QUEUED" not in app._score_base
+            assert not str(table.get_cell(k["Unopened"], "title")).startswith("↗")
+
+            # Saving moves it out of Viewed and into Saved.
+            table.move_cursor(row=[r["company"] for r in app.rows].index("Opened"))
+            await pilot.pause()
+            await pilot.press("b")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            app.filter_idx = FILTERS.index("VIEWED")
+            app._reload(0)
+            assert app.rows == [] and "Viewed:0" in app._score_base
+            app.filter_idx = FILTERS.index("QUEUED")
+            app._reload(0)
+
+            await pilot.press("F", "F", "F")  # Shift+F cycles backwards and wraps: QUEUED → ALL → DISMISSED → INTERVIEWS
+            await pilot.pause()
+            assert FILTERS[app.filter_idx] == "INTERVIEWS"
+            await pilot.press("f", "f", "f")
+            await pilot.pause()
+            assert FILTERS[app.filter_idx] == "QUEUED"
+
+            await pilot.press("z")  # undo puts it back in the queue
+            await pilot.pause()
+            assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
+
+    asyncio.run(run())
+    assert sum(c["cmd"][0].endswith("/open") for c in calls) == 2
+
+
 def test_tui_applied_and_interviews_views(db_path, tmp_path):
     with db.session(db_path) as con:
         k = _seed(con, "Applied Co", "Interview Co")
@@ -124,7 +190,7 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
             assert table.get_row_at(0)[:3] == ["0d", "Base", "Interview Co"]
             assert table.get_row_at(1)[:3] == ["0d", "Ref", "Applied Co"]
             assert "Applied: 2 | 7d: 2 | Tailored: 0% | Referral: 50% | Screens: 0 / 0 mature (—)" in app._score_base
-            assert "QUEUED → REFERRAL_HOLD  (test)" in app._timeline(app.rows[1])
+            assert "NEW → REFERRAL_HOLD  (test)" in app._timeline(app.rows[1])
 
             await pilot.press("m")
             await pilot.pause()
@@ -151,3 +217,28 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
             assert [str(c.label) for c in table.columns.values()][:2] == ["Fit", "Score"]
 
     asyncio.run(run())
+
+
+def test_saving_a_job_generates_its_dossier_and_opens_it_when_done(db_path, career_ops, tmp_path, calls, monkeypatch):
+    opened: list[str] = []
+    monkeypatch.setattr(macos, "open_markdown", lambda path: opened.append(str(path)))
+    with db.session(db_path) as con:
+        key = _seed(con, "Acme")["Acme"]
+    app = _app(db_path, tmp_path, career_ops, FakeGemini())
+
+    async def run() -> None:
+        async with app.run_test(size=(200, 40)) as pilot:
+            await pilot.press("o")  # opening alone neither saves the job nor starts a dossier
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert not app.rows[0]["is_saved"] and opened == []
+            await pilot.press("b")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    asyncio.run(run())
+    with db.session(db_path) as con:
+        saved, intel_status, path, status = con.execute(
+            "SELECT is_saved, intel_status, intel_path, status FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()
+    assert (saved, intel_status, status) == (True, "done", "QUEUED")
+    assert opened == [path] and path.endswith("05_interview_dossier.md")

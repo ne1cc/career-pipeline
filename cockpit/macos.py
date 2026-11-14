@@ -104,3 +104,11 @@ def keychain_password(service: str = KEYCHAIN_SERVICE, env_var: str = "GMAIL_APP
 
 def gemini_api_key() -> str | None:
     return keychain_password(KEYCHAIN_GEMINI_SERVICE, "GEMINI_API_KEY")
+
+
+def open_markdown(path: str | Path) -> None:
+    """Open a Markdown file in One Markdown, or in the default app when One Markdown is missing."""
+    try:
+        subprocess.run(["/usr/bin/open", "-g", "-a", "One Markdown", str(path)], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        open_file(path)
