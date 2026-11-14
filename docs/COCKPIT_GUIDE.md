@@ -71,7 +71,7 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | Key | Does |
 |---|---|
 | `j` / `k` | Move down / up |
-| `o` or Enter | Copy the resume path **and** open the application page. The job is recorded as **Viewed** and moves to the Viewed list until you apply or skip |
+| `o` or Enter | Copy the resume path **and** open the application page. The job is recorded as **Viewed**, saved, and its dossier is generated; the finished dossier opens in One Markdown by itself. `cockpit md` opens the whole dossiers folder |
 | `O` | Same, but opens in a background tab so you can stage several |
 | `p` | QuickLook preview of the staged resume |
 | `1` / `2` / `3` | Switch resume (swe / data / analytics) and re-copy the path |

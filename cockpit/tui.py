@@ -440,7 +440,8 @@ class JobCockpitApp(App[None]):
         self._titles_cache: tuple[tuple[Any, ...], list[titles.RoleGroup]] | None = None
         self._title_roles: dict[str, str] = {}  # cleaned title -> role, from the last grouping
         self._titles_cancel: intel.CancelScope | None = None  # set while a grouping runs
-        self._titles_regroup = False  # next grouping ignores the saved title -> role map
+        self._titles_regroup = False
+        self._dossier_wait: set[str] = set()  # jobs whose dossier this session is waiting on  # next grouping ignores the saved title -> role map
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -673,6 +674,28 @@ class JobCockpitApp(App[None]):
             return
         cur_job = self._job()
         self._reload(self.query_one(DataTable).cursor_row, preserve_key=cur_job.get("dedup_key") if cur_job else None)
+
+    def _open_finished_dossiers(self) -> None:
+        """Open each dossier in One Markdown once, as soon as it finishes generating.
+
+        Contract: runs on the dossier worker thread. A job is noticed while its dossier is pending
+        or running and opened when it turns 'done'; a failed one is dropped without opening.
+        Limits: only dossiers this cockpit generated; ones written by `cockpit intel` are not opened.
+        """
+        try:
+            with session(self.db_path) as con:
+                rows = con.execute(
+                    "SELECT dedup_key, intel_status, intel_path FROM jobs_master WHERE is_saved AND intel_status IS NOT NULL"
+                ).fetchall()
+        except Exception:
+            return  # DB briefly locked; the next progress signal catches up.
+        for key, status, path in rows:
+            if status in ("pending", "running"):
+                self._dossier_wait.add(key)
+            elif key in self._dossier_wait:
+                self._dossier_wait.discard(key)
+                if status == "done" and path and Path(path).is_file():
+                    macos.open_markdown(path)
 
     def _poll_dossiers(self) -> None:
         """Timer hook: read counts off the UI thread so a busy DB lock never stalls the TUI."""
@@ -980,6 +1003,7 @@ class JobCockpitApp(App[None]):
 
             macos.open_url(url_to_open, background=background)
             self._record_view(job)
+            self._queue_dossier(job)
             self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
 
     def _record_view(self, job: dict[str, Any]) -> None:
@@ -1082,6 +1106,7 @@ class JobCockpitApp(App[None]):
             self.notify("No apply URL for this job", severity="warning")
             return
         self._record_view(job)
+        self._queue_dossier(job)
         # 2. Unsupported site → the everyday browser (already logged in), never the worker.
         target = autofill.target_for(url)
         if target is None or target.ats not in autofill.SUPPORTED:
@@ -1182,36 +1207,52 @@ class JobCockpitApp(App[None]):
     def action_toggle_save(self) -> None:
         if job := self._job():
             row = self.query_one(DataTable).cursor_row
-            key = job["dedup_key"]
-            job_folder = intel.job_folder_path(job, self.export_dir)
-            out_file = job_folder / "05_interview_dossier.md"
+            if self._toggle_save(job):
+                self._reload(row, preserve_key=job["dedup_key"])
+
+    def _toggle_save(self, job: dict[str, Any]) -> bool:
+        """Flip a job's saved flag; saving writes the stub package and queues its dossier.
+
+        Contract: returns False only when the job folder could not be created (the user is told).
+        """
+        key = job["dedup_key"]
+        job_folder = intel.job_folder_path(job, self.export_dir)
+        out_file = job_folder / "05_interview_dossier.md"
+        with session(self.db_path) as con:
+            now_saved = toggle_saved(con, key, intel_path=str(out_file), folder_path=str(job_folder))
+        if now_saved:
+            # Write initial stub posting and dossier immediately
+            try:
+                job_folder.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, OSError) as e:
+                self.notify(f"Cannot create job folder: {e}", severity="error")
+                return False
+            posting_file = job_folder / "00_job_posting.md"
+            if not posting_file.exists():
+                posting_file.write_text(
+                    f"---\ndedup_key: {key}\ncompany: \"{job.get('company')}\"\ntitle: \"{job.get('title')}\"\n"
+                    f"location: \"{job.get('location') or ''}\"\napply_url: \"{job.get('apply_url')}\"\n"
+                    f"priority_score: {job.get('priority_score', 0):.0f}\nfit_score: pending\n---\n\n"
+                    f"# {job.get('company')} — {job.get('title')}\n\n## Original Job Description\n\n{job.get('description') or 'No description provided.'}\n",
+                    "utf-8",
+                )
+            if not out_file.exists():
+                out_file.write_text(intel.render_dossier(job), "utf-8")
             with session(self.db_path) as con:
-                now_saved = toggle_saved(con, key, intel_path=str(out_file), folder_path=str(job_folder))
-            if now_saved:
-                # Write initial stub posting and dossier immediately
-                try:
-                    job_folder.mkdir(parents=True, exist_ok=True)
-                except (PermissionError, OSError) as e:
-                    self.notify(f"Cannot create job folder: {e}", severity="error")
-                    return
-                posting_file = job_folder / "00_job_posting.md"
-                if not posting_file.exists():
-                    posting_file.write_text(
-                        f"---\ndedup_key: {key}\ncompany: \"{job.get('company')}\"\ntitle: \"{job.get('title')}\"\n"
-                        f"location: \"{job.get('location') or ''}\"\napply_url: \"{job.get('apply_url')}\"\n"
-                        f"priority_score: {job.get('priority_score', 0):.0f}\nfit_score: pending\n---\n\n"
-                        f"# {job.get('company')} — {job.get('title')}\n\n## Original Job Description\n\n{job.get('description') or 'No description provided.'}\n",
-                        "utf-8",
-                    )
-                if not out_file.exists():
-                    out_file.write_text(intel.render_dossier(job), "utf-8")
-                with session(self.db_path) as con:
-                    intel.rebuild_index(con, self.export_dir)
-                self.notify(f"Saved job to {job_folder.name}")
-                self._kick_intel()
-            else:
-                self.notify(f"Unsaved {job['company']}")
-            self._reload(row, preserve_key=key)
+                intel.rebuild_index(con, self.export_dir)
+            self.notify(f"Saved job to {job_folder.name}")
+            self._kick_intel()
+        else:
+            self.notify(f"Unsaved {job['company']}")
+        return True
+
+    def _queue_dossier(self, job: dict[str, Any]) -> None:
+        """Opening a job saves it, so its dossier is generated without pressing `b`.
+
+        Limits: an already saved job is left alone (no second dossier, never unsaved).
+        """
+        if not job.get("is_saved") and self._toggle_save(job):
+            job["is_saved"] = True
 
     def action_rerun_intel(self) -> None:
         if job := self._job():
@@ -1388,6 +1429,11 @@ class JobCockpitApp(App[None]):
     def _kick_intel(self) -> None:
         self.run_worker(self._run_intel_worker, thread=True, exclusive=True, exit_on_error=False)
 
+    def _dossier_progress(self) -> None:
+        """Worker-thread hook after each claim / finished job: open what finished, refresh the table."""
+        self._open_finished_dossiers()
+        self.call_from_thread(self._on_dossier_change)
+
     def _run_intel_worker(self) -> None:
         try:
             ctx = intel.load_context(self.career_ops_root, model=self.model)
@@ -1414,7 +1460,7 @@ class JobCockpitApp(App[None]):
                     generator,
                     self.export_dir,
                     limit=5,
-                    on_progress=lambda: self.call_from_thread(self._on_dossier_change),
+                    on_progress=self._dossier_progress,
                 )
                 with session(self.db_path) as con:
                     if not dossier_counts(con)["dossiers_pending"]:

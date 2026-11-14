@@ -5,11 +5,11 @@ import asyncio
 
 from textual.widgets import DataTable
 
-from cockpit import db
+from cockpit import db, macos
 from cockpit.imap_sync import classify
 from cockpit.models import FunnelState as S
 from cockpit.tui import FILTERS, FunnelModal, StageMoveModal
-from tests.test_cockpit_pipeline import _app, calls, career_ops, db_path, frame  # noqa: F401  (fixtures)
+from tests.test_cockpit_pipeline import FakeGemini, _app, calls, career_ops, db_path, frame  # noqa: F401  (fixtures)
 
 
 def _seed(con, *companies: str) -> dict[str, str]:
@@ -197,3 +197,27 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
             assert [str(c.label) for c in table.columns.values()][:2] == ["Fit", "Score"]
 
     asyncio.run(run())
+
+
+def test_opening_a_job_generates_its_dossier_and_opens_it_when_done(db_path, career_ops, tmp_path, calls, monkeypatch):
+    opened: list[str] = []
+    monkeypatch.setattr(macos, "open_markdown", lambda path: opened.append(str(path)))
+    with db.session(db_path) as con:
+        key = _seed(con, "Acme")["Acme"]
+    app = _app(db_path, tmp_path, career_ops, FakeGemini())
+
+    async def run() -> None:
+        async with app.run_test(size=(200, 40)) as pilot:
+            await pilot.press("o")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("o")  # re-opening a saved job neither unsaves it nor regenerates
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    asyncio.run(run())
+    with db.session(db_path) as con:
+        saved, intel_status, path, status = con.execute(
+            "SELECT is_saved, intel_status, intel_path, status FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()
+    assert (saved, intel_status, status) == (True, "done", "VIEWED")
+    assert opened == [path] and path.endswith("05_interview_dossier.md")
