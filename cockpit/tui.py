@@ -285,28 +285,43 @@ class JobCockpitApp(App[None]):
     #detail-pane { width: 35%; border-left: solid $primary; padding: 0 1; }
     """
     BINDINGS = [
+        # --- Navigation ---
         Binding("j", "down", "Down"),
         Binding("k", "up", "Up"),
+        Binding("d", "page_table(0.5)", "½PgDn"),
+        Binding("ctrl+d", "page_table(0.5)", "½PgDn", show=False),
+        Binding("u", "page_table(-0.5)", "½PgUp"),
+        Binding("ctrl+u", "page_table(-0.5)", "½PgUp", show=False),
+        Binding("ctrl+f", "page_table(1.0)", "PgDn", show=False),
+        Binding("ctrl+b", "page_table(-1.0)", "PgUp", show=False),
+        Binding("g,g", "top", "Top"),
+        Binding("G", "bottom", "Bottom"),
+        Binding("shift+g", "bottom", "Bottom", show=False),
         Binding("J", "scroll_jd(3)", "JD ↓"),
         Binding("shift+j", "scroll_jd(3)", "JD ↓", show=False),
         Binding("K", "scroll_jd(-3)", "JD ↑"),
         Binding("shift+k", "scroll_jd(-3)", "JD ↑", show=False),
-        Binding("d", "page_jd(0.5)", "JD ½PgDn"),
-        Binding("ctrl+d", "page_jd(0.5)", "JD ½PgDn", show=False),
-        Binding("u", "page_jd(-0.5)", "JD ½PgUp"),
-        Binding("ctrl+u", "page_jd(-0.5)", "JD ½PgUp", show=False),
-        Binding("b", "toggle_save", "Save/MD"),
-        Binding("i", "open_dossier", "Dossier"),
-        Binding("e", "edit_dossier", "Edit (nvim)"),
-        Binding("v", "edit_dossier", "Nvim", show=False),
-        Binding("I", "rerun_intel", "Re-eval"),
-        Binding("F", "open_folder", "Folder"),
-        Binding("c", "copy_cover_letter", "Cover"),
+        # --- Triage & Marks ---
+        Binding("space", "toggle_mark", "Mark"),
+        Binding("escape", "clear_marks", "Clear marks", show=False),
+        Binding("a", "mark('APPLIED')", "Applied"),
+        Binding("s", "mark('SKIPPED')", "Skip"),
+        Binding("S", "skip_marked", "Skip marked"),
+        Binding("shift+s", "skip_marked", "Skip marked", show=False),
+        Binding("x", "dismiss", "Dismiss"),
+        Binding("h", "hold", "Hold"),
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
+        # --- Filtering & Search ---
         Binding("question_mark", "search", "Search"),
+        Binding("slash", "location", "Location"),
+        Binding("f", "cycle_filter", "Filter"),
+        Binding("t", "toggle_72h", "72h"),
+        Binding("D", "filter_date", "Date"),
         Binding("w", "filter_jd_keywords", "JD Words"),
-        Binding("r", "referrals", "Referrals"),
+        Binding("T", "titles", "Titles"),
+        Binding("escape", "cancel_titles", "Cancel grouping", show=False),
+        # --- Application & Docs ---
         Binding("o", "stage(False)", "Open"),
         Binding("O", "stage(True)", "Open bg"),
         Binding("p", "preview", "Preview"),
@@ -314,28 +329,24 @@ class JobCockpitApp(App[None]):
         Binding("shift+p", "prefill", "Prefill", show=False),
         Binding("A", "autofill", "Autofill"),
         Binding("shift+a", "autofill", "Autofill", show=False),
-        Binding("a", "mark('APPLIED')", "Applied"),
-        Binding("s", "mark('SKIPPED')", "Skip"),
-        Binding("x", "dismiss", "Dismiss"),
-        Binding("space", "toggle_mark", "Mark"),
-        Binding("escape", "clear_marks", "Clear marks", show=False),
-        Binding("S", "skip_marked", "Skip marked"),
-        Binding("shift+s", "skip_marked", "Skip marked", show=False),
-        Binding("h", "hold", "Hold"),
+        Binding("i", "open_dossier", "Dossier"),
+        Binding("e", "edit_dossier", "Edit (nvim)"),
+        Binding("v", "edit_dossier", "Nvim", show=False),
+        Binding("I", "rerun_intel", "Re-eval"),
+        Binding("M", "generate_marked", "Dossiers"),
+        Binding("shift+m", "generate_marked", "Dossiers", show=False),
+        Binding("b", "toggle_save", "Save/MD"),
+        Binding("c", "copy_cover_letter", "Cover"),
+        Binding("y", "yank", "Outreach"),
+        Binding("r", "referrals", "Referrals"),
+        Binding("F", "open_folder", "Folder"),
         Binding("1", "archetype('swe_backend')", "swe"),
         Binding("2", "archetype('data_eng')", "data"),
         Binding("3", "archetype('analytics_msba')", "analytics"),
-        Binding("y", "yank", "Outreach"),
-        Binding("t", "toggle_72h", "72h"),
-        Binding("f", "cycle_filter", "Filter"),
-        Binding("g", "segment", "Sheet"),
-        Binding("G", "generate_marked", "Dossiers"),
-        Binding("shift+g", "generate_marked", "Dossiers", show=False),
-        Binding("slash", "location", "Location"),
-        Binding("D", "filter_date", "Date"),
+        # --- System ---
+        Binding("H", "segment", "Sheet"),
+        Binding("shift+h", "segment", "Sheet", show=False),
         Binding("R", "sync", "Sync mail"),
-        Binding("T", "titles", "Titles"),
-        Binding("escape", "cancel_titles", "Cancel grouping", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -860,6 +871,30 @@ class JobCockpitApp(App[None]):
 
     def action_up(self) -> None:
         self.query_one(DataTable).action_cursor_up()
+
+    def action_page_table(self, fraction: float) -> None:
+        """Scroll the job table by a fraction of its visible height."""
+        table = self.query_one(CockpitTable)
+        steps = max(1, int(table.size.height * abs(fraction)))
+        move = table.action_cursor_down if fraction > 0 else table.action_cursor_up
+        for _ in range(steps):
+            move()
+
+    def action_top(self) -> None:
+        """Jump to the first live row in the job table."""
+        table = self.query_one(CockpitTable)
+        for i, row in enumerate(table.ordered_rows):
+            if row.key.value not in table.skipped_row_keys:
+                table.move_cursor(row=i)
+                return
+
+    def action_bottom(self) -> None:
+        """Jump to the last live row in the job table."""
+        table = self.query_one(CockpitTable)
+        for i in range(table.row_count - 1, -1, -1):
+            if table.ordered_rows[i].key.value not in table.skipped_row_keys:
+                table.move_cursor(row=i)
+                return
 
     def action_scroll_jd(self, delta: int) -> None:
         pane = self.query_one("#detail-pane", VerticalScroll)

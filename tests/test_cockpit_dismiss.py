@@ -174,7 +174,7 @@ def test_G_queues_dossiers_for_marked_rows_only(db_path, monkeypatch):
         app = JobCockpitApp(db_path)
         async with app.run_test() as pilot:
             before = len(kicks)  # the app may kick the worker on start
-            await pilot.press("space", "j", "space", "G")
+            await pilot.press("space", "j", "space", "M")
             await pilot.pause()
             assert not app.marked
             assert len(kicks) == before + 1
@@ -189,7 +189,7 @@ def test_G_without_marks_uses_cursor_row(db_path, monkeypatch):
 
     async def drive():
         async with JobCockpitApp(db_path).run_test() as pilot:
-            await pilot.press("G")
+            await pilot.press("M")
             await pilot.pause()
 
     asyncio.run(drive())
@@ -202,11 +202,35 @@ def test_G_big_batch_needs_second_press(db_path, monkeypatch):
 
     async def drive():
         async with JobCockpitApp(db_path).run_test() as pilot:
-            await pilot.press("space", "j", "space", "G")
+            await pilot.press("space", "j", "space", "M")
             await pilot.pause()
             assert not any(_status(db_path, c)[0] for c in COMPANIES)  # warned only
-            await pilot.press("G")
+            await pilot.press("M")
             await pilot.pause()
 
     asyncio.run(drive())
     assert sum(bool(_status(db_path, c)[0]) for c in COMPANIES) == 2
+
+
+def test_vim_table_navigation(db_path, monkeypatch):
+    monkeypatch.setattr(JobCockpitApp, "_kick_intel", lambda self: None)
+
+    async def drive():
+        app = JobCockpitApp(db_path)
+        async with app.run_test() as pilot:
+            table = app.query_one("CockpitTable")
+            assert table.cursor_row == 0
+            await pilot.press("G")
+            await pilot.pause()
+            assert table.cursor_row == table.row_count - 1
+            await pilot.press("g", "g")
+            await pilot.pause()
+            assert table.cursor_row == 0
+            await pilot.press("d")
+            await pilot.pause()
+            assert table.cursor_row > 0
+            await pilot.press("u")
+            await pilot.pause()
+            assert table.cursor_row == 0
+
+    asyncio.run(drive())
