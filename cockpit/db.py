@@ -59,7 +59,23 @@ DB_PATH = resolve_db_path()
 TMUX_CACHE = Path("/tmp/jobcockpit_tmux.cache")
 DAILY_GOAL = 15
 PACIFIC = ZoneInfo("America/Los_Angeles")
-POSITIVE = (FunnelState.OA_RECEIVED.value, FunnelState.PHONE_SCREEN.value)
+# Every state that means the employer responded favourably, in pipeline order.
+POSITIVE = (
+    FunnelState.OA_RECEIVED.value,
+    FunnelState.PHONE_SCREEN.value,
+    FunnelState.TECH_ROUND.value,
+    FunnelState.FINAL_ROUND.value,
+    FunnelState.OFFER.value,
+)
+# (dedup_key, s): every status a job has held. A move that was undone straight away does not count.
+_REACHED_SQL = """
+    SELECT dedup_key, to_status AS s FROM (
+        SELECT dedup_key, to_status, triggered_by,
+               lead(triggered_by) OVER (PARTITION BY dedup_key ORDER BY transitioned_at, transition_id) AS nxt
+        FROM state_transitions)
+    WHERE triggered_by <> 'undo' AND nxt IS DISTINCT FROM 'undo'
+    UNION SELECT dedup_key, status FROM jobs_master
+"""
 
 SCHEMA = """
 CREATE SEQUENCE IF NOT EXISTS transition_seq;
@@ -598,7 +614,13 @@ def fetch_jobs(
     """`floor` hides QUEUED jobs below that score; jobs in any other state or saved jobs always show."""
     clauses, params = [], []
     order_by = "priority_score DESC, discovered_at"
-    if status == "SAVED":
+    if status == "APPLIED":
+        clauses.append("status = 'APPLIED'")
+        order_by = "applied_at DESC NULLS LAST, last_updated_at DESC"
+    elif status == "INTERVIEWS":
+        clauses.append(f"status IN ({', '.join(repr(s) for s in POSITIVE)})")
+        order_by = "last_updated_at DESC"
+    elif status == "SAVED":
         clauses.append("is_saved = TRUE")
         order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
     elif status == "DISMISSED":
@@ -667,7 +689,12 @@ def fetch_jobs(
 
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
-        f"SELECT {_TS_AS_TEXT} FROM jobs_master {where} ORDER BY {order_by}", params
+        # had_referral and age_days are derived here in one pass, so views never query per row.
+        f"SELECT {_TS_AS_TEXT}, "
+        f"dedup_key IN (SELECT dedup_key FROM ({_REACHED_SQL}) WHERE s = 'REFERRAL_HOLD') AS had_referral, "
+        "CAST(floor((epoch(now()) - epoch(applied_at)) / 86400) AS INTEGER) AS age_days "
+        f"FROM jobs_master {where} ORDER BY {order_by}",
+        params,
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -725,7 +752,7 @@ def recent_applied_companies(con: duckdb.DuckDBPyConnection, days: int = 30) -> 
     """Return normalized company names applied to within the last N days."""
     rows = con.execute(
         "SELECT DISTINCT company_norm FROM jobs_master "
-        "WHERE status IN ('APPLIED', 'INTERVIEW', 'OFFER') "
+f"WHERE status IN ('APPLIED', {', '.join(repr(s) for s in POSITIVE)}) "
         "AND company_norm IS NOT NULL "
         "AND applied_at IS NOT NULL "
         "AND epoch(applied_at) >= epoch(now()) - ? * 86400",
@@ -796,3 +823,86 @@ def funnel_by(con: duckdb.DuckDBPyConnection, column: str) -> list[tuple[Any, ..
                    median(date_diff('minute', discovered_at, applied_at)) / 60.0 AS latency_h
             FROM jobs_master GROUP BY 1 ORDER BY total DESC"""
     ).fetchall()
+
+
+# One row per job ever applied to, with a flag for each stage it reached.
+# "tailored" means a tailored resume exists for the job, not proof that it was the file sent.
+_APPLIED_SQL = f"""
+    WITH reached AS ({_REACHED_SQL})
+    SELECT j.dedup_key, j.applied_at,
+           j.tailored_resume_path IS NOT NULL AS tailored,
+           bool_or(r.s = 'REFERRAL_HOLD') AS referral,
+           bool_or(r.s IN ({", ".join(repr(s) for s in POSITIVE)})) AS screen,
+           bool_or(r.s IN ('TECH_ROUND', 'FINAL_ROUND', 'OFFER')) AS tech,
+           bool_or(r.s IN ('FINAL_ROUND', 'OFFER')) AS final,
+           bool_or(r.s = 'OFFER') AS offer,
+           epoch(j.applied_at) <= epoch(now()) - 14 * 86400 AS mature
+    FROM jobs_master j JOIN reached r USING (dedup_key)
+    WHERE j.applied_at IS NOT NULL
+    GROUP BY ALL
+"""
+
+
+def _pct(part: int, whole: int) -> float | None:
+    return round(100.0 * part / whole, 1) if whole else None
+
+
+def fetch_job_transitions(con: duckdb.DuckDBPyConnection, dedup_key: str) -> list[dict[str, Any]]:
+    """One job's status history, oldest first, for the detail-pane timeline."""
+    cur = con.execute(
+        "SELECT from_status, to_status, triggered_by, notes, transitioned_at::VARCHAR AS transitioned_at "
+        "FROM state_transitions WHERE dedup_key = ? ORDER BY transitioned_at, transition_id",
+        [dedup_key],
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def applied_summary(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    """Totals for the APPLIED title bar.
+
+    Contract: counts every job with an `applied_at`, whatever its status is now. Percentages are
+    None when their denominator is zero. The screen rate uses only applications at least 14 days
+    old ("mature"), because younger ones have not had time to get a reply.
+    """
+    total, week, tailored, referral, mature, screens = con.execute(
+        f"""SELECT count(*), count(*) FILTER (WHERE epoch(applied_at) >= epoch(now()) - 7 * 86400),
+                   count(*) FILTER (WHERE tailored), count(*) FILTER (WHERE referral),
+                   count(*) FILTER (WHERE mature), count(*) FILTER (WHERE mature AND screen)
+            FROM ({_APPLIED_SQL})"""
+    ).fetchone()
+    return {
+        "total_applied": total,
+        "applied_7d": week,
+        "tailored_pct": _pct(tailored, total),
+        "referral_pct": _pct(referral, total),
+        "mature_14d_count": mature,
+        "mature_14d_screens": screens,
+        "mature_screen_rate_pct": _pct(screens, mature),
+    }
+
+
+def weekly_funnel_cohorts(con: duckdb.DuckDBPyConnection, weeks: int = 8) -> list[dict[str, Any]]:
+    """The latest `weeks` application weeks, newest first, each with how far its jobs got.
+
+    Contract: a job belongs to the Monday-start Pacific week it was applied in, and every later
+    stage it reaches is counted in that same week. `mature_14d` and `screen_pct` cover only the
+    cohort's applications that are at least 14 days old; `screen_pct` is None when there are none.
+    """
+    cur = con.execute(
+        f"""SELECT CAST(date_trunc('week', timezone('America/Los_Angeles', applied_at)) AS DATE)::VARCHAR AS week,
+                   count(*) AS applied, count(*) FILTER (WHERE tailored) AS tailored,
+                   count(*) FILTER (WHERE referral) AS referral, count(*) FILTER (WHERE screen) AS screen,
+                   count(*) FILTER (WHERE tech) AS tech, count(*) FILTER (WHERE final) AS final,
+                   count(*) FILTER (WHERE offer) AS offer, count(*) FILTER (WHERE mature) AS mature_14d,
+                   count(*) FILTER (WHERE mature AND screen) AS mature_screens
+            FROM ({_APPLIED_SQL}) GROUP BY 1 ORDER BY 1 DESC LIMIT ?""",
+        [weeks],
+    )
+    cols = [d[0] for d in cur.description]
+    out = []
+    for r in cur.fetchall():
+        row = dict(zip(cols, r))
+        row["screen_pct"] = _pct(row.pop("mature_screens"), row["mature_14d"])
+        out.append(row)
+    return out
