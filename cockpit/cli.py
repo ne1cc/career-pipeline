@@ -1160,8 +1160,9 @@ def dossier_cmd(
         subprocess.run([editor, str(root)])
         return
     elif one_markdown:
-        # No query + one_markdown -> open the artifacts root folder in One Markdown
-        macos.open_file(root, app="One Markdown")
+        # No query + one_markdown -> One Markdown cannot open a folder, so show the root in Finder.
+        macos.open_file(root)
+        console.print(f"Opened dossiers folder in Finder: [cyan]{root}[/cyan]")
         return
     else:
         valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
@@ -1208,7 +1209,7 @@ def onemarkdown_cmd(
     latest: Annotated[bool, typer.Option("--latest", "-l", help="Open the most recently modified dossier in One Markdown")] = False,
     export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
 ) -> None:
-    """Open an interview dossier (or artifacts root) directly in One Markdown."""
+    """Open an interview dossier in One Markdown; with no query, open the dossiers folder in Finder."""
     dossier_cmd(query=query, one_markdown=True, latest=latest, export_dir=export_dir)
 
 
