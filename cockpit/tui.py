@@ -20,8 +20,10 @@ from cockpit import autofill, intel, macos, prefill as prefill_mod, titles
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
+    applied_summary,
     dossier_counts,
     expire_stale_referral_holds,
+    fetch_job_transitions,
     fetch_jobs,
     finish_intel,
     list_ingest_dates,
@@ -35,6 +37,7 @@ from cockpit.db import (
     set_resume_archetype,
     toggle_saved,
     transition_job_state,
+    weekly_funnel_cohorts,
 )
 from cockpit.imap_sync import sync_gmail_statuses
 from cockpit.models import FunnelState
@@ -43,7 +46,7 @@ from cockpit.normalizer import REPO_ROOT, highlight_jd, linkedin_referral_url, l
 DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pending")
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", "INTERVIEWS", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -191,6 +194,91 @@ class AnswerModal(ModalScreen[None]):
         self.dismiss(None)
 
 
+# Views that track sent applications: there the Fit and Score columns show Age and Mode instead.
+TRACKING_VIEWS = ("APPLIED", "INTERVIEWS")
+STAGES = (
+    FunnelState.OA_RECEIVED,
+    FunnelState.PHONE_SCREEN,
+    FunnelState.TECH_ROUND,
+    FunnelState.FINAL_ROUND,
+    FunnelState.OFFER,
+    FunnelState.REJECTED,
+)
+
+
+def apply_mode(row: dict[str, Any]) -> str:
+    """How a job was applied to: via a referral, with a tailored resume, or with the base resume.
+
+    Limits: "Tailored" means a tailored resume exists for the job, not proof that it was the file sent.
+    """
+    if row.get("had_referral"):
+        return "Ref"
+    return "Tailored" if row.get("tailored_resume_path") else "Base"
+
+
+def _pct(value: float | None) -> str:
+    return "—" if value is None else f"{value:.0f}%"
+
+
+class StageMoveModal(ModalScreen[FunnelState | None]):
+    """Pick the stage an application has reached: 1-6 chooses, Esc or q cancels."""
+
+    BINDINGS = [
+        *(Binding(str(n), f"pick({n})", stage.value, show=False) for n, stage in enumerate(STAGES, 1)),
+        Binding("escape", "close", "Cancel"),
+        Binding("q", "close", "Cancel", show=False),
+    ]
+    DEFAULT_CSS = "StageMoveModal { align: center middle; } #stage-box { width: 44; height: auto; border: round $accent; padding: 1 2; background: $surface; }"
+
+    def __init__(self, company: str) -> None:
+        super().__init__()
+        self.company = company
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="stage-box"):
+            yield Label(f"Move {self.company} to:")
+            for n, stage in enumerate(STAGES, 1):
+                yield Label(f"  {n}  {stage.value}")
+            yield Label("Esc to cancel")
+
+    def action_pick(self, n: int) -> None:
+        self.dismiss(STAGES[n - 1])
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class FunnelModal(ModalScreen[None]):
+    """Read-only table of weekly application cohorts (rows from db.weekly_funnel_cohorts)."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close", show=False)]
+    DEFAULT_CSS = """
+    FunnelModal { align: center middle; }
+    #funnel-box { width: 96; height: auto; max-height: 85%; border: round $accent; padding: 0 1; background: $surface; }
+    #funnel-table { height: auto; }
+    """
+    HEADERS = ("Week", "Applied", "Tailored", "Ref", "Screen", "Tech", "Final", "Offer", "Mature 14d?", "Screen %")
+
+    def __init__(self, cohorts: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self.cohorts = cohorts
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="funnel-box"):
+            yield Label("Weekly funnel by application week (Pacific). Screen % counts only applications 14+ days old. Esc to close")
+            yield DataTable(id="funnel-table", cursor_type="row", zebra_stripes=True)
+
+    def on_mount(self) -> None:
+        table = self.query_one("#funnel-table", DataTable)
+        table.add_columns(*self.HEADERS)
+        for c in self.cohorts:
+            mature = f"{c['mature_14d']}/{c['applied']}"
+            table.add_row(c["week"], *(str(c[k]) for k in ("applied", "tailored", "referral", "screen", "tech", "final", "offer")), mature, _pct(c["screen_pct"]))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class CockpitTable(DataTable):
     DEFAULT_CSS = """
     CockpitTable > .datatable--cursor {
@@ -291,6 +379,9 @@ class JobCockpitApp(App[None]):
         Binding("shift+a", "autofill", "Autofill", show=False),
         Binding("a", "mark('APPLIED')", "Applied"),
         Binding("s", "mark('SKIPPED')", "Skip"),
+        Binding("m", "move_stage", "Stage"),
+        Binding("V", "funnel", "Funnel"),
+        Binding("shift+v", "funnel", "Funnel", show=False),
         Binding("h", "hold", "Hold"),
         Binding("1", "archetype('swe_backend')", "swe"),
         Binding("2", "archetype('data_eng')", "data"),
@@ -374,7 +465,13 @@ class JobCockpitApp(App[None]):
             return
 
         col = self.sort_col
-        if col == "fit":
+        if self._tracking() and col in ("fit", "score"):
+            # These two columns show Age and Mode here, so their headers sort by what is shown.
+            def age(r: dict[str, Any]) -> int:
+                return r["age_days"] if r.get("age_days") is not None else -1
+
+            self.rows.sort(key=age if col == "fit" else apply_mode, reverse=self.sort_reverse)
+        elif col == "fit":
             if self.sort_reverse:
                 self.rows.sort(
                     key=lambda r: (r.get("fit_score") is not None, r.get("fit_score") or 0.0),
@@ -414,8 +511,10 @@ class JobCockpitApp(App[None]):
             )
 
     def _update_column_headers(self) -> None:
-        table = self.query_one(DataTable)
+        table = self.query_one(CockpitTable)
+        relabel = {"fit": "Age", "score": "Mode"} if self._tracking() else {}
         for key, base_label, _ in COLUMNS:
+            base_label = relabel.get(key, base_label)
             if key in table.columns:
                 col = table.columns[key]
                 if self.sort_col == key:
@@ -449,7 +548,11 @@ class JobCockpitApp(App[None]):
 
         self._reload(preserve_key=cur_key)
 
+    def _tracking(self) -> bool:
+        return FILTERS[self.filter_idx] in TRACKING_VIEWS
+
     def _reload(self, row: int | None = None, preserve_key: str | None = None) -> None:
+        tracking = self._tracking()
         with session(self.db_path) as con:
             self.rows = fetch_jobs(
                 con,
@@ -463,6 +566,7 @@ class JobCockpitApp(App[None]):
             )
             self._recent_applied = recent_applied_companies(con, days=30)
             b = scoreboard(con)
+            summary = applied_summary(con) if tracking else None
         self._view_rows = self.rows
         if self.title_role is not None:
             keep = self.title_role.titles
@@ -497,6 +601,9 @@ class JobCockpitApp(App[None]):
                 fit_str = "—"
 
             score_str = f"★ {r['priority_score']:.0f}" if is_saved else f"{r['priority_score']:.0f}"
+            if tracking:
+                fit_str = f"{r['age_days']}d" if r.get("age_days") is not None else "—"
+                score_str = apply_mode(r)
 
             table.add_row(
                 fit_str,
@@ -522,9 +629,19 @@ class JobCockpitApp(App[None]):
         jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
         date_indicator += f" | role:{self.title_role.role} ({len(self.rows)})" if self.title_role else ""
-        self._score_base = (
+        counts = (
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
-            f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}   "
+            f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
+        )
+        if summary:
+            counts = (
+                f"Applied: {summary['total_applied']} | 7d: {summary['applied_7d']} | "
+                f"Tailored: {_pct(summary['tailored_pct'])} | Referral: {_pct(summary['referral_pct'])} | "
+                f"Screens: {summary['mature_14d_screens']} / {summary['mature_14d_count']} mature "
+                f"({_pct(summary['mature_screen_rate_pct'])})"
+            )
+        self._score_base = (
+            f"{counts}   "
             f"[{label} | sheet:{self.segment or 'all'} | loc:{self.loc_query or 'any'}{date_indicator} | q:{self.search_query or 'none'}{jd_indicator}{sort_indicator}]"
         )
         self._render_score(b)
@@ -781,17 +898,37 @@ class JobCockpitApp(App[None]):
             else ""
         )
         dossier_line = f"\n[b]Dossier:[/b] {escape(r['intel_path'])}" if r.get("intel_path") else ""
+        timeline = self._timeline(r)
 
         detail.update(
             f"[b]{escape(r['title'])}[/b]{disq_badge}{cooldown_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
             f"{timing_line}{source_line}{yoe_str}\n"
-            f"{notes_line}"
+            f"{notes_line}{timeline}"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"
             f"[b]URL:[/b] {escape(r['apply_url'])}\n"
             f"[b]Resume:[/b] {escape(macos.posix_path(r['resume_path']))}"
             f"{dossier_line}\n\n"
             f"{highlighted_desc}"
         )
+
+    def _timeline(self, r: dict[str, Any]) -> str:
+        """Markup for a job's status history (date, change, who made it, note), or "" if it has none.
+
+        Limits: QUEUED jobs are skipped without a query; a locked database yields no timeline, not an error.
+        """
+        if r.get("status") == FunnelState.QUEUED.value:
+            return ""
+        try:
+            with session(self.db_path) as con:
+                steps = fetch_job_transitions(con, r["dedup_key"])
+        except Exception:
+            return ""  # DB briefly locked by another process; the next highlight redraws it.
+        lines = [
+            f"  {(t['transitioned_at'] or '')[:10]}  {t['from_status'] or '—'} → {t['to_status']}  ({t['triggered_by']})"
+            + (f"  {t['notes']}" if t.get("notes") else "")
+            for t in steps
+        ]
+        return f"[b]Timeline:[/b]\n{escape(chr(10).join(lines))}\n" if lines else ""
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._show(event.cursor_row)
@@ -1090,6 +1227,33 @@ class JobCockpitApp(App[None]):
     def action_mark(self, status: str) -> None:
         if job := self._job():
             self._mark(job["dedup_key"], FunnelState(status))
+
+    def action_move_stage(self) -> None:
+        """`m`: record the stage an applied job has reached, keeping the cursor where it was."""
+        job = self._job()
+        if not job:
+            return
+        if not job.get("applied_at"):
+            self.notify("Mark it applied (a) first.", severity="warning")
+            return
+        key, row = job["dedup_key"], self.query_one(DataTable).cursor_row
+
+        def done(stage: FunnelState | None) -> None:
+            if stage is None:
+                return
+            with session(self.db_path) as con:
+                prev = transition_job_state(con, key, stage, "tui")
+            self.undo_stack.append((key, prev))
+            self.notify(f"{job['company']} → {stage.value}")
+            self._reload(row, preserve_key=key)
+
+        self.push_screen(StageMoveModal(job["company"]), done)
+
+    def action_funnel(self) -> None:
+        """`V`: weekly cohort table of everything applied to."""
+        with session(self.db_path) as con:
+            cohorts = weekly_funnel_cohorts(con)
+        self.push_screen(FunnelModal(cohorts))
 
     def action_hold(self) -> None:
         job = self._job()
