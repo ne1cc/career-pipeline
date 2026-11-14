@@ -1019,13 +1019,19 @@ def _interactive_fuzzy_select_dossier(root: Path) -> dict[str, Any] | None:
         lines = []
         for c in candidates:
             fit = f"{c['fit_score']:>3}★" if c['fit_score'] != "—" else "   — "
-            lines.append(f"{fit}  │  {c['mtime']}  │  {c['name']}  │  {c['folder']}")
+            # Tab-separated: field 1 is shown, field 2 (folder) is the answer, field 3 feeds the preview.
+            lines.append(f"{fit}  │  {c['mtime']}  │  {c['name']}\t{c['folder']}\t{c['dossier'] or ''}")
+        viewer = "glow -s dark" if shutil.which("glow") else "cat"  # rendered preview when glow is installed
         try:
             proc = subprocess.Popen(
                 [
                     str(fzf_bin),
-                    "--height=40%",
+                    "--height=90%",
                     "--reverse",
+                    "--delimiter=\t",
+                    "--with-nth=1",
+                    f"--preview={viewer} {{3}}",
+                    "--preview-window=right:60%:wrap",
                     "--prompt=Select Job Dossier > ",
                     "--header=Enter: select, Esc: cancel. Search by company, role, or score.",
                 ],
@@ -1036,9 +1042,9 @@ def _interactive_fuzzy_select_dossier(root: Path) -> dict[str, Any] | None:
             )
             stdout, _ = proc.communicate(input="\n".join(lines))
             if proc.returncode == 0 and stdout.strip():
-                parts = stdout.strip().split("│")
-                if len(parts) >= 4:
-                    chosen_folder = Path(parts[-1].strip())
+                parts = stdout.strip("\n").split("\t")
+                if len(parts) >= 2:
+                    chosen_folder = Path(parts[1])
                     for c in candidates:
                         if c["folder"] == chosen_folder:
                             return c
@@ -1107,7 +1113,8 @@ def dossier_cmd(
                           f"([yellow]{chosen['fit_score']}★[/yellow])")
             actions_msg = (
                 "[1] View in terminal    [2] Open in One Markdown  [3] Open in Neovim\n"
-                "[4] Open Folder/Finder  [5] Open Apply URL        [6] Copy Path  [q] Cancel"
+                "[4] Open Folder/Finder  [5] Open Apply URL        [6] Copy Path\n"
+                "[7] Write notes         [q] Cancel"
             )
             console.print(Panel(actions_msg, title="Choose Action", border_style="cyan"))
             choice = typer.prompt("Select action", default="2").strip().lower()
@@ -1128,6 +1135,9 @@ def dossier_cmd(
                     console.print(f"Opened apply URL: [cyan]{target_apply_url}[/cyan]")
                 else:
                     console.print("[yellow]No apply URL found in dossier.[/yellow]")
+                return
+            elif choice in ("7", "n", "notes"):
+                notes_cmd(query=target_folder.name, export_dir=root)
                 return
             elif choice in ("6", "c", "copy"):
                 macos.copy_to_clipboard(str(target_dossier or target_folder))
@@ -1160,9 +1170,15 @@ def dossier_cmd(
         subprocess.run([editor, str(root)])
         return
     elif one_markdown:
-        # No query + one_markdown -> One Markdown cannot open a folder, so show the root in Finder.
-        macos.open_file(root)
-        console.print(f"Opened dossiers folder in Finder: [cyan]{root}[/cyan]")
+        # No query + one_markdown -> the index is the front door. One Markdown cannot open a folder,
+        # so without an index the root is shown in Finder instead.
+        index = root / "index.md"
+        if index.is_file():
+            macos.open_file(index, app="One Markdown")
+            console.print(f"Opened dossier index in One Markdown: [cyan]{index}[/cyan]")
+        else:
+            macos.open_file(root)
+            console.print(f"Opened dossiers folder in Finder: [cyan]{root}[/cyan]")
         return
     else:
         valid = [(d, get_dossier_file(d)) for d in subdirs if get_dossier_file(d)]
@@ -1209,8 +1225,52 @@ def onemarkdown_cmd(
     latest: Annotated[bool, typer.Option("--latest", "-l", help="Open the most recently modified dossier in One Markdown")] = False,
     export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
 ) -> None:
-    """Open an interview dossier in One Markdown; with no query, open the dossiers folder in Finder."""
+    """Open an interview dossier in One Markdown; with no query, open the index of all dossiers."""
     dossier_cmd(query=query, one_markdown=True, latest=latest, export_dir=export_dir)
+
+
+@app.command("pick")
+def pick_cmd(
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Fuzzy-pick a dossier with a live preview, then choose what to do with it."""
+    dossier_cmd(select=True, export_dir=export_dir)
+
+
+@app.command("notes")
+def notes_cmd(
+    query: Annotated[Optional[str], typer.Argument(help="Company or role: open that job's notes in $EDITOR")] = None,
+    export_dir: Annotated[Optional[Path], typer.Option(help="Custom artifacts root (default: ~/Documents/jobspy-cockpit)")] = None,
+) -> None:
+    """Write notes on one job, or (no query) collect all notes into learning-log.md and open it.
+
+    Contract: with a query, the first job folder whose name contains it gets its notes file opened
+    in $EDITOR (created empty if missing). With no query, the learning log is rebuilt from every
+    job's notes and opened in One Markdown.
+    """
+    from cockpit import intel as intel_module
+
+    root = (export_dir or intel_module.resolve_export_dir()).expanduser()
+    if not root.exists():
+        console.print(f"[yellow]Artifacts directory does not exist yet: {root}[/yellow]")
+        raise typer.Exit(1)
+    # 1. No query: rebuild the log and show it.
+    if not query:
+        count = intel_module.build_learning_log(root)
+        log = root / intel_module.LEARNING_LOG
+        macos.open_file(log, app="One Markdown")
+        console.print(f"Learning log rebuilt from {count} job(s): [cyan]{log}[/cyan]")
+        return
+    # 2. Query: open the matching job's notes for editing.
+    q = query.lower().strip()
+    matched = sorted(d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".") and q in d.name.lower())
+    if not matched:
+        console.print(f"[red]No job folder matching '{query}' in {root}[/red]")
+        raise typer.Exit(1)
+    company, _, title = matched[0].name.partition(" - ")
+    notes = intel_module.ensure_notes(matched[0], company, title or company)
+    editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
+    subprocess.run([editor, str(notes)])
 
 
 @app.command("edit")

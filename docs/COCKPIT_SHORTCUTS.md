@@ -32,6 +32,10 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 ### Dossiers & Artifacts
 | Command | Does |
 |---|---|
+| `cockpit md` | Open `index.md` in One Markdown: every saved job grouped by stage, with links to its dossier, fit, resume, letter and notes |
+| `cockpit pick` | Fuzzy-pick a dossier with a live preview, then view, open, edit or annotate it |
+| `cockpit notes <query>` | Write notes on one job (`09_notes.md` in its folder; never overwritten) |
+| `cockpit notes` | Collect every job's notes into `learning-log.md` and open it |
 | `cockpit dossier` | List all saved job dossiers in a table with file & PDF counts |
 | `cockpit dossier <query>` | Open matching dossier in default editor/viewer (e.g. `cockpit dossier nintendo`) |
 | `cockpit dossier <query> -v` | Open matching dossier directly in Neovim |
