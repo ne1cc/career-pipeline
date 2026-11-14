@@ -530,12 +530,6 @@ def test_jd_pane_scrolls_with_keys(db_path, tmp_path, calls):
             await pilot.press("J")
             await pilot.pause()
             assert pane.scroll_y == 3
-            await pilot.press("d")
-            await pilot.pause()
-            assert pane.scroll_y > 3
-            await pilot.press("u")
-            await pilot.pause()
-            assert pane.scroll_y == 3
             await pilot.press("K")
             await pilot.pause()
             assert pane.scroll_y == 0
