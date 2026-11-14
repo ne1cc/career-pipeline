@@ -558,6 +558,11 @@ def fetch_jobs(
         order_by = "fit_score DESC NULLS LAST, priority_score DESC, discovered_at"
     elif status == "INTERN":
         clauses.append("is_internship = TRUE AND (is_open IS NULL OR is_open = TRUE) AND (undergrad_only IS NULL OR undergrad_only = FALSE)")
+    elif status == "NEW_GRAD":
+        clauses.append(
+            "status = 'QUEUED' AND NOT is_internship AND (is_open IS NULL OR is_open = TRUE) "
+            "AND (site = 'simplify_campus' OR regexp_matches(lower(title), '(new grad|early career|university grad|campus|junior|associate|rotational|entry[- ]level|trainee)'))"
+        )
     elif status in ("72H", "QUEUED_72H"):
         clauses.append("status = 'QUEUED' AND (is_open IS NULL OR is_open = TRUE)")
         hours = hours or 72
@@ -669,6 +674,19 @@ def get_ingested_dates_manifest(con: duckdb.DuckDBPyConnection) -> set[str]:
     return {r[0] for r in con.execute("SELECT DISTINCT date_str FROM ingest_manifest").fetchall() if r[0]}
 
 
+def recent_applied_companies(con: duckdb.DuckDBPyConnection, days: int = 30) -> set[str]:
+    """Return normalized company names applied to within the last N days."""
+    rows = con.execute(
+        "SELECT DISTINCT company_norm FROM jobs_master "
+        "WHERE status IN ('APPLIED', 'INTERVIEW', 'OFFER') "
+        "AND company_norm IS NOT NULL "
+        "AND applied_at IS NOT NULL "
+        "AND epoch(applied_at) >= epoch(now()) - ? * 86400",
+        [days],
+    ).fetchall()
+    return {str(r[0]) for r in rows if r[0]}
+
+
 def rescore_queued(
     con: duckdb.DuckDBPyConnection,
     rules: dict[str, Any] | None = None,
@@ -682,7 +700,7 @@ def rescore_queued(
 
     rules = rules or load_rules()
     rows = con.execute(
-        "SELECT dedup_key, title, description, location, is_remote FROM jobs_master WHERE status = 'QUEUED'"
+        "SELECT dedup_key, title, description, location, is_remote, company FROM jobs_master WHERE status = 'QUEUED'"
     ).fetchall()
     if not rows:
         return (0, {}) if with_audit else 0
@@ -691,10 +709,10 @@ def rescore_queued(
     scored = []
     audit_counts: dict[str, int] = {}
 
-    for idx, (key, title, desc, loc, remote) in enumerate(rows):
+    for idx, (key, title, desc, loc, remote, company) in enumerate(rows):
         if progress_callback and idx % 250 == 0:
             progress_callback(idx, total_rows)
-        s = score_job(title, desc or "", rules, loc or "", bool(remote))
+        s = score_job(title, desc or "", rules, loc or "", bool(remote), company=company or "")
         scored.append((key, s.score, s.archetype.value, s.resume_path))
         if s.disqualified_reason:
             audit_counts[s.disqualified_reason] = audit_counts.get(s.disqualified_reason, 0) + 1

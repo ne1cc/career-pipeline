@@ -27,6 +27,7 @@ from cockpit.db import (
     list_ingest_dates,
     list_segments,
     min_score,
+    recent_applied_companies,
     restore_job_state,
     scoreboard,
     session,
@@ -42,7 +43,7 @@ from cockpit.normalizer import REPO_ROOT, highlight_jd, linkedin_referral_url, l
 DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pending")
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -459,6 +460,7 @@ class JobCockpitApp(App[None]):
                 jd_keywords=self.jd_keywords,
                 date_filter=self.date_filter,
             )
+            self._recent_applied = recent_applied_companies(con, days=30)
             b = scoreboard(con)
         self._view_rows = self.rows
         if self.title_role is not None:
@@ -731,7 +733,14 @@ class JobCockpitApp(App[None]):
             detail.update("No jobs in this view.")
             return
         r = self.rows[index]
-        scored = score_job(r["title"], r["description"] or "", self.rules, r["location"] or "", bool(r["is_remote"]))
+        scored = score_job(
+            r["title"],
+            r["description"] or "",
+            self.rules,
+            r["location"] or "",
+            bool(r["is_remote"]),
+            company=r.get("company") or "",
+        )
         matched = scored.matched
         highlighted_desc = highlight_jd(r["description"] or "", matched, self.rules)
 
@@ -749,10 +758,15 @@ class JobCockpitApp(App[None]):
         source_line = f" · [b]Source:[/b] {escape(source_folder)}" if source_folder else ""
         yoe_str = f" · [b]YOE:[/b] {scored.required_yoe}+ yrs" if scored.required_yoe else ""
         disq_badge = f" [bold red]({scored.disqualified_reason})[/bold red]" if scored.disqualified_reason else ""
+        cooldown_badge = (
+            " [bold yellow][APPLIED <30d][/bold yellow]"
+            if r.get("company_norm") in getattr(self, "_recent_applied", set()) and r.get("status") != "APPLIED"
+            else ""
+        )
         dossier_line = f"\n[b]Dossier:[/b] {escape(r['intel_path'])}" if r.get("intel_path") else ""
 
         detail.update(
-            f"[b]{escape(r['title'])}[/b]{disq_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
+            f"[b]{escape(r['title'])}[/b]{disq_badge}{cooldown_badge}\n{escape(r['company'])} — {escape(r['location'] or '')}{fit_line}\n"
             f"{timing_line}{source_line}{yoe_str}\n"
             f"{notes_line}"
             f"[b]Matched:[/b] {escape(', '.join(matched) or '—')}\n"

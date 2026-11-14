@@ -88,6 +88,10 @@ primary = ["seattle", "bellevue", "redmond", "kirkland", "wa", "remote"]
 secondary_points = 5.0
 secondary = ["ca", "california", "oregon", "portland", "san francisco", "los angeles", "san diego", "san jose"]
 
+[companies]
+priority_points = 10.0
+priority = []
+
 # A keyword found in the title counts double.
 [weights.data_eng]
 duckdb = 4.0
