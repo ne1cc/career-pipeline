@@ -7,6 +7,7 @@ from cockpit.prefill import (
     read_candidate_profile,
     build_prefill_fields,
     format_prefill_table,
+    application_files,
 )
 
 
@@ -157,3 +158,84 @@ def test_build_prefill_url():
     ashby_url = build_prefill_url(ashby_target, prof)
     assert "firstName=Jane" in ashby_url
     assert "lastName=Developer" in ashby_url
+
+
+def test_read_candidate_profile_nested(tmp_path: Path):
+    cfg_dir = tmp_path / "config" / "career_ops" / "config"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "profile.yml").write_text(
+        """
+candidate:
+  full_name: "Jane Developer"
+  email: "jane@example.com"
+  phone: "+1 (555) 019-2834"
+  location: "Springfield, ST"
+  linkedin: "https://linkedin.com/in/janedev"
+  portfolio_url: "https://janedev.com"
+  github: "https://github.com/janedev"
+location:
+  country: "Exampleland"
+  city: "Elsewhere"
+  authorized_in: ["Exampleland"]
+""",
+        "utf-8",
+    )
+
+    prof = read_candidate_profile(tmp_path)
+    assert prof.full_name == "Jane Developer"
+    assert prof.email == "jane@example.com"
+    assert prof.phone == "+1 (555) 019-2834"
+    assert prof.github == "https://github.com/janedev"
+    assert prof.portfolio_url == "https://janedev.com"
+    assert prof.location == "Springfield, ST"
+
+
+def test_read_candidate_profile_evidence_fallback(tmp_path: Path):
+    cfg_dir = tmp_path / "config" / "career_ops" / "config"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "profile.yml").write_text("target_roles:\n  primary: [Dev]\n", "utf-8")
+    ev_dir = tmp_path / "config" / "evidence"
+    ev_dir.mkdir(parents=True)
+    (ev_dir / "01_master_career_history.yaml").write_text(
+        'candidate:\n  full_name: "Jane Developer"\n  email: "jane@example.com"\n', "utf-8"
+    )
+    prof = read_candidate_profile(tmp_path)
+    assert prof.full_name == "Jane Developer"
+    assert prof.email == "jane@example.com"
+
+
+def _touch(*paths: Path) -> None:
+    for p in paths:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", "utf-8")
+
+
+def test_application_files_picks_resume_not_cover(tmp_path: Path):
+    base = tmp_path / "base.pdf"
+    ex = tmp_path / "job" / "exports"
+    _touch(base, ex / "Jane_Cover_Letter_Acme_Dev.pdf", ex / "Jane_Resume_Acme_Dev.pdf")
+    files = application_files({"resume_path": str(base)}, tmp_path / "job")
+    assert files.resume == ex / "Jane_Resume_Acme_Dev.pdf"
+    assert files.tailored is True
+    assert files.cover_pdf == ex / "Jane_Cover_Letter_Acme_Dev.pdf"
+    assert files.cover_text is None
+
+
+def test_application_files_tailored_path_wins_and_cover_text(tmp_path: Path):
+    tailored = tmp_path / "tailored.pdf"
+    folder = tmp_path / "job"
+    _touch(tailored, folder / "exports" / "Jane_Resume_Acme_Dev.pdf", folder / "03_cover_letter.md")
+    files = application_files({"tailored_resume_path": str(tailored), "resume_path": "nope.pdf"}, folder)
+    assert files.resume == tailored
+    assert files.tailored is True
+    assert files.cover_text == folder / "03_cover_letter.md"
+
+
+def test_application_files_falls_back_to_base_resume(tmp_path: Path):
+    base = tmp_path / "base.pdf"
+    _touch(base)
+    for folder in (None, tmp_path / "missing"):
+        files = application_files({"resume_path": str(base)}, folder)
+        assert files.resume == base
+        assert files.tailored is False
+        assert files.cover_pdf is None and files.cover_text is None
