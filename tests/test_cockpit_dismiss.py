@@ -10,7 +10,7 @@ from rich.text import Text
 from textual.widgets import DataTable
 
 from cockpit import db, macos
-from cockpit.tui import FILTERS, JobCockpitApp
+from cockpit.tui import TABS, JobCockpitApp
 
 COMPANIES = ["Stripe", "Acme", "Globex", "Initech"]
 
@@ -90,7 +90,7 @@ def test_dismissed_view_allows_undismiss(db_path, tmp_path):
     async def drive() -> None:
         app = _app(db_path, tmp_path)
         async with app.run_test() as pilot:
-            while FILTERS[app.filter_idx] != "DISMISSED":
+            while TABS[app.tab_idx] != "DISMISSED":
                 await pilot.press("f")
             await pilot.pause()
             assert len(app.rows) == 1

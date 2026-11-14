@@ -76,8 +76,10 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `k` / `↑` | Previous job |
 | `J` / `K` | Scroll JD preview pane down / up |
 | `d` / `u` | Page JD preview pane half-page down / up |
-| `t` | Toggle 72h recent filter (toggle between `72H` and `NEW`) |
-| `f` | Cycle view filter: `NEW` → `72H` → `NEW_GRAD` → `SAVED` → `INTERN` → `REFERRAL_HOLD` → `VIEWED` → `APPLIED` → `INTERVIEWS` → `DISMISSED` → `All` |
+| `t` | Toggle the 72h filter (stacks on the current tab) |
+| `N` | Toggle the New Grad filter |
+| `E` | Toggle the Intern filter |
+| `f` / `F` | Next / previous tab: `New` → `Viewed` → `Saved` → `Hold` → `Applied` → `Interviews` → `Closed` → `Dismissed` → `All` |
 | `F` | Cycle view filter backwards |
 | `g` | Cycle scraper segment: `all` → `seattle` → `west_coast` → `remote` → … |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`); blank clears |
