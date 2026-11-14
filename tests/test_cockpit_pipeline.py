@@ -888,9 +888,11 @@ def test_tui_72h_filter_toggle_and_cycle(db_path):
             await pilot.press("t")
             assert FILTERS[app.filter_idx] == "QUEUED"
 
-            # 'f' cycles to 72H -> SAVED -> REFERRAL_HOLD -> APPLIED -> None -> QUEUED
+            # 'f' cycles through FILTERS in order: 72H -> NEW_GRAD -> SAVED -> ...
             await pilot.press("f")
             assert FILTERS[app.filter_idx] == "72H"
+            await pilot.press("f")
+            assert FILTERS[app.filter_idx] == "NEW_GRAD"
             await pilot.press("f")
             assert FILTERS[app.filter_idx] == "SAVED"
 

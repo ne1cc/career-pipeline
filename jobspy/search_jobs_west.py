@@ -83,9 +83,8 @@ default_out = Path(__file__).parent / "scraped jobs" / "results" / datetime.now(
 OUTPUT_DIR = Path(os.environ.get("JOBSPY_RESULTS_DIR", default_out))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# 1. Define Locations and Search Terms
+# 1. Define Locations and Search Terms (Seattle is covered by search_jobs_seattle.py)
 locations = [
-    "Seattle, WA",
     "San Francisco, CA",
     "Los Angeles, CA",
     "Portland, OR",
@@ -224,7 +223,7 @@ if __name__ == "__main__":
                     search_term=term,
                     location=loc,
                     country_indeed="USA",
-                    results_wanted=75,
+                    results_wanted=50,
                     hours_old=48,
                     linkedin_fetch_description=False,
                 )

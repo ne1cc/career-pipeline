@@ -85,12 +85,14 @@ def test_run_cockpit_ingest_with_csvs(monkeypatch, tmp_path):
 
     ok = run_pipeline.run_cockpit_ingest(results_dir)
     assert ok is True
-    assert len(recorded_commands) == 1
+    assert len(recorded_commands) == 3
     cmd = recorded_commands[0]["cmd"]
     assert "cockpit.cli" in cmd
     assert "ingest" in cmd
     assert str(f1) in cmd
     assert str(f2) in cmd
+    assert "enrich" in recorded_commands[1]["cmd"]
+    assert "verify-open" in recorded_commands[2]["cmd"]
 
 
 def test_run_cockpit_ingest_handles_failure(monkeypatch):
@@ -351,3 +353,108 @@ def test_ingest_status_records_and_renders_suites(tmp_path, monkeypatch):
     rendered = console.export_text()
     assert "Latest Ingest Suite" in rendered
     assert "campus_early_career_jobs.csv" in rendered
+
+
+def test_new_grad_filter_and_company_cooldown(tmp_path):
+    from cockpit import db, tui
+    from cockpit.models import FunnelState
+
+    assert "NEW_GRAD" in tui.FILTERS
+    db_path = tmp_path / "funnel.duckdb"
+    with db.session(db_path) as con:
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [
+                {
+                    "site": "simplify_campus",
+                    "company": "Stripe, Inc.",
+                    "title": "Software Engineer",
+                    "location": "Seattle, WA",
+                    "job_url": "https://example.com/ng1",
+                    "description": "Python FastAPI SQL",
+                },
+                {
+                    "site": "linkedin",
+                    "company": "OtherCo",
+                    "title": "Software Engineer",
+                    "location": "Seattle, WA",
+                    "job_url": "https://example.com/mid1",
+                    "description": "Python",
+                },
+                {
+                    "site": "simplify",
+                    "company": "InternCo",
+                    "title": "Software Engineer Intern",
+                    "location": "Seattle, WA",
+                    "job_url": "https://example.com/int1",
+                    "description": "Python",
+                    "is_internship": True,
+                },
+            ]
+        )
+        db.upsert_jobspy_frame(con, df)
+        ng_rows = db.fetch_jobs(con, status="NEW_GRAD", floor=0.0)
+        assert [r["jobspy_id"] for r in ng_rows] or [r["apply_url"] for r in ng_rows] == [
+            "https://example.com/ng1"
+        ]
+        assert {r["apply_url"] for r in ng_rows} == {"https://example.com/ng1"}
+
+        # Mark a Stripe role as APPLIED and verify 30-day cooldown detection
+        ng_key = ng_rows[0]["dedup_key"]
+        db.transition_job_state(con, ng_key, FunnelState.APPLIED, "tui")
+        assert "stripe" in db.recent_applied_companies(con, days=30)
+
+
+def test_company_watchlist_boost_and_enrich_stub(tmp_path):
+    import pandas as pd
+    from cockpit import db, enrich
+    from cockpit.normalizer import load_rules, score_job
+
+    rules = load_rules()
+    rules["companies"] = {"priority_points": 12.0, "priority": ["stripe"]}
+    base = score_job("Data Engineer", "SQL", rules, location="Seattle, WA", company="OtherCo").score
+    boosted = score_job("Data Engineer", "SQL", rules, location="Seattle, WA", company="Stripe, Inc.").score
+    assert boosted == base + 12.0
+
+    assert enrich.is_stub_description("Role: SWE\nCompany: Acme\nSimplify URL: https://x") is True
+    assert enrich.is_stub_description("A" * 300) is False
+
+    db_path = tmp_path / "funnel.duckdb"
+    with db.session(db_path) as con:
+        df = pd.DataFrame(
+            [
+                {
+                    "site": "simplify_campus",
+                    "company": "Acme",
+                    "title": "New Grad Data Engineer",
+                    "location": "Seattle, WA",
+                    "job_url": "https://example.com/stub1",
+                    "description": "Role: New Grad Data Engineer\nSimplify URL: https://simplify.jobs/1",
+                },
+                {
+                    "site": "simplify_campus",
+                    "company": "Beta",
+                    "title": "New Grad Data Analyst",
+                    "location": "Seattle, WA",
+                    "job_url": "https://example.com/stub2",
+                    "description": "Role: New Grad Data Analyst\nSimplify URL: https://simplify.jobs/2",
+                },
+            ]
+        )
+        db.upsert_jobspy_frame(con, df)
+
+        def fake_fetch(url: str) -> str | None:
+            if url.endswith("stub1"):
+                return "Build lakehouse pipelines with DuckDB, Polars, dbt, and PySpark. " * 6
+            return "Requires 6+ years of experience in analytics and SQL. " * 6
+
+        stats = enrich.enrich_queued_jobs(con, limit=10, min_score=10.0, fetcher=fake_fetch, rules=rules)
+        assert stats == {"checked": 2, "enriched": 2, "dropped": 1}
+
+        rows = {
+            r[0]: r[1]
+            for r in con.execute("SELECT apply_url, priority_score FROM jobs_master").fetchall()
+        }
+        assert rows["https://example.com/stub1"] > 25.0
+        assert rows["https://example.com/stub2"] < 0.0

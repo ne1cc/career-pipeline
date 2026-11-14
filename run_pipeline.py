@@ -390,6 +390,12 @@ def run_cockpit_ingest(results_dir: Path | None = None) -> bool:
             print(f"[!] Warning: Cockpit ingest exited with code {res.returncode}")
             return False
         print("Cockpit ingest completed successfully.")
+        # Best-effort post-ingest enrichment & link verification for top queued postings
+        base_cli = cmd[: cmd.index("ingest")]
+        for post_args in (["enrich", "--limit", "100"], ["verify-open", "--recent", "--limit", "100"]):
+            post_res = subprocess.run([*base_cli, *post_args], cwd=str(BASE_DIR))
+            if post_res.returncode != 0:
+                print(f"[!] Warning: Cockpit {' '.join(post_args)} exited with code {post_res.returncode}")
         return True
     except Exception as exc:
         print(f"[!] Warning: Failed to run Cockpit ingest: {exc}")

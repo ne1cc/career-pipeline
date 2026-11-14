@@ -162,7 +162,12 @@ def _location_points(location: str, is_remote: bool, rules: Mapping[str, Any]) -
 
 
 def score_job(
-    title: str, description: str, rules: Mapping[str, Any], location: str = "", is_remote: bool = False
+    title: str,
+    description: str,
+    rules: Mapping[str, Any],
+    location: str = "",
+    is_remote: bool = False,
+    company: str = "",
 ) -> Scored:
     t, d = title.lower(), description.lower()
     totals: dict[ResumeArchetype, tuple[float, list[str]]] = {}
@@ -188,6 +193,12 @@ def score_job(
         if any(_has(t, k) for k in rules.get("boosts", {}).get("title_contains", [])):
             total += rules["boosts"]["points"]
         total += _location_points(location, is_remote, rules)
+        comp_cfg = rules.get("companies", {})
+        priority_companies = [c.lower() for c in comp_cfg.get("priority", []) if c]
+        if company and priority_companies:
+            c_lower = norm_company(company)
+            if any(c_lower == p or _has(c_lower, p) for p in priority_companies):
+                total += float(comp_cfg.get("priority_points", 10.0))
     else:
         total = 0.0
 
@@ -249,7 +260,7 @@ def normalize_row(row: Mapping[str, Any], rules: Mapping[str, Any]) -> JobRow | 
     description = _text(row.get("description")) or ""
     location = _text(row.get("location"))
     is_remote = row.get("is_remote") in (True, "True", "true", 1)
-    scored = score_job(title, description, rules, location or "", is_remote)
+    scored = score_job(title, description, rules, location or "", is_remote, company=company)
     posted = row.get("date_posted")
 
     from cockpit.internships import internship_flags

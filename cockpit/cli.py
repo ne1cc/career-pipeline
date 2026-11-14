@@ -658,6 +658,22 @@ def bulk_ingest(
 
 
 @app.command()
+def enrich(
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Maximum top-scoring stub postings to enrich")] = 100,
+    min_score: Annotated[float, typer.Option("--min-score", "-m", help="Minimum priority_score for enrichment")] = 10.0,
+) -> None:
+    """Fetch full JDs for top-scoring QUEUED stub postings and re-score them."""
+    from cockpit import enrich as enrich_module
+
+    with db.session() as con:
+        stats = enrich_module.enrich_queued_jobs(con, limit=limit, min_score=min_score)
+    console.print(
+        f"[bold green]✔ Enrich complete:[/bold green] checked={stats['checked']} "
+        f"enriched={stats['enriched']} dropped_below_{min_score:g}={stats['dropped']}"
+    )
+
+
+@app.command()
 def rescore(
     audit: Annotated[bool, typer.Option("--audit", "-a", help="Show breakdown of disqualification reasons")] = False,
 ) -> None:
