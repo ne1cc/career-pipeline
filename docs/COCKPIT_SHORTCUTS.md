@@ -76,8 +76,9 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `k` / `↑` | Previous job |
 | `J` / `K` | Scroll JD preview pane down / up |
 | `d` / `u` | Page JD preview pane half-page down / up |
-| `t` | Toggle 72h recent filter (toggle between `72H` and `QUEUED`) |
-| `f` | Cycle view filter: `QUEUED` → `72H` → `SAVED` → `INTERN` → `REFERRAL_HOLD` → `APPLIED` → `DISMISSED` → `All` |
+| `t` | Toggle 72h recent filter (toggle between `72H` and `NEW`) |
+| `f` | Cycle view filter: `NEW` → `72H` → `NEW_GRAD` → `SAVED` → `INTERN` → `REFERRAL_HOLD` → `VIEWED` → `APPLIED` → `INTERVIEWS` → `DISMISSED` → `All` |
+| `F` | Cycle view filter backwards |
 | `g` | Cycle scraper segment: `all` → `seattle` → `west_coast` → `remote` → … |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`); blank clears |
 | `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`); blank clears |
@@ -91,7 +92,7 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `i` | Open the generated interview dossier in default viewer (`05_interview_dossier.md`) |
 | `e` | Edit dossier in Neovim / `$EDITOR` (cleanly suspends TUI, restores on `:q`) |
 | `I` | Re-queue and re-run AI intel evaluation |
-| `F` | Open the job's artifact folder in Finder (contains all 8 MD files & exports PDF/DOCX) |
+| `X` (Shift+x) | Open the job's artifact folder in Finder (contains all 8 MD files & exports PDF/DOCX) |
 | `c` | Copy tailored cover letter path to clipboard |
 | `o` or `Enter` | Copy tailored resume path to clipboard **and** open apply URL |
 | `O` (Shift+o) | Same as `o`, but opens in a background browser tab |
