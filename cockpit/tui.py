@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from typing import Any, Callable
 
 from rich.markup import escape
@@ -359,7 +360,11 @@ class CockpitTable(DataTable):
         return style
 
 
-AUTOFILL_PROFILE_DIR = Path.home() / "Library" / "Application Support" / "jobspy-cockpit" / "apply-profile"
+AUTOFILL_PROFILE_DIR = (
+    Path.home() / "Library" / "Application Support" / "jobspy-cockpit" / "apply-profile"
+    if sys.platform == "darwin"
+    else Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "jobspy-cockpit" / "apply-profile"
+)
 BLOCKED_TEXT = {
     "captcha": "stopped at a CAPTCHA, solve it in the browser",
     "login": "site wants a login",
@@ -1368,7 +1373,7 @@ class JobCockpitApp(App[None]):
                 p = folder if folder.exists() else None
 
             if p and p.exists():
-                editor = os.environ.get("EDITOR") or shutil.which("nvim") or shutil.which("vim") or "nvim"
+                editor = macos.resolve_editor()
                 try:
                     with self.suspend():
                         subprocess.run([editor, str(p)])

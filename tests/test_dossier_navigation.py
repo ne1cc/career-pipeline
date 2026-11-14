@@ -53,8 +53,9 @@ def test_notes_survive_regeneration_and_feed_the_learning_log(db_path, tmp_path)
 def test_cockpit_md_opens_the_index_and_notes_opens_the_log(db_path, tmp_path, monkeypatch):
     opened: list[tuple[str, str | None]] = []
     monkeypatch.setattr(macos, "open_file", lambda path, app=None: opened.append((str(path), app)))
+    monkeypatch.setattr(macos, "open_markdown", lambda path, background=True: opened.append((str(path), "markdown")))
     runner = CliRunner()
-    # No index yet: One Markdown cannot open a folder, so Finder gets it.
+    # No index yet: markdown viewer cannot open a folder, so file manager gets it.
     assert runner.invoke(cli.app, ["md", "--export-dir", str(tmp_path)]).exit_code == 0
     with db.session(db_path) as con:
         _saved_jobs(con, tmp_path, "Acme")
@@ -63,6 +64,32 @@ def test_cockpit_md_opens_the_index_and_notes_opens_the_log(db_path, tmp_path, m
     assert runner.invoke(cli.app, ["notes", "--export-dir", str(tmp_path)]).exit_code == 0
     assert opened == [
         (str(tmp_path), None),
-        (str(tmp_path / "index.md"), "One Markdown"),
-        (str(tmp_path / "learning-log.md"), "One Markdown"),
+        (str(tmp_path / "index.md"), "markdown"),
+        (str(tmp_path / "learning-log.md"), "markdown"),
     ]
+
+
+def test_open_markdown_uses_marktext_on_linux_and_falls_back_to_open_file(tmp_path, monkeypatch):
+    import importlib
+
+    importlib.reload(macos)  # bypass conftest's autouse no-op for this unit test
+    md = tmp_path / "dossier.md"
+    md.write_text("# Hi\n", "utf-8")
+    launched: list[list[str]] = []
+    fallback: list[str] = []
+
+    monkeypatch.setattr("cockpit.macos.sys.platform", "linux")
+    monkeypatch.setattr("cockpit.macos.shutil.which", lambda name: "/usr/bin/marktext" if name == "marktext" else None)
+    monkeypatch.setattr("cockpit.macos.Path.is_file", lambda self: str(self) == "/usr/bin/marktext")
+    monkeypatch.setattr("cockpit.macos.subprocess.Popen", lambda cmd, **kw: launched.append(cmd))
+    monkeypatch.setattr(macos, "open_file", lambda p, app=None: fallback.append(str(p)))
+
+    macos.open_markdown(md)
+    assert launched == [["/usr/bin/marktext", str(md)]]
+    assert fallback == []
+
+    # When marktext is missing, falls back to open_file (xdg-open)
+    monkeypatch.setattr("cockpit.macos.shutil.which", lambda name: None)
+    monkeypatch.setattr("cockpit.macos.Path.is_file", lambda self: False)
+    macos.open_markdown(md)
+    assert fallback == [str(md)]

@@ -12,4 +12,4 @@ def _no_real_dossier_side_effects(monkeypatch):
         raise intel.IntelUnavailable("LLM client disabled in tests")
 
     monkeypatch.setattr(intel, "create_llm_client", unavailable)
-    monkeypatch.setattr(macos, "open_markdown", lambda path: None)
+    monkeypatch.setattr(macos, "open_markdown", lambda path, background=True: None)
