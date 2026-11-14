@@ -209,6 +209,7 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
             [min_score()],
         ),
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
+        "viewed": one("SELECT count(*) FROM jobs_master WHERE status = 'VIEWED'"),
         "saved": one("SELECT count(*) FROM jobs_master WHERE is_saved"),
         "positive": one(f"SELECT count(DISTINCT dedup_key) FROM ({_positive_keys_sql()})"),
         **dossier_counts(con),
@@ -572,6 +573,9 @@ def fetch_jobs(
     if status == "APPLIED":
         clauses.append("status = 'APPLIED'")
         order_by = "applied_at DESC NULLS LAST, last_updated_at DESC"
+    elif status == "VIEWED":
+        clauses.append("status = 'VIEWED'")
+        order_by = "last_updated_at DESC"  # most recently opened first
     elif status == "INTERVIEWS":
         clauses.append(f"status IN ({', '.join(repr(s) for s in POSITIVE)})")
         order_by = "last_updated_at DESC"

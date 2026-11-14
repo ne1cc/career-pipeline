@@ -9,7 +9,7 @@ from cockpit import db
 from cockpit.imap_sync import classify
 from cockpit.models import FunnelState as S
 from cockpit.tui import FILTERS, FunnelModal, StageMoveModal
-from tests.test_cockpit_pipeline import _app, career_ops, db_path, frame  # noqa: F401  (fixtures)
+from tests.test_cockpit_pipeline import _app, calls, career_ops, db_path, frame  # noqa: F401  (fixtures)
 
 
 def _seed(con, *companies: str) -> dict[str, str]:
@@ -105,6 +105,44 @@ def test_classify_precedence():
         "Thanks for applying to Acme": None,
     }
     assert {subject: classify(subject) for subject in cases} == cases
+
+
+def test_opening_a_job_records_it_as_viewed(db_path, tmp_path, calls):
+    with db.session(db_path) as con:
+        k = _seed(con, "Opened", "Unopened", "Held")
+        _move(con, k["Held"], S.REFERRAL_HOLD)
+    app = _app(db_path, tmp_path)
+
+    async def run() -> None:
+        async with app.run_test(size=(200, 40)) as pilot:
+            table = app.query_one("#table", DataTable)
+            app.filter_idx = FILTERS.index(None)
+            app._reload(0)
+            for company in ("Opened", "Held"):
+                table.move_cursor(row=[r["company"] for r in app.rows].index(company))
+                await pilot.pause()
+                await pilot.press("o")
+                await pilot.pause()
+            # The row stays put with its status updated, so `a` can follow straight away.
+            assert {r["company"]: r["status"] for r in app.rows} == {
+                "Opened": "VIEWED", "Unopened": "QUEUED", "Held": "REFERRAL_HOLD"}
+            assert str(table.get_cell(k["Opened"], "status")) == "VIEWED"
+
+            app.filter_idx = FILTERS.index("VIEWED")
+            app._reload(0)
+            assert [r["company"] for r in app.rows] == ["Opened"]
+            assert "Viewed:1" in app._score_base
+            assert "QUEUED → VIEWED  (tui-open)" in app._timeline(app.rows[0])
+            app.filter_idx = FILTERS.index("QUEUED")
+            app._reload(0)
+            assert [r["company"] for r in app.rows] == ["Unopened"]
+
+            await pilot.press("z")  # undo puts it back in the queue
+            await pilot.pause()
+            assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
+
+    asyncio.run(run())
+    assert sum(c["cmd"][0].endswith("/open") for c in calls) == 2
 
 
 def test_tui_applied_and_interviews_views(db_path, tmp_path):

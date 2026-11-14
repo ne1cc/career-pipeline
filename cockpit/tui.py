@@ -46,7 +46,7 @@ from cockpit.normalizer import REPO_ROOT, highlight_jd, linkedin_referral_url, l
 DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pending")
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", "INTERVIEWS", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "VIEWED", "APPLIED", "INTERVIEWS", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -631,7 +631,7 @@ class JobCockpitApp(App[None]):
         date_indicator += f" | role:{self.title_role.role} ({len(self.rows)})" if self.title_role else ""
         counts = (
             f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
-            f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
+            f"Saved:{b.get('saved', 0)} | Viewed:{b.get('viewed', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
         )
         if summary:
             counts = (
@@ -939,7 +939,9 @@ class JobCockpitApp(App[None]):
             self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        self.action_stage(False)
+        # Enter inside a pop-up's table (e.g. picking a role in Titles) must not open the job behind it.
+        if event.data_table.id == "table":
+            self.action_stage(False)
 
     def action_down(self) -> None:
         self.query_one(DataTable).action_cursor_down()
@@ -975,7 +977,25 @@ class JobCockpitApp(App[None]):
                 pass
 
             macos.open_url(url_to_open, background=background)
+            self._record_view(job)
             self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
+
+    def _record_view(self, job: dict[str, Any]) -> None:
+        """Log that the job's application page was opened: QUEUED → VIEWED, with no extra keypress.
+
+        Contract: only a QUEUED job moves, so a held, applied or interviewing job keeps its status.
+        The transition (with its timestamp) is the record; `z` undoes it.
+        Limits: the row stays on screen with its Status cell updated, so `a` / `s` still work on it;
+        it leaves the queue views at the next reload and from then on lives in the VIEWED view.
+        """
+        if job.get("status") != FunnelState.QUEUED.value:
+            return
+        key = job["dedup_key"]
+        with session(self.db_path) as con:
+            prev = transition_job_state(con, key, FunnelState.VIEWED, "tui-open")
+        self.undo_stack.append((key, prev))
+        job["status"] = FunnelState.VIEWED.value
+        self.query_one(CockpitTable).update_cell(key, "status", job["status"])
 
     def action_preview(self) -> None:
         if job := self._job():
@@ -1059,6 +1079,7 @@ class JobCockpitApp(App[None]):
         if not url:
             self.notify("No apply URL for this job", severity="warning")
             return
+        self._record_view(job)
         # 2. Unsupported site → the everyday browser (already logged in), never the worker.
         target = autofill.target_for(url)
         if target is None or target.ats not in autofill.SUPPORTED:
