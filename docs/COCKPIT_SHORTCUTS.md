@@ -91,7 +91,8 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `i` | Open the generated interview dossier in default viewer (`05_interview_dossier.md`) |
 | `e` | Edit dossier in Neovim / `$EDITOR` (cleanly suspends TUI, restores on `:q`) |
 | `I` | Re-queue and re-run AI intel evaluation |
-| `F` | Open the job's artifact folder in Finder (contains all 8 MD files & exports PDF/DOCX) |
+| `F` | Cycle the view backwards (`f` cycles forwards) |
+| `x` | Open the job's artifact folder in Finder (contains all 8 MD files & exports PDF/DOCX) |
 | `c` | Copy tailored cover letter path to clipboard |
 | `o` or `Enter` | Copy tailored resume path to clipboard **and** open apply URL |
 | `O` (Shift+o) | Same as `o`, but opens in a background browser tab |

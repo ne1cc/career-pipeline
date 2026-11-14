@@ -196,7 +196,7 @@ bind-key -n M-j run-shell "~/bin/tmux-jobcockpit '#{client_tty}'"
 | `A` | **Autofill** | Opens the application form in a separate Chromium window and fills it (see below) |
 | `i` | **Open Interview Dossier** | Opens `05_interview_dossier.md` in default Markdown viewer |
 | `e` | **Edit in Neovim** | Suspends TUI and opens the job's 4 core Markdown artifacts in `$EDITOR` / `nvim -p` |
-| `F` | **Open Folder** | Reveals the job's generated artifact folder in Finder / file manager |
+| `x` | **Open Folder** | Reveals the job's generated artifact folder in Finder / file manager |
 | `r` | **QuickLook Resume** | Previews the staged resume PDF via macOS QuickLook (`qlmanage -p`) |
 | `y` | **Copy Outreach Note** | Copies the tailored LinkedIn outreach note (or template fallback) to clipboard |
 | `l` | **LinkedIn Referral Search** | Opens LinkedIn people search for the selected company in background |

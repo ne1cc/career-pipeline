@@ -137,6 +137,14 @@ def test_opening_a_job_records_it_as_viewed(db_path, tmp_path, calls):
             app._reload(0)
             assert [r["company"] for r in app.rows] == ["Unopened"]
 
+            await pilot.press("F")  # Shift+F cycles backwards and wraps: QUEUED → ALL → INTERVIEWS
+            await pilot.press("F")
+            await pilot.pause()
+            assert FILTERS[app.filter_idx] == "INTERVIEWS"
+            await pilot.press("f", "f")
+            await pilot.pause()
+            assert FILTERS[app.filter_idx] == "QUEUED"
+
             await pilot.press("z")  # undo puts it back in the queue
             await pilot.pause()
             assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]

@@ -80,6 +80,7 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | `h` | Hold for a referral (type the contact, then Enter) |
 | `y` | Copy the outreach message for this job |
 | `f` | Cycle the view: Queued, 72h, New Grad, Saved, Intern, Referral Hold, Viewed, Applied, Interviews, All |
+| `F` | Cycle the view backwards |
 | `m` | Move an applied job to a stage: `1` OA, `2` phone screen, `3` tech round, `4` final round, `5` offer, `6` rejected |
 | `V` | Weekly funnel table: applications per week and how far each week's jobs got |
 | `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`) |

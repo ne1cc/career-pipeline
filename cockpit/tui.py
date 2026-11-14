@@ -363,7 +363,7 @@ class JobCockpitApp(App[None]):
         Binding("e", "edit_dossier", "Edit (nvim)"),
         Binding("v", "edit_dossier", "Nvim", show=False),
         Binding("I", "rerun_intel", "Re-eval"),
-        Binding("F", "open_folder", "Folder"),
+        Binding("x", "open_folder", "Folder"),
         Binding("c", "copy_cover_letter", "Cover"),
         Binding("z", "undo", "Undo"),
         Binding("n", "edit_note", "Note"),
@@ -389,6 +389,8 @@ class JobCockpitApp(App[None]):
         Binding("y", "yank", "Outreach"),
         Binding("t", "toggle_72h", "72h"),
         Binding("f", "cycle_filter", "Filter"),
+        Binding("F", "cycle_filter(-1)", "Filter back", show=False),
+        Binding("shift+f", "cycle_filter(-1)", "Filter back", show=False),
         Binding("g", "segment", "Sheet"),
         Binding("slash", "location", "Location"),
         Binding("D", "filter_date", "Date"),
@@ -1313,8 +1315,9 @@ class JobCockpitApp(App[None]):
             self.filter_idx = FILTERS.index("72H")
         self._reload(0)
 
-    def action_cycle_filter(self) -> None:
-        self.filter_idx = (self.filter_idx + 1) % len(FILTERS)
+    def action_cycle_filter(self, step: int = 1) -> None:
+        """`f` moves to the next view, `F` (step -1) to the previous one; both wrap around."""
+        self.filter_idx = (self.filter_idx + step) % len(FILTERS)
         self._reload(0)
 
     def action_segment(self) -> None:
