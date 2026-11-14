@@ -1,6 +1,6 @@
 # JobCockpit & Pipeline Shortcuts
 
-Quick reference for all keyboard shortcuts, shell aliases, fast jumps, and CLI commands for the JobCockpit and Career Pipeline ecosystem.
+Full, grouped reference: see the Command Cheat Sheet in the README. Quick reference for all keyboard shortcuts, shell aliases, fast jumps, and CLI commands for the JobCockpit and Career Pipeline ecosystem.
 
 ---
 
@@ -77,7 +77,7 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `J` / `K` | Scroll JD preview pane down / up |
 | `d` / `u` | Page JD preview pane half-page down / up |
 | `t` | Toggle 72h recent filter (toggle between `72H` and `QUEUED`) |
-| `f` | Cycle view filter: `QUEUED` → `72H` → `SAVED` → `REFERRAL_HOLD` → `APPLIED` → `All` |
+| `f` | Cycle view filter: `QUEUED` → `72H` → `SAVED` → `INTERN` → `REFERRAL_HOLD` → `APPLIED` → `DISMISSED` → `All` |
 | `g` | Cycle scraper segment: `all` → `seattle` → `west_coast` → `remote` → … |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`); blank clears |
 | `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`); blank clears |
@@ -109,6 +109,18 @@ Run these using the `cockpit` alias or `python -m cockpit.cli`:
 | `r` | Open LinkedIn company referral search |
 | `y` | Copy tailored outreach note (or template) to clipboard |
 | `R` | Sync Gmail statuses immediately |
+
+### Triage & Batch Actions
+| Key | Does |
+|---|---|
+| `x` | Dismiss the job (bad fit / not exploring): row dims and `j`/`k` skip it. Persists; `x` again in the `DISMISSED` view (`f`) restores it |
+| `space` | Mark / unmark the row for batch actions (shown with `●`) and advance |
+| `Esc` | Clear all marks |
+| `o` / `O` | With marks: open every marked apply page in background tabs (no clipboard copy) |
+| `I` | With marks: re-queue AI intel for every marked job |
+| `x` | With marks: dismiss every marked job |
+| `G` (Shift+g) | Queue dossiers for every marked job (or the cursor job); 3 generate at a time; over 10 marked needs a second `G` |
+| `S` (Shift+s) | Skip every marked job (`SKIPPED`); `z` undoes one at a time |
 
 ---
 
