@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 class FunnelState(StrEnum):
     QUEUED = "QUEUED"
-    VIEWED = "VIEWED"  # application page opened, not yet applied or skipped
     APPLIED = "APPLIED"
     SKIPPED = "SKIPPED"
     REFERRAL_HOLD = "REFERRAL_HOLD"

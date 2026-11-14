@@ -107,7 +107,7 @@ def test_classify_precedence():
     assert {subject: classify(subject) for subject in cases} == cases
 
 
-def test_opening_a_job_records_it_as_viewed(db_path, tmp_path, calls):
+def test_opening_a_job_marks_it_and_keeps_it_in_the_queue(db_path, tmp_path, calls):
     with db.session(db_path) as con:
         k = _seed(con, "Opened", "Unopened", "Held")
         _move(con, k["Held"], S.REFERRAL_HOLD)
@@ -123,19 +123,37 @@ def test_opening_a_job_records_it_as_viewed(db_path, tmp_path, calls):
                 await pilot.pause()
                 await pilot.press("o")
                 await pilot.pause()
-            # The row stays put with its status updated, so `a` can follow straight away.
-            assert {r["company"]: r["status"] for r in app.rows} == {
-                "Opened": "VIEWED", "Unopened": "QUEUED", "Held": "REFERRAL_HOLD"}
-            assert str(table.get_cell(k["Opened"], "status")) == "VIEWED"
+            # Opening changes no status and saves nothing; the row is marked on the spot.
+            assert {r["company"]: (r["status"], bool(r["is_saved"])) for r in app.rows} == {
+                "Opened": ("QUEUED", False), "Unopened": ("QUEUED", False), "Held": ("REFERRAL_HOLD", False)}
+            assert str(table.get_cell(k["Opened"], "title")).startswith("↗ ")
+            assert table.opened_row_keys == {k["Opened"], k["Held"]}
 
+            # Viewed lists opened jobs still waiting in the queue (the held one is not).
             app.filter_idx = FILTERS.index("VIEWED")
             app._reload(0)
             assert [r["company"] for r in app.rows] == ["Opened"]
             assert "Viewed:1" in app._score_base
-            assert "QUEUED → VIEWED  (tui-open)" in app._timeline(app.rows[0])
+            assert "  opened" in app._timeline(app.rows[0])
+
+            # The opened job stays in the queue, marked; the unopened one is not marked.
             app.filter_idx = FILTERS.index("QUEUED")
             app._reload(0)
-            assert [r["company"] for r in app.rows] == ["Unopened"]
+            assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
+            assert table.opened_row_keys == {k["Opened"]}
+            assert not str(table.get_cell(k["Unopened"], "title")).startswith("↗")
+
+            # Saving moves it out of Viewed and into Saved.
+            table.move_cursor(row=[r["company"] for r in app.rows].index("Opened"))
+            await pilot.pause()
+            await pilot.press("b")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            app.filter_idx = FILTERS.index("VIEWED")
+            app._reload(0)
+            assert app.rows == [] and "Viewed:0" in app._score_base
+            app.filter_idx = FILTERS.index("QUEUED")
+            app._reload(0)
 
             await pilot.press("F")  # Shift+F cycles backwards and wraps: QUEUED → ALL → INTERVIEWS
             await pilot.press("F")
@@ -199,7 +217,7 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
     asyncio.run(run())
 
 
-def test_opening_a_job_generates_its_dossier_and_opens_it_when_done(db_path, career_ops, tmp_path, calls, monkeypatch):
+def test_saving_a_job_generates_its_dossier_and_opens_it_when_done(db_path, career_ops, tmp_path, calls, monkeypatch):
     opened: list[str] = []
     monkeypatch.setattr(macos, "open_markdown", lambda path: opened.append(str(path)))
     with db.session(db_path) as con:
@@ -208,10 +226,11 @@ def test_opening_a_job_generates_its_dossier_and_opens_it_when_done(db_path, car
 
     async def run() -> None:
         async with app.run_test(size=(200, 40)) as pilot:
-            await pilot.press("o")
+            await pilot.press("o")  # opening alone neither saves the job nor starts a dossier
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.press("o")  # re-opening a saved job neither unsaves it nor regenerates
+            assert not app.rows[0]["is_saved"] and opened == []
+            await pilot.press("b")
             await app.workers.wait_for_complete()
             await pilot.pause()
 
@@ -219,5 +238,5 @@ def test_opening_a_job_generates_its_dossier_and_opens_it_when_done(db_path, car
     with db.session(db_path) as con:
         saved, intel_status, path, status = con.execute(
             "SELECT is_saved, intel_status, intel_path, status FROM jobs_master WHERE dedup_key = ?", [key]).fetchone()
-    assert (saved, intel_status, status) == (True, "done", "VIEWED")
+    assert (saved, intel_status, status) == (True, "done", "QUEUED")
     assert opened == [path] and path.endswith("05_interview_dossier.md")

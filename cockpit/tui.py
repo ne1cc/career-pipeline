@@ -17,6 +17,8 @@ from textual.widgets import DataTable, Footer, Input, Label, Markdown, Static
 from textual.worker import Worker, WorkerState
 
 from cockpit import autofill, intel, macos, prefill as prefill_mod, titles
+from datetime import datetime
+
 from cockpit.db import (
     DAILY_GOAL,
     DB_PATH,
@@ -30,6 +32,7 @@ from cockpit.db import (
     list_segments,
     min_score,
     recent_applied_companies,
+    record_open,
     restore_job_state,
     scoreboard,
     session,
@@ -195,6 +198,7 @@ class AnswerModal(ModalScreen[None]):
 
 
 # Views that track sent applications: there the Fit and Score columns show Age and Mode instead.
+OPENED_MARK = "↗"  # prefix on the Title of a job whose application page was already opened
 TRACKING_VIEWS = ("APPLIED", "INTERVIEWS")
 STAGES = (
     FunnelState.OA_RECEIVED,
@@ -294,6 +298,7 @@ class CockpitTable(DataTable):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.highlighted_row_keys: set[Any] = set()
+        self.opened_row_keys: set[Any] = set()  # jobs whose application page was already opened: dimmed
 
     def on_resize(self, event: Any) -> None:
         self.adjust_title_width(event.size.width)
@@ -314,8 +319,11 @@ class CockpitTable(DataTable):
         style = super()._get_row_style(row_index, base_style)
         if 0 <= row_index < len(self.ordered_rows):
             row_key = self.ordered_rows[row_index].key
-            if row_key in self.highlighted_row_keys or getattr(row_key, "value", None) in self.highlighted_row_keys:
-                return style + Style(bgcolor="grey23")
+            keys = (row_key, getattr(row_key, "value", None))
+            if any(k in self.opened_row_keys for k in keys):
+                style += Style(dim=True)
+            if any(k in self.highlighted_row_keys for k in keys):
+                style += Style(bgcolor="grey23")
         return style
 
 
@@ -580,6 +588,7 @@ class JobCockpitApp(App[None]):
         saved_y = table.scroll_y
         table.clear()
         table.highlighted_row_keys.clear()
+        table.opened_row_keys.clear()
         self._update_column_headers()
         is_saved_filter = FILTERS[self.filter_idx] == "SAVED"
         target_row = row
@@ -589,6 +598,9 @@ class JobCockpitApp(App[None]):
             is_saved = bool(r.get("is_saved"))
             if is_saved and not is_saved_filter:
                 table.highlighted_row_keys.add(r["dedup_key"])
+            # Already-opened jobs stay in the list, dimmed and marked, except in the tracking views.
+            if r.get("opened_at") and not tracking:
+                table.opened_row_keys.add(r["dedup_key"])
             # Format Fit column: "…" if a saved job's dossier is pending/running, "4.2" if done, "!" if failed.
             # Unsaving leaves intel_status='pending', but the worker only claims saved jobs, so an
             # unsaved "…" would never resolve; show "—" instead.
@@ -612,7 +624,7 @@ class JobCockpitApp(App[None]):
                 fit_str,
                 score_str,
                 r["company"],
-                r["title"],
+                self._title_cell(r, tracking),
                 r["location"] or "",
                 r["site"] or "",
                 r["resume_archetype"],
@@ -939,9 +951,10 @@ class JobCockpitApp(App[None]):
     def _timeline(self, r: dict[str, Any]) -> str:
         """Markup for a job's status history (date, change, who made it, note), or "" if it has none.
 
-        Limits: QUEUED jobs are skipped without a query; a locked database yields no timeline, not an error.
+        Limits: never-opened QUEUED jobs are skipped without a query; a locked database yields no
+        timeline, not an error.
         """
-        if r.get("status") == FunnelState.QUEUED.value:
+        if r.get("status") == FunnelState.QUEUED.value and not r.get("opened_at"):
             return ""
         try:
             with session(self.db_path) as con:
@@ -949,7 +962,9 @@ class JobCockpitApp(App[None]):
         except Exception:
             return ""  # DB briefly locked by another process; the next highlight redraws it.
         lines = [
-            f"  {(t['transitioned_at'] or '')[:10]}  {t['from_status'] or '—'} → {t['to_status']}  ({t['triggered_by']})"
+            f"  {(t['transitioned_at'] or '')[:16]}  opened"  # an open is an event, not a status change
+            if t["triggered_by"] == "tui-open"
+            else f"  {(t['transitioned_at'] or '')[:10]}  {t['from_status'] or '—'} → {t['to_status']}  ({t['triggered_by']})"
             + (f"  {t['notes']}" if t.get("notes") else "")
             for t in steps
         ]
@@ -1003,25 +1018,30 @@ class JobCockpitApp(App[None]):
 
             macos.open_url(url_to_open, background=background)
             self._record_view(job)
-            self._queue_dossier(job)
             self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
 
     def _record_view(self, job: dict[str, Any]) -> None:
-        """Log that the job's application page was opened: QUEUED → VIEWED, with no extra keypress.
+        """Log that the job's application page was opened and mark its row, with no extra keypress.
 
-        Contract: only a QUEUED job moves, so a held, applied or interviewing job keeps its status.
-        The transition (with its timestamp) is the record; `z` undoes it.
-        Limits: the row stays on screen with its Status cell updated, so `a` / `s` still work on it;
-        it leaves the queue views at the next reload and from then on lives in the VIEWED view.
+        Contract: the open is logged (`record_open`); the job's status and saved flag do not change,
+        so it stays in whatever view it is in, dimmed and prefixed with `OPENED_MARK`.
+        Limits: a log entry, not a state change, so `z` does not undo it; the Viewed count in the
+        title bar catches up at the next reload.
         """
-        if job.get("status") != FunnelState.QUEUED.value:
-            return
         key = job["dedup_key"]
         with session(self.db_path) as con:
-            prev = transition_job_state(con, key, FunnelState.VIEWED, "tui-open")
-        self.undo_stack.append((key, prev))
-        job["status"] = FunnelState.VIEWED.value
-        self.query_one(CockpitTable).update_cell(key, "status", job["status"])
+            record_open(con, key)
+        job["opened_at"] = datetime.now().isoformat(sep=" ")
+        if not self._tracking():
+            table = self.query_one(CockpitTable)
+            table.opened_row_keys.add(key)
+            table.update_cell(key, "title", self._title_cell(job, False))
+            table.refresh()
+
+    @staticmethod
+    def _title_cell(r: dict[str, Any], tracking: bool) -> str:
+        """The Title cell text: opened jobs get `OPENED_MARK` in front, outside the tracking views."""
+        return f"{OPENED_MARK} {r['title']}" if r.get("opened_at") and not tracking else r["title"]
 
     def action_preview(self) -> None:
         if job := self._job():
@@ -1106,7 +1126,6 @@ class JobCockpitApp(App[None]):
             self.notify("No apply URL for this job", severity="warning")
             return
         self._record_view(job)
-        self._queue_dossier(job)
         # 2. Unsupported site → the everyday browser (already logged in), never the worker.
         target = autofill.target_for(url)
         if target is None or target.ats not in autofill.SUPPORTED:
@@ -1245,14 +1264,6 @@ class JobCockpitApp(App[None]):
         else:
             self.notify(f"Unsaved {job['company']}")
         return True
-
-    def _queue_dossier(self, job: dict[str, Any]) -> None:
-        """Opening a job saves it, so its dossier is generated without pressing `b`.
-
-        Limits: an already saved job is left alone (no second dossier, never unsaved).
-        """
-        if not job.get("is_saved") and self._toggle_save(job):
-            job["is_saved"] = True
 
     def action_rerun_intel(self) -> None:
         if job := self._job():
