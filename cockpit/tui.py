@@ -347,6 +347,7 @@ class JobCockpitApp(App[None]):
         self._titles_cache: tuple[tuple[Any, ...], list[titles.RoleGroup]] | None = None
         self._title_roles: dict[str, str] = {}  # cleaned title -> role, from the last grouping
         self._titles_cancel: intel.CancelScope | None = None  # set while a grouping runs
+        self._titles_regroup = False  # next grouping ignores the saved title -> role map
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -615,6 +616,8 @@ class JobCockpitApp(App[None]):
 
     def action_titles(self) -> None:
         """Open the role breakdown for the current view; reuses the last grouping if the view is unchanged.
+        Titles grouped in any earlier run (saved next to the database) are not sent to the AI again,
+        so a view with no new titles opens without an AI call, also after a restart.
         Pressing T again while a grouping runs cancels it (same as Esc)."""
         if self._titles_cancel is not None:
             self.action_cancel_titles()
@@ -639,18 +642,28 @@ class JobCockpitApp(App[None]):
         try:
             sig, rows = self._view_signature(), list(self._view_rows)
             counts = titles.count_titles(rows)
-            batches = -(-len(counts) // titles.BATCH_SIZE)
-            self.call_from_thread(
-                self.notify,
-                f"Grouping {len(counts)} distinct titles from {len(rows)} jobs ({batches} AI call(s))… Esc or T to cancel",
-                timeout=8,
-            )
-            try:
-                gen = self._titles_generator(cancel)
-            except intel.IntelUnavailable as e:
-                self.call_from_thread(self.notify, f"No LLM available: {e}", severity="error")
-                return
             cfg = self.rules.get("titles", {})
+            target, explore = cfg.get("target", titles.DEFAULT_TARGET), cfg.get("explore", titles.DEFAULT_EXPLORE)
+            # 1. Saved roles from earlier runs; `r` (regroup) redoes this view's titles only.
+            path, key = self.db_path.parent / "title_roles.json", titles.roles_key(target, explore)
+            saved = titles.load_roles(path, key)
+            regroup, self._titles_regroup = self._titles_regroup, False
+            known = {} if regroup else saved
+            # 2. Only titles never grouped before go to the AI.
+            new = sum(1 for t in counts if t not in known)
+            gen: Callable[[str, str], str] | None = None
+            if new:
+                batches = -(-new // titles.BATCH_SIZE)
+                self.call_from_thread(
+                    self.notify,
+                    f"Grouping {new} new of {len(counts)} distinct titles from {len(rows)} jobs ({batches} AI call(s))… Esc or T to cancel",
+                    timeout=8,
+                )
+                try:
+                    gen = self._titles_generator(cancel)
+                except intel.IntelUnavailable as e:
+                    self.call_from_thread(self.notify, f"No LLM available: {e}", severity="error")
+                    return
 
             def progress(d: int, n: int) -> None:
                 if n > 1 and not cancel.cancelled:
@@ -659,12 +672,15 @@ class JobCockpitApp(App[None]):
             groups = titles.group_titles(
                 counts,
                 gen,
-                target=cfg.get("target", titles.DEFAULT_TARGET),
-                explore=cfg.get("explore", titles.DEFAULT_EXPLORE),
+                target=target,
+                explore=explore,
                 on_batch=progress,
                 stop=cancel,
+                known=known,
             )
             if not cancel.cancelled:
+                if new:
+                    titles.save_roles(path, key, groups, saved)
                 self.call_from_thread(self._show_titles, sig, groups)
         finally:
             self.call_from_thread(self._clear_titles_cancel, cancel)
@@ -687,6 +703,7 @@ class JobCockpitApp(App[None]):
                 self._reload(0)
             elif result == "REGROUP":
                 self._titles_cache = None
+                self._titles_regroup = True
                 self.action_titles()
             elif result == "ASK":
                 self._ask_titles(groups)

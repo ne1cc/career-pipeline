@@ -229,3 +229,63 @@ def test_tui_escape_and_T_cancel_grouping(db_path, tmp_path):  # noqa: F811
             assert app.check_action("cancel_titles", ()) is False
 
     asyncio.run(drive())
+
+
+def test_group_titles_known_titles_skip_the_ai_and_roles_round_trip(tmp_path):
+    counts = Counter({"data engineer": 3, "nurse": 1})
+    path, key = tmp_path / "title_roles.json", titles.roles_key("t", "e")
+    first = titles.group_titles(counts, lambda s, u: "Data Engineer | target | 1")  # nurse -> Unsorted
+    titles.save_roles(path, key, first, {})
+    known = titles.load_roles(path, key)
+    assert known == {"data engineer": ("Data Engineer", "target")}  # Unsorted is retried, not saved
+    assert titles.load_roles(path, titles.roles_key("other", "e")) == {}  # tiers changed -> regroup
+    assert titles.load_roles(tmp_path / "missing.json", key) == {}
+
+    sent = []
+    groups = titles.group_titles(counts, lambda s, u: sent.append(u) or "Nurse | out | 1", known=known)
+    assert sent == ["1. nurse"]  # only the unknown title goes to the AI
+    assert {(g.role, g.tier, g.count) for g in groups} == {("Data Engineer", "target", 3), ("Nurse", "out", 1)}
+
+    def boom(s, u):
+        raise AssertionError("AI must not be called when every title is known")
+
+    all_known = titles.group_titles(Counter({"data engineer": 3}), boom, known=known)
+    assert [(g.role, g.count) for g in all_known] == [("Data Engineer", 3)]
+
+
+def test_tui_titles_persist_across_restart_and_regroup(db_path, tmp_path):  # noqa: F811
+    with db.session(db_path) as con:
+        for i, t in enumerate(["Data Engineer", "Data Analyst"]):
+            db.upsert_jobspy_frame(con, frame({"company": f"Co{i}", "title": t, "link": f"https://e.com/{i}"}))
+    calls = []
+
+    def fake(system, user):
+        calls.append(user)
+        return "\n".join(f"{line.split('. ', 1)[1].title()} | target | {line.split('.')[0]}" for line in user.splitlines())
+
+    async def open_titles() -> set[tuple[str, int]]:
+        app = _app(db_path, tmp_path, None, fake)
+        async with app.run_test() as pilot:
+            await pilot.press("T")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, TitlesModal)
+            return {(g.role, g.count) for g in app.screen.groups}
+
+    async def drive() -> None:
+        expected = {("Data Engineer", 1), ("Data Analyst", 1)}
+        assert await open_titles() == expected and len(calls) == 1
+        # A fresh app (restart) reads the saved roles: same breakdown, no AI call.
+        assert await open_titles() == expected and len(calls) == 1
+        # `r` regroups this view through the AI again.
+        app = _app(db_path, tmp_path, None, fake)
+        async with app.run_test() as pilot:
+            await pilot.press("T")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("r")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert len(calls) == 2 and isinstance(app.screen, TitlesModal)
+
+    asyncio.run(drive())

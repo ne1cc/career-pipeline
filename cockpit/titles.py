@@ -5,19 +5,22 @@ Engineer - Seattle") into a short list of roles with exact job counts, tiered by
 realistic each role is for the candidate.
 Contract: Python counts; the LLM only maps titles to roles. Every job in the input is
 counted exactly once, so the role counts always sum to the number of jobs in the view.
-Limits: nothing is stored; each run costs one LLM call per ~600 distinct titles. Role
-names from separate batches are merged case-insensitively, so near-synonyms across
+Limits: the title -> role map is saved to a JSON file, so a title is sent to the LLM once;
+later runs cost one LLM call per ~600 titles not seen before (none when all are known).
+Role names from separate batches are merged case-insensitively, so near-synonyms across
 batches ("BI Analyst" / "Business Intelligence Analyst") can remain separate rows.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 TIERS = ("target", "stretch", "explore", "out")
@@ -107,15 +110,19 @@ def group_titles(
     batch_size: int = BATCH_SIZE,
     on_batch: Callable[[int, int], None] | None = None,
     stop: Any = None,
+    known: dict[str, tuple[str, str]] | None = None,
 ) -> list[RoleGroup]:
     """Group cleaned titles into roles with exact counts, largest first.
 
     Contract: sum(g.count) == sum(counts.values()). Titles the model skips or a batch that
     errors land in the "Unsorted" role instead of disappearing. `stop` (anything with
     is_set(), e.g. threading.Event) skips batches not yet sent; the caller discards the result.
+    Titles in `known` (cleaned title -> (role, tier)) keep that role and are never sent to
+    `generate`; when every title is known, `generate` is not called at all.
     """
+    known = known or {}
     # 1. Most common titles first, so the first batch covers most jobs.
-    titles = [t for t, _ in counts.most_common()]
+    titles = [t for t, _ in counts.most_common() if t not in known]
     batches = [titles[i : i + batch_size] for i in range(0, len(titles), batch_size)]
     system = _prompt(target, explore)
     done = 0
@@ -143,13 +150,47 @@ def group_titles(
 
     # 3. Sum exact counts per role; role names merge case-insensitively across batches.
     groups: dict[str, RoleGroup] = {}
+
+    def add(t: str, role: str, tier: str) -> None:
+        g = groups.setdefault(role.lower(), RoleGroup(role, tier))
+        g.count += counts[t]
+        g.titles.add(t)
+
+    for t in counts:
+        if t in known:
+            add(t, *known[t])
     for batch, mapping in zip(batches, mapped):
         for i, t in enumerate(batch, 1):
-            role, tier = mapping.get(i, (UNSORTED, "out"))
-            g = groups.setdefault(role.lower(), RoleGroup(role, tier))
-            g.count += counts[t]
-            g.titles.add(t)
+            add(t, *mapping.get(i, (UNSORTED, "out")))
     return sorted(groups.values(), key=lambda g: (-g.count, g.role))
+
+
+def roles_key(target: str, explore: str) -> str:
+    """Saved roles are only valid for the target/explore text they were tiered against."""
+    return f"{target}\n{explore}"
+
+
+def load_roles(path: Path, key: str) -> dict[str, tuple[str, str]]:
+    """Read the saved cleaned title -> (role, tier) map.
+
+    Contract: returns {} when the file is missing, unreadable, or was saved under a different
+    `key` (see roles_key), so a stale or broken file only costs a regroup.
+    """
+    try:
+        data = json.loads(path.read_text())
+        if data["key"] != key:
+            return {}
+        return {t: (role, tier) for t, (role, tier) in data["roles"].items()}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def save_roles(path: Path, key: str, groups: Iterable[RoleGroup], keep: dict[str, tuple[str, str]]) -> None:
+    """Write `keep` plus every grouped title to `path`; Unsorted titles are left out so the
+    next run retries them."""
+    roles = dict(keep)
+    roles.update({t: (g.role, g.tier) for g in groups if g.role != UNSORTED for t in g.titles})
+    path.write_text(json.dumps({"key": key, "roles": roles}))
 
 
 def tier_totals(groups: Iterable[RoleGroup]) -> dict[str, int]:
