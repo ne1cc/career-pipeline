@@ -68,11 +68,14 @@ POSITIVE = (
     FunnelState.OFFER.value,
 )
 # (dedup_key, s): every status a job has held. A move that was undone straight away does not count.
+# A job counts as opened once the cockpit has logged an open of its application page (`record_open`).
+_OPENED_SQL = "SELECT dedup_key FROM state_transitions WHERE triggered_by = 'tui-open'"
+
 _REACHED_SQL = """
     SELECT dedup_key, to_status AS s FROM (
         SELECT dedup_key, to_status, triggered_by,
                lead(triggered_by) OVER (PARTITION BY dedup_key ORDER BY transitioned_at, transition_id) AS nxt
-        FROM state_transitions)
+        FROM state_transitions WHERE triggered_by <> 'tui-open')
     WHERE triggered_by <> 'undo' AND nxt IS DISTINCT FROM 'undo'
     UNION SELECT dedup_key, status FROM jobs_master
 """
@@ -141,6 +144,8 @@ ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS needs_return_to_school BOOLEAN 
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS undergrad_only BOOLEAN DEFAULT FALSE;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS is_open BOOLEAN;
 ALTER TABLE jobs_master ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ;
+-- VIEWED was briefly a status; an open is now only a logged event, so those jobs go back to the queue.
+UPDATE jobs_master SET status = 'QUEUED' WHERE status = 'VIEWED';
 CREATE TABLE IF NOT EXISTS ingest_manifest (
     file_path VARCHAR PRIMARY KEY,
     date_str VARCHAR NOT NULL,
@@ -210,6 +215,10 @@ def scoreboard(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
             [min_score()],
         ),
         "hold": one("SELECT count(*) FROM jobs_master WHERE status = 'REFERRAL_HOLD'"),
+        "viewed": one(
+            f"SELECT count(*) FROM jobs_master WHERE status = 'QUEUED' AND NOT COALESCE(is_saved, FALSE) "
+            f"AND dedup_key IN ({_OPENED_SQL})"
+        ),
         "saved": one("SELECT count(*) FROM jobs_master WHERE is_saved"),
         "positive": one(f"SELECT count(DISTINCT dedup_key) FROM ({_positive_keys_sql()})"),
         **dossier_counts(con),
@@ -237,7 +246,7 @@ def tmux_line(board: dict[str, int]) -> str:
     recent = f" (72h:{board.get('queued_72h', 0)})" if "queued_72h" in board else ""
     return (
         f"#[fg=green]Jobs: {board['applied_today']}/{DAILY_GOAL}#[default]"
-        f" | Q:{board['queued']}{recent}"
+        f" | New:{board['queued']}{recent}"
         f" | H:{board['hold']}"
     )
 
@@ -363,6 +372,22 @@ def transition_job_state(
         raise
     write_tmux_cache(con)
     return prev_snapshot
+
+
+def record_open(con: duckdb.DuckDBPyConnection, dedup_key: str) -> None:
+    """Log that the job's application page was opened, without changing the job.
+
+    Contract: adds one `state_transitions` row with `triggered_by='tui-open'` and from = to = the
+    current status. The job's status, saved flag and timestamps are untouched.
+    Limits: every open is logged, so opening twice gives two rows; an unknown key raises KeyError.
+    """
+    row = con.execute("SELECT status FROM jobs_master WHERE dedup_key = ?", [dedup_key]).fetchone()
+    if row is None:
+        raise KeyError(dedup_key)
+    con.execute(
+        "INSERT INTO state_transitions (dedup_key, from_status, to_status, triggered_by) VALUES (?, ?, ?, 'tui-open')",
+        [dedup_key, row[0], row[0]],
+    )
 
 
 def restore_job_state(
@@ -617,6 +642,10 @@ def fetch_jobs(
     if status == "APPLIED":
         clauses.append("status = 'APPLIED'")
         order_by = "applied_at DESC NULLS LAST, last_updated_at DESC"
+    elif status == "VIEWED":
+        # Opened but not yet acted on: saving, applying or skipping takes a job out of this view.
+        clauses.append(f"status = 'QUEUED' AND NOT COALESCE(is_saved, FALSE) AND dedup_key IN ({_OPENED_SQL})")
+        order_by = "opened_at DESC"  # most recently opened first
     elif status == "INTERVIEWS":
         clauses.append(f"status IN ({', '.join(repr(s) for s in POSITIVE)})")
         order_by = "last_updated_at DESC"
@@ -647,7 +676,7 @@ def fetch_jobs(
             "OR (date_posted IS NOT NULL AND try_cast(date_posted as DATE) >= CURRENT_DATE - (? * INTERVAL 1 DAY)))"
         )
         params.extend([hours, d])
-    if floor is not None and status != "SAVED":
+    if floor is not None and status not in ("SAVED", "VIEWED"):
         clauses.append("(status <> 'QUEUED' OR is_saved OR priority_score >= ?)")
         params.append(floor)
     if segment and status != "SAVED":
@@ -689,10 +718,12 @@ def fetch_jobs(
 
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     cur = con.execute(
-        # had_referral and age_days are derived here in one pass, so views never query per row.
+        # had_referral, age_days and opened_at are derived here in one pass, so views never query per row.
         f"SELECT {_TS_AS_TEXT}, "
         f"dedup_key IN (SELECT dedup_key FROM ({_REACHED_SQL}) WHERE s = 'REFERRAL_HOLD') AS had_referral, "
-        "CAST(floor((epoch(now()) - epoch(applied_at)) / 86400) AS INTEGER) AS age_days "
+        "CAST(floor((epoch(now()) - epoch(applied_at)) / 86400) AS INTEGER) AS age_days, "
+        "(SELECT max(t.transitioned_at)::VARCHAR FROM state_transitions t "
+        "WHERE t.triggered_by = 'tui-open' AND t.dedup_key = jobs_master.dedup_key) AS opened_at "
         f"FROM jobs_master {where} ORDER BY {order_by}",
         params,
     )

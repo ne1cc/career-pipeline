@@ -32,6 +32,7 @@ from cockpit.db import (
     min_score,
     queue_intel,
     recent_applied_companies,
+    record_open,
     restore_job_state,
     scoreboard,
     session,
@@ -50,7 +51,7 @@ DOSSIER_KEYS = ("dossiers_generating", "dossiers_regenerating", "dossiers_pendin
 BULK_CONFIRM_OVER = 10  # marked jobs above this need a second G press
 DOSSIER_POLL_S = 5.0  # catches dossiers written by other processes; in-process work refreshes immediately
 
-FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "APPLIED", "INTERVIEWS", "DISMISSED", None]
+FILTERS: list[str | None] = ["QUEUED", "72H", "NEW_GRAD", "SAVED", "INTERN", "REFERRAL_HOLD", "VIEWED", "APPLIED", "INTERVIEWS", "DISMISSED", None]
 
 COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("fit", "Fit", 6),
@@ -199,6 +200,16 @@ class AnswerModal(ModalScreen[None]):
 
 
 # Views that track sent applications: there the Fit and Score columns show Age and Mode instead.
+def shown(status: str | None) -> str:
+    """The word the cockpit displays for a stored status or view name.
+
+    Contract: the stored value QUEUED (a scraped job nobody has acted on) is shown as NEW; every
+    other value is shown as stored. Display only: the database and all queries keep QUEUED.
+    """
+    return "NEW" if status == "QUEUED" else (status or "")
+
+
+OPENED_MARK = "↗"  # prefix on the Title of a job whose application page was already opened
 TRACKING_VIEWS = ("APPLIED", "INTERVIEWS")
 STAGES = (
     FunnelState.OA_RECEIVED,
@@ -300,6 +311,7 @@ class CockpitTable(DataTable):
         self.highlighted_row_keys: set[Any] = set()
         self.marked_row_keys: set[str] = set()
         self.skipped_row_keys: set[str] = set()
+        self.opened_row_keys: set[Any] = set()  # jobs whose application page was already opened: dimmed
 
     def _next_live_row(self, step: int) -> int | None:
         """Nearest row in `step` direction whose key is not skipped (dismissed); None at the edge."""
@@ -337,9 +349,12 @@ class CockpitTable(DataTable):
         style = super()._get_row_style(row_index, base_style)
         if 0 <= row_index < len(self.ordered_rows):
             row_key = self.ordered_rows[row_index].key
+            keys = (row_key, getattr(row_key, "value", None))
+            if any(k in self.opened_row_keys for k in keys):
+                style += Style(dim=True)
             if row_key.value in self.marked_row_keys:
                 return style + Style(bgcolor="dark_blue")
-            if row_key in self.highlighted_row_keys or getattr(row_key, "value", None) in self.highlighted_row_keys:
+            if any(k in self.highlighted_row_keys for k in keys):
                 return style + Style(bgcolor="grey23")
         return style
 
@@ -403,7 +418,9 @@ class JobCockpitApp(App[None]):
         # --- Filtering & Search ---
         Binding("question_mark", "search", "Search"),
         Binding("slash", "location", "Location"),
-        Binding("f", "cycle_filter", "Filter"),
+        Binding("f", "cycle_filter(1)", "Filter"),
+        Binding("F", "cycle_filter(-1)", "Filter back", show=False),
+        Binding("shift+f", "cycle_filter(-1)", "Filter back", show=False),
         Binding("t", "toggle_72h", "72h"),
         Binding("D", "filter_date", "Date"),
         Binding("w", "filter_jd_keywords", "JD Words"),
@@ -427,7 +444,8 @@ class JobCockpitApp(App[None]):
         Binding("c", "copy_cover_letter", "Cover"),
         Binding("y", "yank", "Outreach"),
         Binding("r", "referrals", "Referrals"),
-        Binding("F", "open_folder", "Folder"),
+        Binding("X", "open_folder", "Folder"),
+        Binding("shift+x", "open_folder", "Folder", show=False),
         Binding("m", "move_stage", "Stage"),
         Binding("V", "funnel", "Funnel"),
         Binding("shift+v", "funnel", "Funnel", show=False),
@@ -485,6 +503,7 @@ class JobCockpitApp(App[None]):
         self._titles_regroup = False  # next grouping ignores the saved title -> role map
         self.marked: set[str] = set()
         self._bulk_confirm: frozenset[str] | None = None  # marked set awaiting a second G press
+        self._dossier_wait: set[str] = set()  # jobs whose dossier this session is waiting on
 
     def compose(self) -> ComposeResult:
         yield Static(id="score")
@@ -623,6 +642,7 @@ class JobCockpitApp(App[None]):
         saved_y = table.scroll_y
         table.clear()
         table.highlighted_row_keys.clear()
+        table.opened_row_keys.clear()
         in_dismissed_view = FILTERS[self.filter_idx] == "DISMISSED"
         self.marked &= {r["dedup_key"] for r in self.rows}
         table.marked_row_keys = set(self.marked)
@@ -637,6 +657,9 @@ class JobCockpitApp(App[None]):
             is_saved = bool(r.get("is_saved"))
             if is_saved and not is_saved_filter:
                 table.highlighted_row_keys.add(r["dedup_key"])
+            opened = bool(r.get("opened_at"))
+            if opened:
+                table.opened_row_keys.add(r["dedup_key"])
             # Format Fit column: "…" if a saved job's dossier is pending/running, "4.2" if done, "!" if failed.
             # Unsaving leaves intel_status='pending', but the worker only claims saved jobs, so an
             # unsaved "…" would never resolve; show "—" instead.
@@ -658,9 +681,10 @@ class JobCockpitApp(App[None]):
             if r["dedup_key"] in self.marked:
                 score_str = f"● {score_str}"  # glyph so marks are not colour-only
 
+            title = f"{OPENED_MARK} {r['title']}" if opened else r["title"]
             cells = (
-                fit_str, score_str, r["company"], r["title"], r["location"] or "",
-                r["site"] or "", r["resume_archetype"], r["status"],
+                fit_str, score_str, r["company"], title, r["location"] or "",
+                r["site"] or "", r["resume_archetype"], shown(r["status"]),
             )
             if r["dedup_key"] in table.skipped_row_keys:
                 cells = tuple(Text(c, style="dim") for c in cells)
@@ -673,14 +697,14 @@ class JobCockpitApp(App[None]):
                 table.move_cursor(row=target_idx, scroll=False)
                 table.scroll_to(x=saved_x, y=saved_y, animate=False)
                 table._scroll_cursor_into_view(animate=False)
-        label = FILTERS[self.filter_idx] or "ALL"
+        label = shown(FILTERS[self.filter_idx]) or "ALL"
         sort_indicator = f" | sort:{self.sort_col}{'↓' if self.sort_reverse else '↑'}" if self.sort_col else ""
         jd_indicator = f" | jd:{self.jd_keywords}" if self.jd_keywords else ""
         date_indicator = f" | date:{self.date_filter}" if self.date_filter else ""
         date_indicator += f" | role:{self.title_role.role} ({len(self.rows)})" if self.title_role else ""
         counts = (
-            f"Applied: {b['applied_today']}/{DAILY_GOAL} | Q:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
-            f"Saved:{b.get('saved', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
+            f"Applied: {b['applied_today']}/{DAILY_GOAL} | New:{b['queued']} (72h:{b.get('queued_72h', 0)}) | "
+            f"Saved:{b.get('saved', 0)} | Viewed:{b.get('viewed', 0)} | Hold:{b['hold']} | Pos:{b['positive']}"
         )
         if summary:
             counts = (
@@ -975,9 +999,9 @@ class JobCockpitApp(App[None]):
     def _timeline(self, r: dict[str, Any]) -> str:
         """Markup for a job's status history (date, change, who made it, note), or "" if it has none.
 
-        Limits: QUEUED jobs are skipped without a query; a locked database yields no timeline, not an error.
+        Limits: an unopened QUEUED job is skipped without a query; a locked database yields no timeline, not an error.
         """
-        if r.get("status") == FunnelState.QUEUED.value:
+        if r.get("status") == FunnelState.QUEUED.value and not r.get("opened_at"):
             return ""
         try:
             with session(self.db_path) as con:
@@ -985,7 +1009,9 @@ class JobCockpitApp(App[None]):
         except Exception:
             return ""  # DB briefly locked by another process; the next highlight redraws it.
         lines = [
-            f"  {(t['transitioned_at'] or '')[:10]}  {t['from_status'] or '—'} → {t['to_status']}  ({t['triggered_by']})"
+            f"  {(t['transitioned_at'] or '')[:16]}  opened"  # an open is an event, not a status change
+            if t["triggered_by"] == "tui-open"
+            else f"  {(t['transitioned_at'] or '')[:10]}  {shown(t['from_status']) or '—'} → {shown(t['to_status'])}  ({t['triggered_by']})"
             + (f"  {t['notes']}" if t.get("notes") else "")
             for t in steps
         ]
@@ -1000,8 +1026,10 @@ class JobCockpitApp(App[None]):
             self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if job := self._job():
-            self._stage_one(job, False)
+        # Enter inside a pop-up's table (e.g. picking a role in Titles) must not open the job behind it.
+        if event.data_table.id == "table":
+            if job := self._job():
+                self._stage_one(job, False)
 
     def action_down(self) -> None:
         self.query_one(DataTable).action_cursor_down()
@@ -1069,6 +1097,7 @@ class JobCockpitApp(App[None]):
             targets = self._targets()
             for job in targets:
                 macos.open_url(self._apply_target(job), background=True)
+                self._record_view(job)
             self.notify(f"Opened {len(targets)} apply pages in background tabs")
         elif job := self._job():
             self._stage_one(job, background)
@@ -1082,7 +1111,23 @@ class JobCockpitApp(App[None]):
 
             macos.copy_resume_path(resume_to_copy)
             macos.open_url(self._apply_target(job), background=background)
+            self._record_view(job)
             self.notify(f"{label} path on clipboard — Cmd+Shift+G, Cmd+V, Enter")
+
+    def _record_view(self, job: dict[str, Any]) -> None:
+        """Log that the job's application page was opened, leaving its status and saved flag alone.
+
+        Contract: writes one `tui-open` transition row, dims the row and prefixes its Title cell
+        with `OPENED_MARK`. The job stays in the queue and also shows in the VIEWED view until
+        saved (`b`), applied (`a`) or skipped (`s`).
+        """
+        key = job["dedup_key"]
+        with session(self.db_path) as con:
+            record_open(con, key)
+        job["opened_at"] = job.get("opened_at") or "just now"
+        table = self.query_one(CockpitTable)
+        table.opened_row_keys.add(key)
+        table.update_cell(key, "title", f"{OPENED_MARK} {job['title']}")
 
     def action_preview(self) -> None:
         if job := self._job():
@@ -1166,6 +1211,7 @@ class JobCockpitApp(App[None]):
         if not url:
             self.notify("No apply URL for this job", severity="warning")
             return
+        self._record_view(job)
         # 2. Unsupported site → the everyday browser (already logged in), never the worker.
         target = autofill.target_for(url)
         if target is None or target.ats not in autofill.SUPPORTED:
@@ -1519,7 +1565,7 @@ class JobCockpitApp(App[None]):
         key, snapshot = self.undo_stack.pop()
         with session(self.db_path) as con:
             restore_job_state(con, key, snapshot)
-        self.notify(f"Restored status to {snapshot['status']}")
+        self.notify(f"Restored status to {shown(snapshot['status'])}")
         self._reload(self.query_one(DataTable).cursor_row, preserve_key=key)
 
     def action_archetype(self, name: str) -> None:
@@ -1538,8 +1584,9 @@ class JobCockpitApp(App[None]):
             self.filter_idx = FILTERS.index("72H")
         self._reload(0)
 
-    def action_cycle_filter(self) -> None:
-        self.filter_idx = (self.filter_idx + 1) % len(FILTERS)
+    def action_cycle_filter(self, step: int = 1) -> None:
+        """`f` moves to the next view, `F` (step -1) to the previous one; both wrap around."""
+        self.filter_idx = (self.filter_idx + step) % len(FILTERS)
         self._reload(0)
 
     def action_segment(self) -> None:
@@ -1610,6 +1657,33 @@ class JobCockpitApp(App[None]):
     def _kick_intel(self) -> None:
         self.run_worker(self._run_intel_worker, thread=True, exclusive=True, exit_on_error=False)
 
+    def _open_finished_dossiers(self) -> None:
+        """Open each dossier in One Markdown once, as soon as it finishes generating.
+
+        Contract: runs on the dossier worker thread. A job is noticed while its dossier is pending
+        or running and opened when it turns 'done'; a failed one is dropped without opening.
+        Limits: only dossiers this cockpit generated; ones written by `cockpit intel` are not opened.
+        """
+        try:
+            with session(self.db_path) as con:
+                rows = con.execute(
+                    "SELECT dedup_key, intel_status, intel_path FROM jobs_master WHERE is_saved AND intel_status IS NOT NULL"
+                ).fetchall()
+        except Exception:
+            return  # DB briefly locked; the next progress signal catches up.
+        for key, status, path in rows:
+            if status in ("pending", "running"):
+                self._dossier_wait.add(key)
+            elif key in self._dossier_wait:
+                self._dossier_wait.discard(key)
+                if status == "done" and path and Path(path).is_file():
+                    macos.open_markdown(path)
+
+    def _dossier_progress(self) -> None:
+        """Worker-thread hook after each claim / finished job: open what finished, refresh the table."""
+        self._open_finished_dossiers()
+        self.call_from_thread(self._on_dossier_change)
+
     def _run_intel_worker(self) -> None:
         try:
             ctx = intel.load_context(self.career_ops_root, model=self.model)
@@ -1636,7 +1710,7 @@ class JobCockpitApp(App[None]):
                     generator,
                     self.export_dir,
                     limit=5,
-                    on_progress=lambda: self.call_from_thread(self._on_dossier_change),
+                    on_progress=self._dossier_progress,
                 )
                 with session(self.db_path) as con:
                     if not dossier_counts(con)["dossiers_pending"]:
