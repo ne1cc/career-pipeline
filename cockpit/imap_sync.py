@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from cockpit import macos
-from cockpit.db import DB_PATH, session, transition_job_state, write_tmux_cache
+from cockpit.db import DB_PATH, POSITIVE, session, transition_job_state, write_tmux_cache
 from cockpit.models import FunnelState
 from cockpit.normalizer import norm_company
 
@@ -22,13 +22,18 @@ ATS_DOMAINS = (
     "hackerrank.com",
     "codesignal.com",
 )
-# Checked in order: a rejection wins over interview wording in the same subject.
+# Checked in order: a rejection wins over everything, then the furthest stage wins, so
+# "technical phone screen" is a tech round and "final interview" is not a phone screen.
 _RULES = (
     (FunnelState.REJECTED, re.compile(r"unfortunately|not (be )?moving forward|other candidates|will not be proceeding|decided not to", re.I)),
+    (FunnelState.OFFER, re.compile(r"offer letter|job offer|offer of employment|pleased to offer|extend(ing)? (you )?an offer|your offer", re.I)),
+    (FunnelState.FINAL_ROUND, re.compile(r"final (round|interview|stage|loop)|on-?site|super ?day", re.I)),
+    (FunnelState.TECH_ROUND, re.compile(r"(technical|tech|coding) (interview|round|screen|phone screen)|live coding|system design|pair programming", re.I)),
     (FunnelState.OA_RECEIVED, re.compile(r"assessment|hackerrank|codesignal|coding challenge|take-home", re.I)),
     (FunnelState.PHONE_SCREEN, re.compile(r"phone screen|schedule (a|your) (call|interview)|interview|speak with|chat with", re.I)),
 )
-_RANK = {FunnelState.APPLIED.value: 0, FunnelState.OA_RECEIVED.value: 1, FunnelState.PHONE_SCREEN.value: 2}
+# A job only ever moves up this ladder from mail; a lower-stage email never pulls it back.
+_RANK = {s: i for i, s in enumerate((FunnelState.APPLIED.value, *POSITIVE))}
 
 
 def classify(subject: str) -> FunnelState | None:
@@ -47,7 +52,7 @@ def sync_gmail_statuses(
     with session(db_path) as con:
         open_jobs = con.execute(
             "SELECT dedup_key, company_norm, status FROM jobs_master "
-            "WHERE status IN ('APPLIED','OA_RECEIVED','PHONE_SCREEN') ORDER BY applied_at DESC NULLS LAST"
+f"WHERE status IN ({', '.join(repr(s) for s in _RANK)}) ORDER BY applied_at DESC NULLS LAST"
         ).fetchall()
     jobs: dict[str, tuple[str, str]] = {}
     for key, company, status in open_jobs:

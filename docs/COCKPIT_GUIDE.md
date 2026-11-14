@@ -79,7 +79,9 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | `s` | Skip |
 | `h` | Hold for a referral (type the contact, then Enter) |
 | `y` | Copy the outreach message for this job |
-| `f` | Cycle the view: Queued, Referral Hold, Intern, Applied, All |
+| `f` | Cycle the view: Queued, 72h, New Grad, Saved, Intern, Referral Hold, Applied, Interviews, All |
+| `m` | Move an applied job to a stage: `1` OA, `2` phone screen, `3` tech round, `4` final round, `5` offer, `6` rejected |
+| `V` | Weekly funnel table: applications per week and how far each week's jobs got |
 | `D` | Filter by ingest date (e.g. `2026_11_02` or `11/02`) |
 | `/` | Filter by location |
 | `R` | Sync Gmail now |
@@ -109,7 +111,7 @@ cockpit stats
 
 Shows, by resume archetype and by job board: applied, OA/phone signals, and median hours to apply. After a week, use it to decide which resume and which boards are worth your time.
 
-Mail sync moves jobs to `OA_RECEIVED`, `PHONE_SCREEN` or `REJECTED` automatically. A macOS notification fires on OA and phone-screen signals.
+Mail sync moves jobs to `OA_RECEIVED`, `PHONE_SCREEN`, `TECH_ROUND`, `FINAL_ROUND`, `OFFER` or `REJECTED` automatically. A macOS notification fires on OA and phone-screen signals.
 
 ## If something's off
 
