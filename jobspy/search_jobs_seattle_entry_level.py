@@ -64,6 +64,15 @@ search_terms = [
     "Entry Level Security Engineer",
     "Cybersecurity Analyst",
     "SOC Analyst",
+
+    # Stepping-Stone & Pivot Entry Roles
+    "Associate Solutions Engineer",
+    "Implementation Specialist",
+    "Technical Support Engineer",
+    "Junior QA Engineer",
+    "Data Operations Specialist",
+    "Product Operations Associate",
+    "Operations Associate",
 ]
 
 def flush_jobs_to_csv(jobs_list: list[pd.DataFrame], output_path: Path) -> int:
