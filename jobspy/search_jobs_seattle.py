@@ -6,6 +6,11 @@ from pathlib import Path
 import pandas as pd
 from jobspy import scrape_jobs
 
+try:
+    from jobspy.role_taxonomy import HIGH_YIELD_PIVOT_TERMS, merge_terms
+except ImportError:
+    from role_taxonomy import HIGH_YIELD_PIVOT_TERMS, merge_terms  # type: ignore[no-redef]
+
 # All outputs go into scraped jobs/results/YYYY_MM/YYYY_MM_DD/ next to this script
 default_out = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m") / datetime.now().strftime("%Y_%m_%d")
 OUTPUT_DIR = Path(os.environ.get("JOBSPY_RESULTS_DIR", default_out))
@@ -100,6 +105,7 @@ search_terms = [
     "Information Security Analyst",
     "SOC Analyst",
 ]
+search_terms = merge_terms(search_terms, HIGH_YIELD_PIVOT_TERMS)
 
 def flush_jobs_to_csv(jobs_list: list[pd.DataFrame], output_path: Path) -> int:
     """Atomically write collected job dataframes to CSV with deduplication."""

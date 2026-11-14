@@ -279,3 +279,40 @@ def test_empty_developer_security_sheet():
     assert "segment" in res_empty_df.columns
 
 
+def test_stepping_stone_roles_match_enrichment_and_cockpit_scoring():
+    from cockpit.normalizer import load_rules, score_job
+
+    fresher_pivots = [
+        "Forward Deployed Engineer",
+        "Implementation Consultant",
+        "Solutions Engineer",
+        "Technical Support Engineer",
+        "Product Operations Analyst",
+        "ETL Developer",
+        "Founder's Associate",
+        "Technical Account Manager",
+    ]
+    for title in fresher_pivots:
+        assert matches_fresher_track(title), f"matches_fresher_track missed {title}"
+
+    dev_pivots = [
+        "Forward Deployed Engineer",
+        "Solutions Engineer",
+        "Implementation Engineer",
+        "Technical Support Engineer",
+        "QA Engineer",
+        "SDET",
+    ]
+    for title in dev_pivots:
+        assert matches_developer_security_track(title, "0-2 years"), (
+            f"matches_developer_security_track missed {title}"
+        )
+
+    rules = load_rules()
+    for title in fresher_pivots:
+        scored = score_job(title, "SQL and Python", rules, location="Seattle, WA")
+        assert scored.score >= 10.0, f"{title} scored {scored.score} (< 10.0), reason={scored.disqualified_reason}"
+        assert scored.disqualified_reason is None
+
+
+

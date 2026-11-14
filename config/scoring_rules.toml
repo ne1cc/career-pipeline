@@ -19,7 +19,11 @@ title_contains = [
 ]
 # Contextual title disqualifiers: penalized unless exempted by an early-career or recognized modifier
 architect_exempt = ["associate", "junior", "intern", "new grad", "entry", "i", "1"]
-manager_exempt = ["product manager", "program manager", "project manager", "account manager", "client manager"]
+manager_exempt = [
+  "product manager", "program manager", "project manager", "account manager",
+  "client manager", "technical account manager", "customer success manager",
+  "implementation manager"
+]
 
 [disqualifiers]
 penalty = 100.0
@@ -62,7 +66,9 @@ data_eng = [
   "data engineer", "analytics engineer", "etl", "data platform", "data infrastructure",
   "big data", "lakehouse", "dataops", "mlops", "database engineer", "database administrator",
   "data pipeline", "ai engineer", "ml engineer", "machine learning engineer", "data integration",
-  "forward deployed", "data operations", "data specialist"
+  "forward deployed", "data operations", "data specialist",
+  "sql developer", "etl developer", "data migration", "deployment strategist",
+  "implementation engineer"
 ]
 analytics_msba = [
   "analyst", "analytics", "data scientist", "business intelligence", "bi engineer",
@@ -72,14 +78,24 @@ analytics_msba = [
   "sales operations", "gtm operations", "solutions analyst", "growth analyst",
   "commercial analytics", "insights analyst", "financial analyst",
   "marketing analyst", "pricing analyst", "risk analyst", "research analyst", "economist",
-  "statistician", "insights", "reporting analyst", "data governance", "data quality"
+  "statistician", "insights", "reporting analyst", "data governance", "data quality",
+  "product operations", "product ops", "reporting specialist", "analytics specialist",
+  "analytics associate", "bi associate", "implementation consultant",
+  "implementation specialist", "client solutions", "onboarding specialist", "deal desk",
+  "techops", "technical operations", "customer operations", "founder's associate",
+  "founders associate", "strategy associate", "program manager", "project manager",
+  "project coordinator", "delivery analyst"
 ]
 swe_backend = [
   "software", "sde", "swe", "backend", "back end", "full stack", "fullstack",
   "developer", "devops", "platform engineer", "site reliability", "sre",
   "systems engineer", "cloud engineer", "security engineer", "cybersecurity",
   "appsec", "solutions engineer", "solutions architect", "architect", "integration engineer", "automation engineer",
-  "qa engineer", "test engineer", "application engineer", "technical support engineer"
+  "qa engineer", "test engineer", "application engineer", "technical support engineer",
+  "forward deployed", "sales engineer", "customer engineer", "partner engineer",
+  "customer success engineer", "technical account manager", "support engineer",
+  "application support", "developer support", "quality assurance", "test automation",
+  "sdet", "founding engineer"
 ]
 
 [location]
@@ -136,7 +152,7 @@ model = "sonnet"
 [titles]
 # `T` in the cockpit: the AI groups the titles in your current view into roles; counts are exact.
 # Tiers: target (apply now), stretch (target family but senior / 5+ yrs), explore (skills to learn), out.
-target = "Data Engineer, Analytics Engineer, Data Analyst, BI / Business Intelligence Analyst, Business Analyst, Backend / Software Engineer, Platform Engineer, at intern / new-grad / entry / I-II level"
+target = "Data Engineer, Analytics Engineer, Data Analyst, BI / Business Intelligence Analyst, Business Analyst, Backend / Software Engineer, Platform Engineer, Solutions / Implementation / Forward Deployed Engineer, Technical Support / QA Engineer, Product / BizOps / Data Ops Analyst, at intern / new-grad / entry / I-II level"
 explore = "Data Scientist, Machine Learning / AI Engineer, Financial / Pricing Analyst, Product Manager / APM, Security Engineer: not qualified yet, worth watching for skills to learn"
 # Grouping runs on Antigravity; if it errors or returns nothing, the rest of the run uses Claude.
 provider = "agy"
