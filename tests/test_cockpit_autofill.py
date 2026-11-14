@@ -802,3 +802,30 @@ def test_source_never_submits():
         "opts.nth(k).click(timeout=ACTION_MS)",
     ]
     assert "e.type === 'submit'" in code  # `_click` refuses submit-type controls
+
+
+# ───────────────────────── drafts ─────────────────────────
+
+
+def test_greenhouse_free_text_gets_a_draft(open_fixture, pdf):
+    """A required free-text box is filled by the drafter, outlined blue, listed, and not "needs you"."""
+    page = open_fixture("greenhouse.html")
+    asked: list[str] = []
+
+    def drafter(question: str) -> str:
+        asked.append(question)
+        return "I built X at Y."
+
+    rep = fill_page(page, _target("greenhouse"), JANE, pdf, None, None, _rules(), drafter)
+    assert "Why Acme?" in asked and "Why Acme?" in rep.drafted
+    assert "Why Acme?" not in rep.needs_you
+    assert page.input_value("#q11") == "I built X at Y."
+    assert page.evaluate("window.__submits || 0") == 0
+    assert "drafted" in rep.summary()
+
+
+def test_draft_skipped_leaves_box_for_owner(open_fixture, pdf):
+    page = open_fixture("greenhouse.html")
+    rep = fill_page(page, _target("greenhouse"), JANE, pdf, None, None, _rules(), lambda q: None)
+    assert rep.drafted == [] and "Why Acme?" in rep.needs_you
+    assert page.input_value("#q11") == ""

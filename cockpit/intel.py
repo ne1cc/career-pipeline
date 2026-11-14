@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -1208,6 +1209,9 @@ def create_llm_client(
         return create_gemini_client(model_name=mod)
 
 
+INTEL_WORKERS = 3  # dossiers generated at once; each is several calls on the owner's CLI account
+
+
 def process_batch(
     db_path: Path,
     ctx: Context,
@@ -1215,11 +1219,17 @@ def process_batch(
     export_dir: Path = DEFAULT_EXPORT_DIR,
     limit: int = 5,
     on_progress: Callable[[], None] | None = None,
+    workers: int = INTEL_WORKERS,
 ) -> list[str]:
     """Process up to `limit` pending intel jobs, creating full per-job application packages.
 
-    `on_progress`, if given, is called after jobs are claimed and after each job finishes, so a UI
-    can refresh its running/pending dossier counts mid-batch. It runs on the caller's thread.
+    Contract:
+    - Claimed jobs run on up to `workers` threads; one job failing never stops the others.
+    - Database writes are serialised by a lock (DuckDB takes one writer well, many badly).
+    - `on_progress`, if given, is called after jobs are claimed and after each job finishes, so a UI
+      can refresh its running/pending dossier counts mid-batch. It may run on a worker thread.
+    Limits: `generator` must be safe to call from several threads (the CLI clients are: each call
+    is its own subprocess).
     """
     try:
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -1236,18 +1246,17 @@ def process_batch(
     progress = on_progress or (lambda: None)
     progress()
 
-    processed = []
-    for i, job in enumerate(jobs):
-        # 2. Each iteration after the first means the previous job just finished.
-        if i:
-            progress()
+    write_lock = threading.Lock()
+
+    def _one(job: dict[str, Any]) -> str | None:
+        """Generate one job's package; returns its key when it succeeded (or was cached)."""
         key = job["dedup_key"]
         job_folder = job_folder_path(job, export_dir)
         dossier_file = job_folder / "05_interview_dossier.md"
 
         # Check cache: if previously done with the exact same content hash
         if job.get("intel_status") == "done" and job.get("intel_hash") == ctx.hash and job.get("fit_score") is not None:
-            with db.session(db_path) as con:
+            with write_lock, db.session(db_path) as con:
                 db.finish_intel(
                     con,
                     key,
@@ -1258,8 +1267,7 @@ def process_batch(
                     folder_path=str(job_folder),
                     fit_category=job.get("fit_category"),
                 )
-            processed.append(key)
-            continue
+            return key
 
         jd_text = (
             f"URL: {job.get('apply_url')}\nCOMPANY: {job.get('company')}\nTITLE: {job.get('title')}\n\n"
@@ -1281,7 +1289,7 @@ def process_batch(
                 except OSError:
                     pass
 
-            with db.session(db_path) as con:
+            with write_lock, db.session(db_path) as con:
                 db.finish_intel(
                     con,
                     key,
@@ -1294,11 +1302,11 @@ def process_batch(
                     tailored_resume_path=pkg_info.get("tailored_resume_path"),
                     cover_letter_path=pkg_info.get("cover_letter_path"),
                 )
-            processed.append(key)
+            return key
         except Exception as e:
             err_msg = str(e)
             pkg_info = write_application_package(job, job_folder, "", error=err_msg)
-            with db.session(db_path) as con:
+            with write_lock, db.session(db_path) as con:
                 db.finish_intel(
                     con,
                     key,
@@ -1308,10 +1316,23 @@ def process_batch(
                     intel_hash=ctx.hash,
                     folder_path=pkg_info["folder_path"],
                 )
+            return None
 
-    with db.session(db_path) as con:
+    # 2. Run the claimed jobs side by side; signal after each one finishes.
+    processed: list[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs))), thread_name_prefix="intel") as pool:
+        futures = [pool.submit(_one, job) for job in jobs]
+        for n, fut in enumerate(futures):
+            try:
+                key = fut.result()
+            except Exception:  # a failure while recording a failure: the job stays 'running' and is requeued later
+                key = None
+            if key:
+                processed.append(key)
+            if n < len(futures) - 1:  # the last job is covered by the final signal below
+                progress()
+
+    with write_lock, db.session(db_path) as con:
         rebuild_index(con, export_dir)
-    # 3. Final signal covers the last job, including all-failed batches the TUI would not reload for.
-    progress()
-
+    progress()  # final signal after the index is rebuilt
     return processed

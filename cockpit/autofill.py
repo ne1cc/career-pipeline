@@ -48,6 +48,9 @@ ACTION_MS = 3000  # bound on any single fill / click / option wait
 UPLOAD_SETTLE_MS = 6000  # bound on Lever's "analyzing resume" step
 FILL_BUDGET_S = 60.0  # after this, remaining questions are reported, not attempted
 OUTLINE = "2px solid orange"
+DRAFT_OUTLINE = "2px solid #3b82f6"  # blue: written by the drafter, review before submitting
+MAX_DRAFTS = 8  # per form; each one is a model call, made one after another
+_QUESTIONISH = re.compile(r"\?|^\s*(why|how|what|describe|tell us|explain|share)\b", re.IGNORECASE)
 
 
 # ───────────────────────── answers file ─────────────────────────
@@ -117,12 +120,15 @@ class FillReport:
     blocked: str | None = None
     resume: str | None = None
     cover: str | None = None
+    drafted: list[str] = field(default_factory=list)  # free-text boxes filled by the drafter
 
     def summary(self) -> str:
         """One line for the status bar: what was filled, what still needs the owner."""
         if self.blocked:
             return f"Not filled ({self.blocked}) · tab left open for you"
         line = f"Filled {len(self.filled)} fields"
+        if self.drafted:
+            line += f" · {len(self.drafted)} drafted, review them"
         if self.needs_you:
             shown = ", ".join(f'"{_short(x)}"' for x in self.needs_you[:3])
             more = len(self.needs_you) - 3
@@ -325,6 +331,7 @@ _EXTRACT_JS = """(cfg) => {""" + _HAS_VALUE_JS + """
       q.name = ctrl.getAttribute('name') || ''; q.id = ctrl.id || '';
       q.ac = ctrl.getAttribute('autocomplete') || '';
       q.visible = q.kind === 'file' || vis(ctrl);
+      q.long = ctrl.tagName === 'TEXTAREA';
       q.date = ctrl.type === 'date' || /(^|[\\s_-])date([\\s_-]|$)/i.test(ctrl.className) ||
         !!ctrl.closest('.react-datepicker-wrapper');
     }
@@ -540,6 +547,7 @@ def fill_page(
     cover_pdf: Path | None,
     cover_text: str | None,
     answers: list[AnswerRule],
+    drafter: Callable[[str], str | None] | None = None,
 ) -> FillReport:
     """Fill the form already loaded in `page`. Never navigates, never submits.
 
@@ -551,6 +559,9 @@ def fill_page(
       it under `needs_you`, as do required questions nothing answered.
     - Playwright errors on one question mark that question as needing the owner; the rest
       continue. The whole fill stops trying after FILL_BUDGET_S.
+    - With a `drafter`, empty free-text boxes (required, or worded as a question) that no
+      rule claimed get a draft after the main pass, at most MAX_DRAFTS, outlined in blue and
+      listed in `drafted`. The drafting time is not part of FILL_BUDGET_S.
     """
     rep = FillReport(ats=target.ats, url=page.url)
     site = SITES.get(target.ats)
@@ -595,6 +606,7 @@ def fill_page(
     taken: set[str] = set()
     deadline = time.monotonic() + FILL_BUDGET_S
     left: list[dict] = []
+    longs: list[dict] = []  # empty free-text boxes the drafter may take
     for q in questions:
         label = q["label"] or q["name"] or "(unlabelled question)"
         if q["kind"] == "file":
@@ -615,7 +627,30 @@ def fill_page(
                 continue
         except PWError:
             pass
+        if drafter and q["kind"] == "text" and q.get("long") and not q.get("_ruled") and (
+            q["required"] or _QUESTIONISH.search(label)
+        ):
+            longs.append(q)
         if q["required"] or q.get("_ruled"):
+            left.append(q)
+
+    # 3b. Draft the free-text boxes; a draft that lands removes the box from `left`.
+    for q in longs[:MAX_DRAFTS]:
+        label = q["label"] or q["name"] or "(unlabelled question)"
+        text = drafter(label)
+        if text and _try(lambda q=q, text=text: _set_text(q, _qloc(page, q), text)):
+            rep.drafted.append(label)
+            if q in left:
+                left.remove(q)
+            _try(
+                lambda q=q: page.locator(f'[data-af="{q["i"]}"]').evaluate(
+                    "(e, o) => { e.style.outline = o; e.style.outlineOffset = '2px'; }",
+                    DRAFT_OUTLINE,
+                    timeout=ACTION_MS,
+                )
+            )
+    for q in longs[MAX_DRAFTS:]:
+        if q["required"] and q not in left:
             left.append(q)
 
     # 4. Report what still needs the owner, and outline it on the page. Only required
@@ -741,6 +776,7 @@ class AutofillWorker:
         cover_text: str | None,
         answers: list[AnswerRule],
         on_done: Callable[[FillReport], None],
+        drafter: Callable[[str], str | None] | None = None,
     ) -> None:
         """Queue one job; returns immediately. Starts the worker thread on first use."""
         with self._lock:
@@ -752,7 +788,7 @@ class AutofillWorker:
                 )
                 self._thread.start()
             self._jobs.put(
-                (url, profile, resume, cover_pdf, cover_text, answers, on_done)
+                (url, profile, resume, cover_pdf, cover_text, answers, drafter, on_done)
             )
 
     def close(self) -> None:
@@ -829,7 +865,7 @@ class AutofillWorker:
         blank = [p for p in ctx.pages if p.url == "about:blank"]
         return blank[0] if blank else ctx.new_page()
 
-    def _do(self, url, profile, resume, cover_pdf, cover_text, answers) -> FillReport:
+    def _do(self, url, profile, resume, cover_pdf, cover_text, answers, drafter=None) -> FillReport:
         target = target_for(url)
         supported = target is not None and target.ats in SUPPORTED
         try:
@@ -848,4 +884,4 @@ class AutofillWorker:
             return FillReport(
                 ats=target.ats if target else "unknown", url=url, blocked="unsupported"
             )
-        return fill_page(page, target, profile, resume, cover_pdf, cover_text, answers)
+        return fill_page(page, target, profile, resume, cover_pdf, cover_text, answers, drafter)
