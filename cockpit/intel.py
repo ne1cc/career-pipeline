@@ -772,7 +772,7 @@ def reconcile_saved_jobs(
 
     # 1. Migrate any legacy flat .md dossiers into per-job folders
     for md_file in list(target_dir.glob("*.md")):
-        if md_file.name == "index.md":
+        if md_file.name in ("index.md", LEARNING_LOG):
             continue
         try:
             content = md_file.read_text("utf-8")
@@ -894,28 +894,111 @@ def reconcile_saved_jobs(
     return reconciled
 
 
+NOTES_FILE = "09_notes.md"
+LEARNING_LOG = "learning-log.md"
+# index.md sections, in reading order: (heading, statuses). Statuses not listed fall under "To apply".
+_INDEX_GROUPS = (
+    ("Interviewing", db.POSITIVE),
+    ("Applied", ("APPLIED",)),
+    ("To apply", ()),
+    ("Closed", ("REJECTED", "SKIPPED")),
+)
+# Per-job files linked from the index, in the order worth reading them.
+_INDEX_LINKS = (
+    ("Dossier", "05_interview_dossier.md"),
+    ("Fit", "01_fit_assessment.md"),
+    ("Resume", "02_tailored_resume.md"),
+    ("Letter", "03_cover_letter.md"),
+    ("Notes", NOTES_FILE),
+)
+
+
+def ensure_notes(folder: Path, company: str, title: str) -> Path:
+    """Return the job's notes file, creating an empty one on first use.
+
+    Contract: an existing notes file is never rewritten, so regenerating a dossier keeps the notes.
+    """
+    path = folder / NOTES_FILE
+    if not path.exists():
+        path.write_text(f"# Notes: {company} — {title}\n\n<!-- What you learned from this dossier. -->\n", "utf-8")
+    return path
+
+
+def _note_body(text: str) -> str:
+    """The user's own words in a notes file: the text minus the title line and HTML comments."""
+    text = re.sub(r"<!--[\s\S]*?-->", "", text)
+    return "\n".join(line for line in text.splitlines() if not line.startswith("# ")).strip()
+
+
+def build_learning_log(export_dir: Path = DEFAULT_EXPORT_DIR) -> int:
+    """Collect every job's non-empty notes into `<export_dir>/learning-log.md`; return how many jobs had notes.
+
+    Contract: one section per job folder, most recently edited notes first, each linking back to
+    the job's dossier. The log is rebuilt from the notes files each time; edit the notes, not the log.
+    """
+    entries = []
+    for path in export_dir.glob(f"*/{NOTES_FILE}"):
+        try:
+            body = _note_body(path.read_text("utf-8"))
+        except OSError:
+            continue
+        if body:
+            entries.append((path.stat().st_mtime, path.parent.name, body))
+    entries.sort(reverse=True)
+    lines = ["# Learning log\n", f"*Notes from {len(entries)} job(s). Rebuilt by `cockpit notes`.*\n"]
+    for mtime, name, body in entries:
+        day = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+        lines += [f"## {name}\n", f"*{day}* · [Dossier](<{name}/05_interview_dossier.md>) · [Notes](<{name}/{NOTES_FILE}>)\n", body + "\n"]
+    (export_dir / LEARNING_LOG).write_text("\n".join(lines), "utf-8")
+    return len(entries)
+
+
 def rebuild_index(con: Any, export_dir: Path = DEFAULT_EXPORT_DIR) -> None:
+    """Write `<export_dir>/index.md`: every saved job, grouped by where it stands, with links to its files.
+
+    Contract: sections follow `_INDEX_GROUPS`; inside a section jobs are ordered by fit score.
+    Each job folder that exists also gets an empty notes file (`ensure_notes`) so its Notes link works.
+    Limits: an unwritable export directory is skipped silently; only files that exist are linked.
+    """
     try:
         export_dir.mkdir(parents=True, exist_ok=True)
     except (PermissionError, OSError):
         return
     jobs = db.fetch_jobs(con, status="SAVED")
+    listed = {s for _, statuses in _INDEX_GROUPS for s in statuses}
     lines = [
         "# Job Cockpit — Saved Application Packages\n",
-        f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Total Saved: {len(jobs)}*\n",
-        "| Fit | Category | Company | Role | Location | Status | Package Folder | Dossier |",
-        "| :---: | :---: | :--- | :--- | :--- | :---: | :---: | :---: |",
+        f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Total Saved: {len(jobs)}"
+        f" | [Learning log](<{LEARNING_LOG}>)*\n",
     ]
-    for j in jobs:
-        fit = f"{j['fit_score']:.1f}" if j.get("fit_score") is not None else "…"
-        cat = j.get("fit_category") or "—"
-        p_path = j.get("folder_path") or (Path(j["intel_path"]).parent if j.get("intel_path") else None)
-        folder_link = f"[Folder](<{Path(p_path).name}>)" if p_path and Path(p_path).exists() else "—"
-        dossier_link = f"[Dossier](<{Path(p_path).name}/05_interview_dossier.md>)" if p_path and (Path(p_path) / "05_interview_dossier.md").exists() else "—"
-
-        lines.append(
-            f"| **{fit}** | `{cat}` | {j['company']} | {j['title']} | {j.get('location') or ''} | `{j['status']}` | {folder_link} | {dossier_link} |"
-        )
+    for heading, statuses in _INDEX_GROUPS:
+        group = [j for j in jobs if (j["status"] in statuses if statuses else j["status"] not in listed)]
+        if not group:
+            continue
+        lines += [
+            f"## {heading} ({len(group)})\n",
+            "| Fit | Category | Company | Role | Location | Status | Read |",
+            "| :---: | :---: | :--- | :--- | :--- | :---: | :--- |",
+        ]
+        for j in group:
+            fit = f"{j['fit_score']:.1f}" if j.get("fit_score") is not None else "…"
+            cat = j.get("fit_category") or "—"
+            p_path = j.get("folder_path") or (Path(j["intel_path"]).parent if j.get("intel_path") else None)
+            links = "—"
+            if p_path and Path(p_path).exists():
+                folder = Path(p_path)
+                try:
+                    ensure_notes(folder, j["company"], j["title"])
+                except OSError:
+                    pass
+                links = " · ".join(
+                    [f"[{label}](<{folder.name}/{name}>)" for label, name in _INDEX_LINKS if (folder / name).exists()]
+                    + [f"[Folder](<{folder.name}>)"]
+                )
+            lines.append(
+                f"| **{fit}** | `{cat}` | {j['company']} | {j['title']} | {j.get('location') or ''} | `{j['status']}` | {links} |"
+            )
+        lines.append("")
     (export_dir / "index.md").write_text("\n".join(lines) + "\n", "utf-8")
 
 
