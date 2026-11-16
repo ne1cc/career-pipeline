@@ -30,8 +30,9 @@ MAX_WORKERS = 4
 
 DEFAULT_TARGET = (
     "Data Engineer, Analytics Engineer, Data Analyst, BI / Business Intelligence Analyst, "
-    "Business Analyst, Backend / Software Engineer, Platform Engineer, at intern / new-grad / "
-    "entry / I-II level"
+    "Business Analyst, Backend / Software Engineer, Platform Engineer, Solutions / Implementation / "
+    "Forward Deployed Engineer, Technical Support / QA Engineer, Product / BizOps / Data Ops Analyst, "
+    "at intern / new-grad / entry / I-II level"
 )
 DEFAULT_EXPLORE = (
     "Data Scientist, Machine Learning / AI Engineer, Financial / Pricing Analyst, "

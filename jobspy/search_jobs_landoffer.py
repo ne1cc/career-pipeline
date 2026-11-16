@@ -41,6 +41,12 @@ QUERIES = [
     "software engineer new grad",
     "backend engineer",
     "platform engineer",
+    "product analyst",
+    "solutions engineer",
+    "forward deployed engineer",
+    "implementation engineer",
+    "technical support engineer",
+    "full stack engineer",
 ]
 MAX_PAGES = 3  # list pages per query (24 jobs each)
 MAX_DETAILS = 150  # detail pages per run
@@ -64,7 +70,8 @@ STANDARD_COLUMNS = [
 ]
 
 ROLE_PATTERN = re.compile(
-    r"\b(?:analyst|analytics|data|bi|business intelligence|software|developer|backend|platform|engineer)\b",
+    r"\b(?:analyst|analytics|data|bi|business intelligence|software|developer|backend|platform|engineer|"
+    r"solutions|implementation|support|qa|product|operations|bizops|revops|full stack|ai|ml)\b",
     re.IGNORECASE,
 )
 SENIOR_PATTERN = re.compile(

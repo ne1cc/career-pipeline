@@ -53,7 +53,11 @@ CAMPUS_ROLE_PATTERN = re.compile(
     r"\b(?:"
     r"analyst|analytics|data|scientist|statistician|quantitative|bi|"
     r"business analyst|operations|bizops|revops|solutions|product|"
-    r"software|developer|backend|platform|security|cybersecurity"
+    r"software|developer|backend|platform|security|cybersecurity|"
+    r"implementation|integration|support engineer|technical support|"
+    r"qa|quality assurance|sdet|etl|reporting|program manager|"
+    r"project coordinator|techops|full stack|full-stack|frontend|"
+    r"ai engineer|ml engineer|automation engineer"
     r")\b",
     re.IGNORECASE,
 )

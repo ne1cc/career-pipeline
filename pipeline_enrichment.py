@@ -152,9 +152,27 @@ def enrich_dataframe(
     return enriched[front + other]
 
 
-TRACK_A_PATTERN = r"\b(?:analyst|analytics|data|data scientist|statistician|quantitative|analytics engineer|bi\b|bi developer|business intelligence|reporting|insights)\b"
-TRACK_C_PATTERN = r"\b(?:product manager|apm\b|business operations|bizops|operations analyst|project coordinator|strategy & operations|strategy and operations|strategy analyst)\b"
-TRACK_B_PATTERN = r"\b(?:software engineer|developer|swe\b|frontend|backend|full stack)\b"
+TRACK_A_PATTERN = (
+    r"\b(?:analyst|analytics|data|data scientist|statistician|quantitative|analytics engineer|"
+    r"bi\b|bi developer|business intelligence|reporting|insights|"
+    r"etl|sql developer|data quality|data governance|data operations|reporting specialist|analytics specialist)\b"
+)
+TRACK_C_PATTERN = (
+    r"\b(?:product manager|apm\b|business operations|bizops|operations analyst|project coordinator|"
+    r"strategy & operations|strategy and operations|strategy analyst|"
+    r"product operations|product ops|program manager|project manager|technical project|technical program|"
+    r"founder'?s associate|operations associate|strategy associate|revops|revenue operations|"
+    r"sales operations|gtm operations|solutions analyst|client solutions|implementation consultant|"
+    r"implementation specialist|deployment strategist|onboarding specialist|deal desk|techops|"
+    r"technical operations|customer operations)\b"
+)
+TRACK_B_PATTERN = (
+    r"\b(?:software engineer|developer|swe\b|frontend|backend|full stack|full-stack|"
+    r"forward deployed|solutions engineer|sales engineer|implementation engineer|integration engineer|"
+    r"customer success engineer|technical account manager|support engineer|technical support engineer|"
+    r"application support engineer|qa engineer|quality assurance engineer|test automation|sdet|"
+    r"automation engineer|founding engineer)\b"
+)
 
 DEVELOPER_PATTERN = (
     r"\b(?:"
@@ -168,7 +186,11 @@ DEVELOPER_PATTERN = (
     r"platform engineer|infrastructure engineer|systems engineer|systems software|"
     r"application developer|application engineer|apps developer|"
     r"firmware engineer|embedded software|embedded engineer|"
-    r"machine learning engineer|ml engineer|ai engineer"
+    r"machine learning engineer|ml engineer|ai engineer|"
+    r"forward deployed|solutions engineer|sales engineer|implementation engineer|integration engineer|"
+    r"customer success engineer|technical account manager|support engineer|technical support engineer|"
+    r"application support engineer|qa engineer|quality assurance engineer|test automation|sdet|"
+    r"automation engineer|founding engineer"
     r")\b"
 )
 SECURITY_PATTERN = (

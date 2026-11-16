@@ -36,6 +36,14 @@ search_terms = [
     "Risk Analyst",
     "Business Analytics Consultant",
     "Systems Analyst",
+    "Decision Support Analyst",
+    "Growth Analyst",
+    "RevOps Analyst",
+    "BizOps Analyst",
+    "Product Operations Analyst",
+    "Data Operations Analyst",
+    "Solutions Analyst",
+    "Implementation Consultant",
 ]
 
 def is_entry_to_mid_level(title: str, description: str) -> bool:
@@ -121,7 +129,11 @@ def recruits_msba_graduates(title: str, description: str) -> bool:
 
     # 4. Fallback when description is omitted/empty: validate against analytics/MSBA title patterns
     if not desc_lower.strip():
-        msba_title_pattern = r"\b(?:analyst|analytics|data\s+scientist|data|business\s+intelligence|bi\b|statistician|operations\s+research|consultant)\b"
+        msba_title_pattern = (
+            r"\b(?:analyst|analytics|data\s+scientist|data|business\s+intelligence|bi\b|"
+            r"statistician|operations\s+research|consultant|operations|bizops|revops|"
+            r"solutions|implementation|decision|growth|product)\b"
+        )
         return bool(re.search(msba_title_pattern, title_lower))
 
     return False

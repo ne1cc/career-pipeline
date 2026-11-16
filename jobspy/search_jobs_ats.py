@@ -17,13 +17,30 @@ from ats_scrapers.scrapers import (
     get_scraper,
 )
 
+try:
+    from jobspy.role_taxonomy import (
+        DEFAULT_HOSTED_ATS_TARGETS,
+        PIVOT_AND_STEPPING_STONE_TERMS,
+        STARTUP_TARGET_COMPANIES,
+        merge_company_maps,
+        merge_terms,
+    )
+except ImportError:
+    from role_taxonomy import (  # type: ignore[no-redef]
+        DEFAULT_HOSTED_ATS_TARGETS,
+        PIVOT_AND_STEPPING_STONE_TERMS,
+        STARTUP_TARGET_COMPANIES,
+        merge_company_maps,
+        merge_terms,
+    )
+
 # Output directory: jobspy/scraped jobs/results/YYYY_MM/YYYY_MM_DD/
 default_out = Path(__file__).parent / "scraped jobs" / "results" / datetime.now().strftime("%Y_%m") / datetime.now().strftime("%Y_%m_%d")
 OUTPUT_DIR = Path(os.environ.get("JOBSPY_RESULTS_DIR", default_out))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Expanded Search Keywords
-DEFAULT_SEARCH_TERMS = [
+_BASE_SEARCH_TERMS = [
     # Core Data & Analytics
     "Data Analyst",
     "Business Analyst",
@@ -92,10 +109,11 @@ DEFAULT_SEARCH_TERMS = [
     "Cybersecurity Analyst",
     "SOC Analyst",
 ]
+DEFAULT_SEARCH_TERMS = merge_terms(_BASE_SEARCH_TERMS, PIVOT_AND_STEPPING_STONE_TERMS)
 SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
-# Target Company Registry across Greenhouse, Lever, Ashby
-TARGET_COMPANIES: Dict[str, List[str]] = {
+# Target Company Registry across Greenhouse, Lever, Ashby, Gem
+_BASE_TARGET_COMPANIES: Dict[str, List[str]] = {
     "greenhouse": [
         "affirm",
         "airbnb",
@@ -191,6 +209,10 @@ TARGET_COMPANIES: Dict[str, List[str]] = {
         "spotify",
     ],
 }
+TARGET_COMPANIES: Dict[str, List[str]] = merge_company_maps(
+    _BASE_TARGET_COMPANIES,
+    STARTUP_TARGET_COMPANIES,
+)
 
 # Explicit aliases/mappings for company boards that reside on specific slugs or ATS types
 COMPANY_ALIASES = {
@@ -205,11 +227,19 @@ COMPANY_ALIASES = {
     "glean": ("greenhouse", "gleanwork"),
 }
 
-# Regex filter for analytics/data/bi/operations job titles in target company boards
+# Regex filter for analytics/data/bi/operations/pivot job titles in target company boards
 ROLE_PATTERN = re.compile(
     r"\b(?:analyst|analytics|data|scientist|statistician|quantitative|bi|"
     r"software|developer|backend|back-end|platform|product engineer|security|cybersecurity|"
-    r"infosec|soc|devops|sre|revops|bizops|operations|solutions)\b",
+    r"infosec|soc|devops|sre|revops|bizops|operations|solutions|"
+    r"forward deployed|deployment strategist|implementation|integration|sales engineer|"
+    r"partner engineer|technical account|customer success engineer|support engineer|"
+    r"technical support|qa|quality assurance|test automation|sdet|etl|sql developer|"
+    r"reporting|data quality|data governance|product operations|product ops|product manager|"
+    r"apm|program manager|project manager|project coordinator|founder'?s associate|"
+    r"chief of staff|special projects|techops|technical operations|deal desk|"
+    r"onboarding specialist|client solutions|full stack|full-stack|frontend|front-end|"
+    r"ai engineer|ml engineer|machine learning|automation engineer|founding engineer)\b",
     re.IGNORECASE,
 )
 
@@ -330,8 +360,15 @@ def normalize_dataset_row(row: pd.Series, search_keyword: str) -> Dict[str, Any]
 
 def scrape_target_companies(
     target_companies: Dict[str, List[str]],
+    include_all_roles: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Query direct company ATS boards and filter for analytics/data/bi roles."""
+    """Query direct company ATS boards and filter for target/pivot roles.
+
+    Contract:
+    - Returns normalized job dicts matching STANDARD_COLUMNS.
+    - When `include_all_roles` is True, skips `ROLE_PATTERN` title pre-filtering
+      so downstream US/seniority filters decide what to keep.
+    """
     all_matched_jobs: List[Dict[str, Any]] = []
 
     print(f"\n[1/2] Scraping direct ATS boards for target companies...")
@@ -343,13 +380,19 @@ def scrape_target_companies(
             try:
                 scraper = get_scraper(ats_type, slug)
                 jobs = scraper.fetch()
-                matched = [j for j in jobs if ROLE_PATTERN.search(j.title or "")]
+                if include_all_roles:
+                    matched = list(jobs)
+                else:
+                    matched = [j for j in jobs if ROLE_PATTERN.search(j.title or "")]
 
                 for job in matched:
                     # If job.company is missing, default to company name
                     if not getattr(job, "company", None):
                         job.company = company
-                    record = normalize_job_object(job, search_keyword="target_company")
+                    record = normalize_job_object(
+                        job,
+                        search_keyword="all_roles" if include_all_roles else "target_company",
+                    )
                     all_matched_jobs.append(record)
 
                 print(f"found {len(matched)} matching roles (out of {len(jobs)} total)")
@@ -363,8 +406,14 @@ def scrape_hosted_dataset(
     search_terms: List[str],
     is_smoke_test: bool = False,
     ats_targets: Optional[List[str]] = None,
+    include_all_roles: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Query hosted ATS dataset snapshots (Ashby, Greenhouse, Lever) for keywords."""
+    """Query hosted ATS dataset snapshots (startup + broad ATS slices) for keywords.
+
+    Contract:
+    - Returns normalized job dicts across `ats_targets` (defaults to `DEFAULT_HOSTED_ATS_TARGETS`).
+    - Pre-filters snapshots in a single vectorized regex pass when scanning > 5 terms.
+    """
     all_matched_jobs: List[Dict[str, Any]] = []
 
     if is_smoke_test:
@@ -372,7 +421,7 @@ def scrape_hosted_dataset(
         return all_matched_jobs
 
     if ats_targets is None:
-        ats_targets = ["ashby", "greenhouse", "lever"]
+        ats_targets = list(DEFAULT_HOSTED_ATS_TARGETS)
 
     client = Client()
     for ats_name in ats_targets:
@@ -380,17 +429,45 @@ def scrape_hosted_dataset(
         try:
             df_snapshot = client.load(ats=ats_name)
             print(f"Loaded {ats_name} snapshot with {len(df_snapshot)} postings.")
+            if df_snapshot.empty or "title" not in df_snapshot.columns:
+                continue
 
+            titles = df_snapshot["title"].fillna("").astype(str)
+
+            # 1. Broad-role mode: scan once using ROLE_PATTERN instead of per-term queries.
+            if include_all_roles:
+                sub_df = df_snapshot[titles.str.contains(ROLE_PATTERN, na=False)]
+                broad_records = [
+                    normalize_dataset_row(row, search_keyword="broad_role")
+                    for _, row in sub_df.iterrows()
+                ]
+                if broad_records:
+                    all_matched_jobs.extend(broad_records)
+                    print(f" > broad_role ({ats_name}): found {len(broad_records)} roles")
+                continue
+
+            # 2. Pre-filter once across all search terms when term list is large.
+            candidate_df = df_snapshot
+            if len(search_terms) > 5:
+                combined_pattern = "|".join(re.escape(t) for t in search_terms if t)
+                if combined_pattern:
+                    candidate_df = df_snapshot[
+                        titles.str.contains(combined_pattern, case=False, na=False, regex=True)
+                    ]
+                    if candidate_df.empty:
+                        continue
+
+            candidate_titles = candidate_df["title"].fillna("").astype(str)
             for term in search_terms:
                 pattern = re.escape(term)
-                sub_df = df_snapshot[
-                    df_snapshot["title"].str.contains(pattern, case=False, na=False)
+                sub_df = candidate_df[
+                    candidate_titles.str.contains(pattern, case=False, na=False, regex=True)
                 ]
 
-                term_records = []
-                for _, row in sub_df.iterrows():
-                    record = normalize_dataset_row(row, search_keyword=term)
-                    term_records.append(record)
+                term_records = [
+                    normalize_dataset_row(row, search_keyword=term)
+                    for _, row in sub_df.iterrows()
+                ]
 
                 if term_records:
                     all_matched_jobs.extend(term_records)
@@ -402,8 +479,19 @@ def scrape_hosted_dataset(
     return all_matched_jobs
 
 
-def run_ats_scrape(smoke_test: bool = False, skip_dataset: bool = False) -> Path:
+def run_ats_scrape(
+    smoke_test: bool = False,
+    skip_dataset: bool = False,
+    include_all_roles: bool | None = None,
+) -> Path:
     """Run native ATS scraping flow and save deduplicated, sorted results to CSV."""
+    if include_all_roles is None:
+        include_all_roles = os.environ.get("JOBSPY_BROAD_ROLES", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+
     if smoke_test:
         print("=== RUNNING IN SMOKE-TEST MODE ===")
         terms_to_search = ["Data Analyst"]
@@ -418,12 +506,19 @@ def run_ats_scrape(smoke_test: bool = False, skip_dataset: bool = False) -> Path
     all_jobs: List[Dict[str, Any]] = []
 
     # 1. Scrape direct target companies
-    company_jobs = scrape_target_companies(companies_to_scrape)
+    company_jobs = scrape_target_companies(
+        companies_to_scrape,
+        include_all_roles=include_all_roles,
+    )
     all_jobs.extend(company_jobs)
 
     # 2. Scrape hosted dataset
     if not skip_dataset:
-        dataset_jobs = scrape_hosted_dataset(terms_to_search, is_smoke_test=smoke_test)
+        dataset_jobs = scrape_hosted_dataset(
+            terms_to_search,
+            is_smoke_test=smoke_test,
+            include_all_roles=include_all_roles,
+        )
         all_jobs.extend(dataset_jobs)
 
     if not all_jobs:
@@ -490,9 +585,18 @@ def main():
         action="store_true",
         help="Skip hosted dataset snapshot download and only query direct company ATS boards.",
     )
+    parser.add_argument(
+        "--include-all-roles",
+        action="store_true",
+        help="Skip title pre-filtering on direct ATS boards and use ROLE_PATTERN across hosted slices (also via JOBSPY_BROAD_ROLES=1).",
+    )
     args = parser.parse_args()
 
-    run_ats_scrape(smoke_test=args.smoke_test, skip_dataset=args.skip_dataset)
+    run_ats_scrape(
+        smoke_test=args.smoke_test,
+        skip_dataset=args.skip_dataset,
+        include_all_roles=args.include_all_roles or None,
+    )
 
 
 if __name__ == "__main__":

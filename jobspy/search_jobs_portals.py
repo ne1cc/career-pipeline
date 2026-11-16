@@ -20,6 +20,11 @@ import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    from jobspy.role_taxonomy import PIVOT_AND_STEPPING_STONE_TERMS, merge_terms
+except ImportError:
+    from role_taxonomy import PIVOT_AND_STEPPING_STONE_TERMS, merge_terms  # type: ignore[no-redef]
+
 # Standard JobSpy column order
 COLUMNS = [
     "id",
@@ -38,7 +43,7 @@ COLUMNS = [
 ]
 
 # Expanded Target Roles
-DEFAULT_SEARCH_TERMS = [
+_BASE_SEARCH_TERMS = [
     # Core Data & Analytics
     "Data Analyst",
     "Business Analyst",
@@ -110,6 +115,7 @@ DEFAULT_SEARCH_TERMS = [
     "Cybersecurity Analyst",
     "SOC Analyst",
 ]
+DEFAULT_SEARCH_TERMS = merge_terms(_BASE_SEARCH_TERMS, PIVOT_AND_STEPPING_STONE_TERMS)
 SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
 # Compiled regex pattern for title matching across broad feeds
@@ -130,9 +136,32 @@ ROLE_REGEX = re.compile(
     r"software engineers?|software developers?|swe|junior developers?|"
     r"backend engineers?|back-end engineers?|backend developers?|back-end developers?|"
     r"platform engineers?|product engineers?|frontend engineers?|front-end engineers?|"
+    r"full stack engineers?|full-stack engineers?|ai engineers?|applied ai engineers?|"
+    r"machine learning engineers?|ml engineers?|founding engineers?|"
     r"cloud engineers?|devops engineers?|site reliability engineers?|sre|"
     r"cybersecurity analysts?|information security analysts?|infosec|"
-    r"security engineers?|security analysts?|soc analysts?"
+    r"security engineers?|security analysts?|soc analysts?|"
+    r"forward deployed(?: software)? engineers?|deployment strategists?|"
+    r"implementation engineers?|implementation consultants?|implementation specialists?|"
+    r"solutions engineers?|associate solutions engineers?|sales engineers?|"
+    r"customer engineers?|partner engineers?|integration engineers?|"
+    r"technical account managers?|customer success engineers?|client solutions analysts?|"
+    r"onboarding specialists?|technical support engineers?|support engineers?|"
+    r"application support engineers?|product support engineers?|developer support engineers?|"
+    r"api support specialists?|qa engineers?|quality assurance engineers?|qa analysts?|"
+    r"test automation engineers?|software engineers? in test|sdet|cloud support engineers?|"
+    r"systems administrators?|automation engineers?|data operations analysts?|"
+    r"data operations specialists?|data specialists?|data coordinators?|"
+    r"data quality analysts?|data governance analysts?|etl developers?|sql developers?|"
+    r"database analysts?|reporting specialists?|bi associates?|business intelligence specialists?|"
+    r"analytics specialists?|analytics associates?|data integration specialists?|"
+    r"data migration specialists?|product operations(?: analysts?| specialists?)?|"
+    r"product ops|product specialists?|product analytics engineers?|growth engineers?|"
+    r"growth operations|experimentation analysts?|technical project managers?|"
+    r"technical program managers?|associate program managers?|delivery analysts?|"
+    r"founder'?s associates?|founders associates?|special projects|operations associates?|"
+    r"strategy associates?|techops analysts?|technical operations analysts?|"
+    r"systems operations|customer operations analysts?|marketplace operations|deal desk analysts?"
     r")\b",
     re.IGNORECASE,
 )
@@ -311,6 +340,8 @@ def scrape_fast_sources(term: str = "Data & Software", is_smoke: bool = False, h
     dice_terms = [
         "Data Analyst", "Data Engineer", "Analytics Engineer",
         "Software Engineer", "Security Engineer", "Platform Engineer",
+        "Forward Deployed Engineer", "Solutions Engineer",
+        "Implementation Engineer", "Product Analyst",
     ]
     if is_smoke:
         dice_locations = dice_locations[:1]
@@ -444,7 +475,7 @@ def scrape_builtin_portal(term: str, is_smoke: bool = False) -> list[dict]:
 
                 card_text = card.get_text(" ", strip=True)
                 is_remote = "remote" in card_text.lower()
-                loc = "Seattle, WA" if "seattle" in base_url else ("Remote" if is_remote else "")
+                loc = "Seattle, WA" if "seattle" in base_url else ("Remote, US" if is_remote else "")
 
                 # Match description from JSON-LD or fallback to card body text
                 job_clean_url = job_url.rstrip("/")
@@ -560,8 +591,10 @@ def scrape_yc_portal(is_smoke: bool = False) -> list[dict]:
             job_id = str(j.get("id", ""))
             job_url = f"https://www.workatastartup.com/jobs/{job_id}"
             company = j.get("companyName", "YC Startup")
-            loc = j.get("location", "Remote")
+            loc = str(j.get("location") or "Remote, US")
             is_remote = "remote" in loc.lower()
+            if is_remote and loc.strip().lower() == "remote":
+                loc = "Remote, US"
 
             desc_parts = []
             if j.get("companyOneLiner"):
@@ -592,44 +625,52 @@ def scrape_yc_portal(is_smoke: bool = False) -> list[dict]:
 
 
 def scrape_remotive_portal(term: str, is_smoke: bool = False) -> list[dict]:
-    """Scrape Remotive Public API for data and analytics listings."""
+    """Scrape Remotive Public API across data, dev, product, QA, business, and support."""
     jobs = []
-    url = "https://remotive.com/api/remote-jobs?category=data"
-    try:
-        resp = _get_request(url, headers=JSON_HEADERS)
-        if not resp or resp.status_code != 200:
-            return jobs
-
-        data = resp.json()
-        raw_jobs = data.get("jobs", [])
-        for j in raw_jobs:
-            title = j.get("title", "")
-            if not title or not ROLE_REGEX.search(title):
+    seen_urls: set[str] = set()
+    categories = (
+        ("data",)
+        if is_smoke
+        else ("data", "software-dev", "product", "business", "qa", "customer-support")
+    )
+    for category in categories:
+        url = f"https://remotive.com/api/remote-jobs?category={category}"
+        try:
+            resp = _get_request(url, headers=JSON_HEADERS)
+            if not resp or resp.status_code != 200:
                 continue
 
-            app_link = j.get("url", "")
-            if not app_link:
-                continue
+            data = resp.json()
+            raw_jobs = data.get("jobs", [])
+            for j in raw_jobs:
+                title = j.get("title", "")
+                if not title or not ROLE_REGEX.search(title):
+                    continue
 
-            posted_at = parse_posted_at(j.get("publication_date"))
-            pub_date = posted_at.strftime("%Y-%m-%d") if posted_at else ""
-            job_id = str(j.get("id") or app_link)
+                app_link = j.get("url", "")
+                if not app_link or app_link in seen_urls:
+                    continue
+                seen_urls.add(app_link)
 
-            jobs.append({
-                "id": f"remotive-{job_id}",
-                "site": "Remotive",
-                "job_url": app_link,
-                "job_url_direct": app_link,
-                "title": title,
-                "company": j.get("company_name", "Remotive Employer"),
-                "location": j.get("candidate_required_location") or "",
-                "date_posted": pub_date,
-                "posted_at": posted_at.isoformat() if posted_at else "",
-                "is_remote": True,
-                "search_keyword": term,
-            })
-    except Exception as e:
-        logging.debug(f"Error scraping Remotive: {e}")
+                posted_at = parse_posted_at(j.get("publication_date"))
+                pub_date = posted_at.strftime("%Y-%m-%d") if posted_at else ""
+                job_id = str(j.get("id") or app_link)
+
+                jobs.append({
+                    "id": f"remotive-{job_id}",
+                    "site": "Remotive",
+                    "job_url": app_link,
+                    "job_url_direct": app_link,
+                    "title": title,
+                    "company": j.get("company_name", "Remotive Employer"),
+                    "location": j.get("candidate_required_location") or "",
+                    "date_posted": pub_date,
+                    "posted_at": posted_at.isoformat() if posted_at else "",
+                    "is_remote": True,
+                    "search_keyword": term,
+                })
+        except Exception as e:
+            logging.debug(f"Error scraping Remotive ({category}): {e}")
     return jobs
 
 
@@ -677,47 +718,51 @@ def scrape_jobicy_portal(term: str, is_smoke: bool = False) -> list[dict]:
 
 
 def scrape_remoteok_portal(term: str, is_smoke: bool = False) -> list[dict]:
-    """Scrape RemoteOK Public API for data roles."""
+    """Scrape RemoteOK Public API across data, engineering, product, and support tags."""
     jobs = []
-    url = "https://remoteok.com/api?tag=data"
-    try:
-        resp = _get_request(url, headers=HEADERS)
-        if not resp or resp.status_code != 200:
-            return jobs
-
-        data = resp.json()
-        for j in data:
-            if not isinstance(j, dict) or "position" not in j:
+    seen_urls: set[str] = set()
+    tags = ("data",) if is_smoke else ("data", "engineer", "developer", "analyst", "product", "support")
+    for tag in tags:
+        url = f"https://remoteok.com/api?tag={tag}"
+        try:
+            resp = _get_request(url, headers=HEADERS)
+            if not resp or resp.status_code != 200:
                 continue
 
-            title = html.unescape(j.get("position", ""))
-            if not title or not ROLE_REGEX.search(title):
-                continue
+            data = resp.json()
+            for j in data:
+                if not isinstance(j, dict) or "position" not in j:
+                    continue
 
-            url_slug = j.get("url", "")
-            job_url = f"https://remoteok.com{url_slug}" if url_slug.startswith("/") else url_slug
-            if not job_url:
-                continue
+                title = html.unescape(j.get("position", ""))
+                if not title or not ROLE_REGEX.search(title):
+                    continue
 
-            posted_at = parse_posted_at(j.get("date"))
-            date_str = posted_at.strftime("%Y-%m-%d") if posted_at else ""
-            job_id = str(j.get("id") or job_url)
+                url_slug = j.get("url", "")
+                job_url = f"https://remoteok.com{url_slug}" if url_slug.startswith("/") else url_slug
+                if not job_url or job_url in seen_urls:
+                    continue
+                seen_urls.add(job_url)
 
-            jobs.append({
-                "id": f"remoteok-{job_id}",
-                "site": "RemoteOK",
-                "job_url": job_url,
-                "job_url_direct": job_url,
-                "title": title,
-                "company": html.unescape(j.get("company", "RemoteOK Employer")),
-                "location": j.get("location") or "",
-                "date_posted": date_str,
-                "posted_at": posted_at.isoformat() if posted_at else "",
-                "is_remote": True,
-                "search_keyword": term,
-            })
-    except Exception as e:
-        logging.debug(f"Error scraping RemoteOK: {e}")
+                posted_at = parse_posted_at(j.get("date"))
+                date_str = posted_at.strftime("%Y-%m-%d") if posted_at else ""
+                job_id = str(j.get("id") or job_url)
+
+                jobs.append({
+                    "id": f"remoteok-{job_id}",
+                    "site": "RemoteOK",
+                    "job_url": job_url,
+                    "job_url_direct": job_url,
+                    "title": title,
+                    "company": html.unescape(j.get("company", "RemoteOK Employer")),
+                    "location": j.get("location") or "",
+                    "date_posted": date_str,
+                    "posted_at": posted_at.isoformat() if posted_at else "",
+                    "is_remote": True,
+                    "search_keyword": term,
+                })
+        except Exception as e:
+            logging.debug(f"Error scraping RemoteOK ({tag}): {e}")
     return jobs
 
 
