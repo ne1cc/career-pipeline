@@ -9,7 +9,7 @@ from cockpit import db, drafts, intel
 from cockpit import autofill
 from cockpit.tui import JobCockpitApp
 from tests.test_cockpit_autofill_wiring import FakeWorker, GREENHOUSE, _app, _notes, _repo, _seed
-from tests.test_cockpit_pipeline import FakeGemini, career_ops, db_path, frame  # noqa: F401
+from tests.test_cockpit_pipeline import FakeGemini, career_ops, db_path, frame, no_jd_backfill  # noqa: F401
 
 
 def _key(db_path):
