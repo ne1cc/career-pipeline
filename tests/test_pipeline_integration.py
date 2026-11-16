@@ -46,6 +46,7 @@ def test_parallel_runner_scripts_contain_msba():
         jobspy_dir / "search_jobs_campus.py",
         jobspy_dir / "search_jobs_internships.py",
         jobspy_dir / "search_jobs_landoffer.py",
+        jobspy_dir / "search_jobs_feeds.py",
     ]
     # We inspect the expected_outputs keys or scripts defined in run_parallel
     for script in expected_scripts:
@@ -55,7 +56,8 @@ def test_parallel_runner_scripts_contain_msba():
     assert "search_jobs_msba_west.py" in run_parallel.EXPECTED_OUTPUTS
     assert "search_jobs_campus.py" in run_parallel.EXPECTED_OUTPUTS
     assert "search_jobs_internships.py" in run_parallel.EXPECTED_OUTPUTS
-    assert len(run_parallel.EXPECTED_OUTPUTS) == 11
+    assert "search_jobs_feeds.py" in run_parallel.EXPECTED_OUTPUTS
+    assert len(run_parallel.EXPECTED_OUTPUTS) == 12
 
 def test_pipeline_expected_outputs_mapping():
     outputs = run_pipeline.EXPECTED_OUTPUTS
@@ -65,7 +67,8 @@ def test_pipeline_expected_outputs_mapping():
     assert outputs["west_coast_msba_jobs.csv"] == "West Coast MSBA Jobs"
     assert outputs["campus_early_career_jobs.csv"] == "Campus New Grad"
     assert outputs["internship_jobs.csv"] == "Internships"
-    assert len(outputs) == 11
+    assert outputs["open_feeds_jobs.csv"] == "Open Feeds Jobs"
+    assert len(outputs) == 12
 
 
 def test_run_cockpit_ingest_with_csvs(monkeypatch, tmp_path):
