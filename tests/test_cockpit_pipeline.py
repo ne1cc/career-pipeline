@@ -14,13 +14,14 @@ import pandas as pd
 import pytest
 from rich.style import Style
 from rich.text import Text
+from textual.geometry import Region
 from textual.widgets import DataTable, Static
 
 from cockpit import db, intel, macos
 from cockpit.cli import render_plist
 from cockpit.models import FunnelState
 from cockpit.normalizer import highlight_jd, linkedin_referral_url, load_rules, norm_company, render_outreach, score_job
-from cockpit.tui import FILTERS, JobCockpitApp
+from cockpit.tui import TABS, JobCockpitApp
 
 
 @pytest.fixture
@@ -458,6 +459,8 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
     async def drive() -> None:
         app = _app(db_path, tmp_path, career_ops, fake)
         async with app.run_test() as pilot:
+            app.tab_idx = TABS.index(None)  # a saved job leaves the New tab, so work from All
+            app._reload(0)
             await pilot.press("b")
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -470,15 +473,15 @@ def test_b_saves_greys_row_and_fills_fit(db_path, career_ops, tmp_path, calls):
             # When cursor moves off row 0, verify the entire row line is highlighted uniformly
             await pilot.press("down")
             await pilot.pause()
-            lines = table.render_lines(table.region)
-            row_0_segs = [s for s in lines[0] if s.text]
+            lines = table.render_lines(Region(0, 0, table.size.width, table.size.height))  # widget coords; line 0 is the header
+            row_0_segs = [s for s in lines[1] if s.text]
             assert len(row_0_segs) > 0
             for seg in row_0_segs:
                 assert "grey23" in str(seg.style.bgcolor) or "58" in str(seg.style.bgcolor)
 
-            # In SAVED view, saved jobs must NOT be highlighted (cycle QUEUED -> 72H -> SAVED)
-            await pilot.press("f")
-            await pilot.press("f")
+            # In SAVED view, saved jobs must NOT be highlighted
+            app.tab_idx = TABS.index("SAVED")
+            app._reload(0)
             await pilot.pause()
             assert "grey23" not in str(table._get_row_style(0, Style()).bgcolor)
 
@@ -871,24 +874,22 @@ def test_tui_72h_filter_toggle_and_cycle(db_path):
     async def drive() -> None:
         app = JobCockpitApp(db_path)
         async with app.run_test() as pilot:
-            assert app.filter_idx == 0
-            assert FILTERS[app.filter_idx] == "QUEUED"
+            assert TABS[app.tab_idx] == "NEW" and not app.f_72h
 
-            # 't' toggles to 72H
+            # 't' narrows the current tab to the last 72 hours; the tab does not change
             await pilot.press("t")
-            assert FILTERS[app.filter_idx] == "72H"
-
-            # 't' toggles back to QUEUED
+            assert app.f_72h and TABS[app.tab_idx] == "NEW"
+            assert "72h" in str(app.query_one("#tabs").render())
             await pilot.press("t")
-            assert FILTERS[app.filter_idx] == "QUEUED"
+            assert not app.f_72h
 
-            # 'f' cycles through FILTERS in order: 72H -> NEW_GRAD -> SAVED -> ...
+            # 'f' cycles tabs in order: New -> Viewed -> Saved; 'F' goes back
             await pilot.press("f")
-            assert FILTERS[app.filter_idx] == "72H"
+            assert TABS[app.tab_idx] == "VIEWED"
             await pilot.press("f")
-            assert FILTERS[app.filter_idx] == "NEW_GRAD"
-            await pilot.press("f")
-            assert FILTERS[app.filter_idx] == "SAVED"
+            assert TABS[app.tab_idx] == "SAVED"
+            await pilot.press("F")
+            assert TABS[app.tab_idx] == "VIEWED"
 
     asyncio.run(drive())
 
@@ -1128,7 +1129,9 @@ def test_tui_cover_letter_and_tailored_staging(db_path, career_ops, tmp_path, ca
     async def drive() -> None:
         app = _app(db_path, tmp_path, career_ops, fake)
         async with app.run_test() as pilot:
-            # Press 'b' to save and kick intel worker
+            # Press 'b' to save and kick intel worker (from All: a saved job leaves the New tab)
+            app.tab_idx = TABS.index(None)
+            app._reload(0)
             await pilot.press("b")
             await pilot.pause()
             # Wait for background intel worker to complete in DuckDB

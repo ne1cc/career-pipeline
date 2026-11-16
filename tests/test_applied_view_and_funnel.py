@@ -8,7 +8,7 @@ from textual.widgets import DataTable
 from cockpit import db, macos
 from cockpit.imap_sync import classify
 from cockpit.models import FunnelState as S
-from cockpit.tui import FILTERS, FunnelModal, StageMoveModal
+from cockpit.tui import TABS, FunnelModal, StageMoveModal
 from tests.test_cockpit_pipeline import FakeGemini, _app, calls, career_ops, db_path, frame  # noqa: F401  (fixtures)
 
 
@@ -116,7 +116,7 @@ def test_opening_a_job_marks_it_and_keeps_it_in_the_queue(db_path, tmp_path, cal
     async def run() -> None:
         async with app.run_test(size=(200, 40)) as pilot:
             table = app.query_one("#table", DataTable)
-            app.filter_idx = FILTERS.index(None)
+            app.tab_idx = TABS.index(None)
             app._reload(0)
             for company in ("Opened", "Held"):
                 table.move_cursor(row=[r["company"] for r in app.rows].index(company))
@@ -130,21 +130,26 @@ def test_opening_a_job_marks_it_and_keeps_it_in_the_queue(db_path, tmp_path, cal
             assert table.opened_row_keys == {k["Opened"], k["Held"]}
 
             # Viewed lists opened jobs still waiting in the queue (the held one is not).
-            app.filter_idx = FILTERS.index("VIEWED")
+            app.tab_idx = TABS.index("VIEWED")
             app._reload(0)
             assert [r["company"] for r in app.rows] == ["Opened"]
-            assert "Viewed:1" in app._score_base
+            assert app._tab_counts["VIEWED"] == 1
             assert "  opened" in app._timeline(app.rows[0])
 
-            # The opened job stays in the queue, marked; the unopened one is not marked.
-            app.filter_idx = FILTERS.index("QUEUED")
+            # New lists only untouched jobs: the opened one moved to Viewed.
+            app.tab_idx = TABS.index("NEW")
             app._reload(0)
-            assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
-            assert table.opened_row_keys == {k["Opened"]}
-            # QUEUED is stored, NEW is shown: Status cell, view label and title-bar count.
+            assert [r["company"] for r in app.rows] == ["Unopened"]
+            assert app._tab_counts["NEW"] == 1
+            # QUEUED is stored, NEW is shown: Status cell and view label.
             assert str(table.get_cell(k["Unopened"], "status")) == "NEW"
-            assert "New:2" in app._score_base and "[NEW |" in app._score_base and "QUEUED" not in app._score_base
+            assert "[NEW |" in app._score_base and "QUEUED" not in app._score_base
             assert not str(table.get_cell(k["Unopened"], "title")).startswith("↗")
+            app.tab_idx = TABS.index(None)
+            app._reload(0)
+            assert table.opened_row_keys == {k["Opened"], k["Held"]}
+            app.tab_idx = TABS.index("VIEWED")
+            app._reload(0)
 
             # Saving moves it out of Viewed and into Saved.
             table.move_cursor(row=[r["company"] for r in app.rows].index("Opened"))
@@ -152,22 +157,19 @@ def test_opening_a_job_marks_it_and_keeps_it_in_the_queue(db_path, tmp_path, cal
             await pilot.press("b")
             await app.workers.wait_for_complete()
             await pilot.pause()
-            app.filter_idx = FILTERS.index("VIEWED")
+            app.tab_idx = TABS.index("VIEWED")
             app._reload(0)
-            assert app.rows == [] and "Viewed:0" in app._score_base
-            app.filter_idx = FILTERS.index("QUEUED")
+            assert app.rows == [] and app._tab_counts["VIEWED"] == 0
+            app.tab_idx = TABS.index("NEW")
             app._reload(0)
 
-            await pilot.press("F", "F", "F")  # Shift+F cycles backwards and wraps: QUEUED → ALL → DISMISSED → INTERVIEWS
+            await pilot.press("F", "F", "F")  # Shift+F cycles backwards and wraps: New → All → Dismissed → Closed
             await pilot.pause()
-            assert FILTERS[app.filter_idx] == "INTERVIEWS"
+            assert TABS[app.tab_idx] == "CLOSED"
             await pilot.press("f", "f", "f")
             await pilot.pause()
-            assert FILTERS[app.filter_idx] == "QUEUED"
-
-            await pilot.press("z")  # undo puts it back in the queue
-            await pilot.pause()
-            assert sorted(r["company"] for r in app.rows) == ["Opened", "Unopened"]
+            assert TABS[app.tab_idx] == "NEW"
+            assert [r["company"] for r in app.rows] == ["Unopened"]  # the saved job left New
 
     asyncio.run(run())
     assert sum(c["cmd"][0].endswith("/open") for c in calls) == 2
@@ -183,7 +185,7 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
     async def run() -> None:
         async with app.run_test(size=(200, 40)) as pilot:
             table = app.query_one("#table", DataTable)
-            app.filter_idx = FILTERS.index("APPLIED")
+            app.tab_idx = TABS.index("APPLIED")
             app._reload(0)
             await pilot.pause()
             assert [str(c.label) for c in table.columns.values()][:2] == ["Age", "Mode"]
@@ -201,7 +203,7 @@ def test_tui_applied_and_interviews_views(db_path, tmp_path):
 
             await pilot.press("f")
             await pilot.pause()
-            assert FILTERS[app.filter_idx] == "INTERVIEWS"
+            assert TABS[app.tab_idx] == "INTERVIEWS"
             assert [(r["company"], r["status"]) for r in app.rows] == [("Interview Co", "TECH_ROUND")]
 
             await pilot.press("V")

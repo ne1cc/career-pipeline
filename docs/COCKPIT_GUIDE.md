@@ -79,7 +79,8 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 | `s` | Skip |
 | `h` | Hold for a referral (type the contact, then Enter) |
 | `y` | Copy the outreach message for this job |
-| `f` | Cycle the view: New, 72h, New Grad, Saved, Intern, Referral Hold, Viewed, Applied, Interviews, Dismissed, All |
+| `f` / `F` | Next / previous tab: New, Viewed, Saved, Hold, Applied, Interviews, Closed, Dismissed, All (counts shown on each tab) |
+| `t` / `N` / `E` | Toggle the 72h, New Grad and Intern filters; they narrow whichever tab is open |
 | `F` | Cycle the view backwards |
 | `m` | Move an applied job to a stage: `1` OA, `2` phone screen, `3` tech round, `4` final round, `5` offer, `6` rejected |
 | `V` | Weekly funnel table: applications per week and how far each week's jobs got |
@@ -98,9 +99,9 @@ Press `Alt+Shift+j` anywhere to open the popup, which lists jobs by score, best 
 ### Tips
 
 - Check the detail pane. If the archetype looks wrong (a data role scored as SWE), press `1`, `2` or `3` *before* uploading.
-- If a job is worth a referral, press `h` and write the contact. Holds older than 24 hours turn into `REFERRAL_STALE`. Check them with `f`.
+- If a job is worth a referral, press `h` and write the contact. Holds older than 24 hours turn into `REFERRAL_STALE`. Check them on the Hold tab (`f`).
 - Use `y` **after** you apply, to message a recruiter or an engineer. The message is generic, so add a personal line before sending.
-- **Internships**: Press `f` to cycle to the `INTERN` view. This filters for live, graduate/master's-eligible internship postings (excluding postings explicitly restricted to returning undergraduates).
+- **Internships**: Press `E` to turn on the Intern filter. This filters for live, graduate/master's-eligible internship postings (excluding postings explicitly restricted to returning undergraduates).
 - **Verify Link Health**: Run `cockpit verify-open` to prune closed postings across your queued internships.
 - **No TUI?** `cockpit sprint --limit 15` runs the same flow as a plain prompt loop (`a` / `s` / `h` / `q`).
 

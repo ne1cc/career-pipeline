@@ -15,7 +15,7 @@ from cockpit.internships import (
     parse_jobright,
     parse_simplify,
 )
-from cockpit.tui import FILTERS, JobCockpitApp
+from cockpit.tui import JobCockpitApp
 
 
 @pytest.fixture
@@ -360,7 +360,6 @@ def test_fetch_jobs_returns_verification_timestamp_as_text(db_path):
 # --- TUI ----------------------------------------------------------------------
 
 def test_tui_has_intern_filter(db_path):
-    assert "INTERN" in FILTERS
     with db.session(db_path) as con:
         db.upsert_jobspy_frame(con, frame(
             {"title": "Software Engineer Intern", "company": "InternCo", "job_url": "https://l/1"},
@@ -370,8 +369,7 @@ def test_tui_has_intern_filter(db_path):
     async def drive() -> None:
         app = JobCockpitApp(db_path)
         async with app.run_test() as pilot:
-            while FILTERS[app.filter_idx] != "INTERN":
-                await pilot.press("f")
+            await pilot.press("E")  # intern filter stacks on the current tab
             assert [r["company"] for r in app.rows] == ["InternCo"]
 
     asyncio.run(drive())

@@ -77,7 +77,8 @@ Open it with `cockpit`. Keys are case sensitive: `G` means Shift+g.
 
 | Key | What it does |
 |---|---|
-| `f` | Cycle the view: QUEUED → 72H → NEW_GRAD → SAVED → INTERN → REFERRAL_HOLD → APPLIED → DISMISSED → All |
+| `f` / `F` | Next / previous tab: New → Viewed → Saved → Hold → Applied → Interviews → Closed → Dismissed → All. Tabs are exclusive stages with live counts |
+| `t` `N` `E` | Filters that stack on any tab (shown on the second tab-bar row): last 72h, new grad, intern |
 | `t` | Toggle last-72-hours / all queued |
 | `g` | Cycle the scraper sheet (all → seattle → west → remote …) |
 | `/` | Filter by location text (`wa`, `seattle`, `remote`). Blank clears |
@@ -430,7 +431,7 @@ cockpit verify-open --limit 50
 ```
 
 - **Undergraduate-Only Disqualification**: Postings specifying returning undergraduate requirements (e.g. rising juniors/seniors, bachelor's degrees only) are automatically flagged as `undergrad_only = True` and filtered out from the TUI `INTERN` view, surfacing graduate/master's-eligible roles.
-- **TUI Internship View**: Press `f` in `cockpit` to cycle to `INTERN` to view live, graduate-accessible internship postings.
+- **TUI Internship View**: Press `E` in `cockpit` to filter to internships and view live, graduate-accessible internship postings.
 
 ---
 
