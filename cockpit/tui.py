@@ -480,6 +480,8 @@ class JobCockpitApp(App[None]):
         Binding("shift+h", "segment", "Sheet", show=False),
         Binding("R", "sync", "Sync mail"),
         Binding("q", "quit", "Quit"),
+        Binding("alt+shift+j", "quit", "Quit", show=False),
+        Binding("alt+j", "quit", "Quit", show=False),
     ]
 
     def __init__(

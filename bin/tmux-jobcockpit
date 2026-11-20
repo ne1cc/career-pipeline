@@ -23,6 +23,11 @@ CLIENT_TTY="${1:-}"
 
 # 1. If cockpit TUI is already running, toggle it closed
 if pgrep -f '[c]ockpit.*tui' >/dev/null 2>&1; then
+    if [[ -n "$CLIENT_TTY" ]]; then
+        tmux display-popup -c "$CLIENT_TTY" -C 2>/dev/null || tmux display-popup -C 2>/dev/null || true
+    else
+        tmux display-popup -C 2>/dev/null || true
+    fi
     pkill -f '[c]ockpit.*tui' 2>/dev/null || true
     exit 0
 fi
@@ -30,14 +35,20 @@ fi
 # 2. Build popup arguments targeting the explicit client TTY when available
 POPUP_ARGS=(
     -E
-    -w 92%
-    -h 90%
+    -w 90%
+    -h 85%
     -b rounded
-    -T " Job Application Cockpit (Alt-j to close) "
+    -S "fg=#7DF9FF"
+    -T " ⚡ Job Application Cockpit (Alt+Shift+J to toggle • q to quit) "
 )
 if [[ -n "$CLIENT_TTY" ]]; then
     POPUP_ARGS=(-c "$CLIENT_TTY" "${POPUP_ARGS[@]}")
 fi
 
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+if [[ -d "$REPO_ROOT" ]]; then
+    POPUP_ARGS+=(-d "$REPO_ROOT")
+fi
+
 # 3. Launch cockpit TUI directly in popup — NO nested tmux session
-exec tmux display-popup "${POPUP_ARGS[@]}" "'$COCKPIT_BIN' tui"
+exec tmux display-popup "${POPUP_ARGS[@]}" "$COCKPIT_BIN" tui
