@@ -42,8 +42,18 @@ def test_build_excel_workbook_end_to_end(tmp_path):
     wb = openpyxl.load_workbook(excel_path)
     sheet_names = wb.sheetnames
 
-    # Verify the fresh sheet leads, followed by the existing priority views.
-    assert sheet_names[:3] == ["Last 72 Hours", "Action Items", "Developer & Security"]
+    # Verify the executive Application Funnel tabs lead, followed by Last 72 Hours and Staffing & Excluded.
+    assert sheet_names[:6] == [
+        "Funnel - Tier 1 Action",
+        "Funnel - Company Clusters",
+        "Funnel - Role Tracks",
+        "Direct Outreach Leads",
+        "Last 72 Hours",
+        "Staffing & Excluded",
+    ]
+    assert wb["Funnel - Tier 1 Action"].sheet_state == "visible"
+    assert wb["Action Items"].sheet_state == "hidden"
+    assert wb["Seattle Jobs"].sheet_state == "hidden"
     ws_fresh = wb["Last 72 Hours"]
     fresh_header = [cell.value for cell in ws_fresh[1]]
     fresh_title_idx = fresh_header.index("title")
