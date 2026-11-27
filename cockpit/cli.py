@@ -2178,5 +2178,50 @@ def doctor_cmd() -> None:
     console.print(table)
 
 
+@app.command("apply-batch")
+def apply_batch_cmd(
+    tier: Annotated[str, typer.Option("--tier", help="Target tier: 'Tier 1', 'Tier 2', or 'all'")] = "Tier 1",
+    limit: Annotated[int, typer.Option("--limit", help="Maximum jobs to step through in this batch")] = 10,
+    feed: Annotated[Optional[Path], typer.Option("--feed", help="Path to tui_feed_YYYY_MM_DD.json")] = None,
+) -> None:
+    """Step through today's Tier 1 apply queue with Playwright autofill or browser-assist."""
+    from cockpit.apply_batch import run_apply_batch
+
+    run_apply_batch(feed_path=feed, tier=tier, limit=limit, console=console)
+
+
+@app.command("funnel-dossier")
+def funnel_dossier_cmd(
+    source: Annotated[
+        str,
+        typer.Option("--source", help="Shortlist source: 'saved' (DuckDB), 'sheet' (Google Sheet), or 'tier1' (feed)"),
+    ] = "saved",
+    out_dir: Annotated[Optional[Path], typer.Option("--out", help="Output directory for .md and .docx dossier")] = None,
+    feed: Annotated[Optional[Path], typer.Option("--feed", help="Optional path to tui_feed_YYYY_MM_DD.json")] = None,
+    no_llm: Annotated[bool, typer.Option("--no-llm", help="Skip LLM calls and use deterministic Fit & Strategy notes")] = False,
+) -> None:
+    """Generate a consolidated Job_Dossier_YYYY_MM_DD.md and .docx briefing for shortlisted roles."""
+    import json
+
+    from cockpit.dossier import generate_dossier
+
+    cfg_path = REPO_ROOT / "pipeline_config.json"
+    config = {}
+    if cfg_path.exists():
+        try:
+            config = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            config = {}
+
+    md_path, docx_path = generate_dossier(
+        source=source,
+        out_dir=out_dir,
+        use_llm=not no_llm,
+        feed_path=feed,
+        config=config,
+    )
+    console.print(f"[bold green]Dossier generated:[/bold green]\n - Markdown: {md_path}\n - Word:     {docx_path}")
+
+
 if __name__ == "__main__":
     app()

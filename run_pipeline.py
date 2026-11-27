@@ -19,6 +19,9 @@ from openpyxl.utils import get_column_letter
 from cockpit.macos import notify_macos
 from cockpit.pipeline_monitor import audit_pipeline_health, get_pipeline_state, update_pipeline_state
 
+from excel_formatter import format_funnel_worksheet, hide_worksheet, prepare_display_df
+from funnel_processor import export_tui_feed, process_funnel
+from gsheets_sync import sync_funnel_to_google_sheets
 from pipeline_enrichment import (
     apply_row_highlights,
     build_action_items_sheet,
@@ -100,6 +103,7 @@ def format_worksheet(ws, df: pd.DataFrame | None = None) -> None:
 BASE_DIR = Path(__file__).parent.resolve()
 CONFIG_FILE = BASE_DIR / "pipeline_config.json"
 STATE_FILE = BASE_DIR / ".pipeline_state" / "previous_job_urls.json"
+FUNNEL_STATE_FILE = BASE_DIR / ".pipeline_state" / "seen_funnel_ids.json"
 
 EXPECTED_OUTPUTS = {
     "all_city_remote_jobs.csv": "Remote Jobs",
@@ -185,7 +189,7 @@ def validate_config(config):
         return False
     return True
 
-def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
+def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE, *, config=None):
     timestamp_day = datetime.now().strftime("%Y_%m_%d")
     excel_filename = f"Job_Report_{timestamp_day}.xlsx"
     excel_path = results_dir / excel_filename
@@ -239,6 +243,13 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
         if not has_data:
             raise RuntimeError("No CSV data was found to compile into Excel")
 
+        # 1. Run deterministic Application Funnel processor & export TUI/CLI JSON feed
+        funnel_state = FUNNEL_STATE_FILE if state_file == STATE_FILE else Path(state_file).with_name("seen_funnel_ids.json")
+        funnel = process_funnel(segment_frames, seen_state_path=funnel_state)
+        feed_path = results_dir / f"tui_feed_{timestamp_day}.json"
+        latest_feed_path = (BASE_DIR / "data" / "latest_tui_feed.json") if state_file == STATE_FILE else None
+        export_tui_feed(funnel.tui_feed_records, feed_path, latest_path=latest_feed_path)
+
         action_items = build_action_items_sheet(segment_frames)
         action_items_prepared = prepare_dataframe(action_items) if not action_items.empty else action_items
 
@@ -248,40 +259,52 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
         dev_sec_items = build_developer_security_sheet(segment_frames)
         dev_sec_prepared = prepare_dataframe(dev_sec_items) if not dev_sec_items.empty else dev_sec_items
 
+        tier1_display, tier1_flags = prepare_display_df(funnel.tier1_df)
+
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
-            print(" - Adding tab 'Last 72 Hours'...")
-            fresh_jobs_prepared.to_excel(writer, sheet_name="Last 72 Hours", index=False)
-            format_worksheet(writer.sheets["Last 72 Hours"], fresh_jobs_prepared)
+            # 2. Front-load executive Application Funnel tabs (visible by default)
+            front_specs = [
+                ("Funnel - Tier 1 Action", tier1_display, tier1_flags, "1D4ED8"),
+                ("Funnel - Company Clusters", funnel.company_clusters_df, None, "0F766E"),
+                ("Funnel - Role Tracks", funnel.role_tracks_df, None, "4338CA"),
+                ("Direct Outreach Leads", funnel.outreach_leads_df, None, "15803D"),
+                ("Last 72 Hours", fresh_jobs_prepared, None, "D97706"),
+                ("Staffing & Excluded", funnel.excluded_df, None, "64748B"),
+            ]
+            for tab_name, tab_df, flags, tab_color in front_specs:
+                print(f" - Adding executive tab '{tab_name}' ({len(tab_df)} rows)...")
+                tab_df.to_excel(writer, sheet_name=tab_name, index=False)
+                format_funnel_worksheet(
+                    writer.sheets[tab_name],
+                    tab_df,
+                    highlight_flags=flags,
+                    tab_color=tab_color,
+                )
 
-            # Tab 1: Front-load Action Items
-            print(f" - Adding tab 'Action Items' (Fresher Spotlight)...")
-            action_items_prepared.to_excel(writer, sheet_name="Action Items", index=False)
-            if not action_items_prepared.empty:
-                format_worksheet(writer.sheets["Action Items"], action_items_prepared)
-            print(f"   -> Action Items tab: {len(action_items_prepared)} prioritized listings")
+            # 3. Preserve legacy summary tabs + 22 raw/filtered segment tabs as hidden sheets (zero data loss)
+            for legacy_name, legacy_df in [
+                ("Action Items", action_items_prepared),
+                ("Developer & Security", dev_sec_prepared),
+            ]:
+                legacy_df.to_excel(writer, sheet_name=legacy_name, index=False)
+                if not legacy_df.empty:
+                    format_worksheet(writer.sheets[legacy_name], legacy_df)
+                hide_worksheet(writer.sheets[legacy_name])
 
-            # Tab 2: Developer & Security Roles
-            print(f" - Adding tab 'Developer & Security'...")
-            dev_sec_prepared.to_excel(writer, sheet_name="Developer & Security", index=False)
-            if not dev_sec_prepared.empty:
-                format_worksheet(writer.sheets["Developer & Security"], dev_sec_prepared)
-            print(f"   -> Developer & Security tab: {len(dev_sec_prepared)} prioritized listings")
-
-            # Subsequent tabs: raw segment tabs and filtered tabs
             for sheet_tab, filtered_sheet_tab, df_prepared, filtered_df in prepared_tabs:
-                print(f" - Adding tab '{sheet_tab}'...")
                 df_prepared.to_excel(writer, sheet_name=sheet_tab, index=False)
                 filtered_df.to_excel(writer, sheet_name=filtered_sheet_tab, index=False)
 
                 for target_tab, tab_df in [(sheet_tab, df_prepared), (filtered_sheet_tab, filtered_df)]:
                     format_worksheet(writer.sheets[target_tab], tab_df)
+                    hide_worksheet(writer.sheets[target_tab])
 
                 new_count = int(df_prepared["is_new"].sum()) if "is_new" in df_prepared.columns else 0
                 fresh_count = int(df_prepared["is_fresh_post"].sum()) if "is_fresh_post" in df_prepared.columns else 0
-                print(f"   -> {new_count} new, {fresh_count} fresh posts, apply types added")
+                print(f"   -> '{sheet_tab}' (hidden raw): {new_count} new, {fresh_count} fresh posts")
 
             # Reorder safety check using openpyxl
-            desired_front_tabs = ["Last 72 Hours", "Action Items", "Developer & Security"]
+            desired_front_tabs = [spec[0] for spec in front_specs]
             for target_idx, tab_name in enumerate(desired_front_tabs):
                 if tab_name in writer.book.sheetnames:
                     current_idx = writer.book.sheetnames.index(tab_name)
@@ -295,6 +318,14 @@ def build_excel_workbook(results_dir, expected_outputs, state_file=STATE_FILE):
         size_mb = excel_path.stat().st_size / (1024 * 1024)
         print(f"Excel workbook created successfully: {excel_path} ({size_mb:.2f} MB)")
         stats = summarize_enrichment(segment_frames)
+        stats["funnel"] = funnel.summary_stats
+        stats["tui_feed_path"] = str(feed_path)
+
+        # 4. Rolling Google Sheets upsert (fail-soft when unconfigured)
+        sheet_url = sync_funnel_to_google_sheets(funnel, config, base_dir=BASE_DIR) if config is not None else None
+        if sheet_url:
+            stats["google_sheet_url"] = sheet_url
+
         return excel_path, stats, has_previous_run
 
     except Exception as e:
@@ -319,11 +350,31 @@ def send_email_with_attachment(config, excel_path, stats, has_previous_run):
     msg['To'] = receiver_email
     msg['Subject'] = f"Daily Job Scraper Report - {datetime.now().strftime('%Y-%m-%d')}"
 
+    funnel_stats = stats.get("funnel", {}) if isinstance(stats, dict) else {}
+    sheet_url = stats.get("google_sheet_url", "") if isinstance(stats, dict) else ""
+    funnel_block = ""
+    if funnel_stats:
+        top_cos = ", ".join(funnel_stats.get("top_companies", [])) or "N/A"
+        funnel_block = (
+            f"\nApplication Funnel Digest:\n"
+            f"- Tier 1 Direct / High-Conviction: {funnel_stats.get('tier1_count', 0)} "
+            f"(net-new: {funnel_stats.get('net_new_tier1', 0)})\n"
+            f"- Tier 2 Easy Apply / Secondary: {funnel_stats.get('tier2_count', 0)}\n"
+            f"- Direct Outreach Leads (emails): {funnel_stats.get('outreach_leads', 0)}\n"
+            f"- Company Clusters (2+ roles): {funnel_stats.get('company_clusters', 0)}\n"
+            f"- Top Hiring Companies: {top_cos}\n"
+            f"- Staffing / Seniority Quarantined: {funnel_stats.get('excluded_count', 0)}\n"
+        )
+    sheet_block = f"\nRolling Google Sheet: {sheet_url}\n" if sheet_url else ""
+
     body = (
         f"Hello,\n\n"
-        f"Please find attached the consolidated job scraper report for {datetime.now().strftime('%Y-%m-%d')}.\n\n"
+        f"Please find attached the consolidated job scraper report for {datetime.now().strftime('%Y-%m-%d')}.\n"
+        f"{sheet_block}"
+        f"{funnel_block}\n"
         f"{format_email_summary(stats, has_previous_run=has_previous_run)}"
-        f"Start with the Action Items and Developer & Security tabs — curated early-career roles sorted by priority.\n\n"
+        f"Start with 'Funnel - Tier 1 Action', 'Funnel - Company Clusters', and 'Direct Outreach Leads'. "
+        f"Raw segment tabs are preserved as hidden sheets at the back of the workbook.\n\n"
         f"Best regards,\n"
         f"Career Pipeline"
     )
@@ -441,7 +492,10 @@ def main():
         run_scrapers()
 
         update_pipeline_state(BASE_DIR, phase="EXCEL_BUILD")
-        excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
+        try:
+            excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs, config=config)
+        except TypeError:
+            excel_path, stats, has_previous_run = build_excel_workbook(results_dir, expected_outputs)
         update_pipeline_state(BASE_DIR, excel_path=str(excel_path))
 
         email_error = None
